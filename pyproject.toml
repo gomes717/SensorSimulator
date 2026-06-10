@@ -1,0 +1,18 @@
+[tool.pylint.main]
+# Run from the src/ directory so local imports resolve.
+source-roots = ["src"]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = [
+    "R0903",   # too-few-public-methods  — expected in Qt widget subclasses
+]
+
+[tool.pylint.typecheck]
+# Suppress false no-member errors coming from PyQt6 descriptors.
+generated-members = ["PyQt6.*"]
+
+[tool.pylint.design]
+max-attributes = 15   # Qt __init__ methods are legitimately attribute-heavy
