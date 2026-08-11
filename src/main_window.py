@@ -1,7 +1,7 @@
 """Main application window: toolbar, user treeview, live glucose graph."""
 from __future__ import annotations
 
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtGui import QCloseEvent, QPalette
 from PyQt6.QtWidgets import (
     QMainWindow,
     QPushButton,
@@ -19,31 +19,32 @@ matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from data_thread import DataThread
+from ble_message_log import BleMessageLog
+from bluetooth_window import BluetoothWindow
 from debug_window import DebugWindow
 
 
 class MainWindow(QMainWindow):
     """Top-level window containing the toolbar, user treeview, and glucose graph.
 
-    The toolbar provides access to the :class:`DebugWindow`.
-    The treeview is populated dynamically as :class:`DataThread` emits messages;
-    selecting a user loads their full reading history into the graph and
-    subsequent readings for that user are appended live.
+    The toolbar provides access to the :class:`DebugWindow` and the
+    :class:`BluetoothWindow`. The treeview and graph are populated live from
+    :class:`BleMessageLog` — every BLE message carrying a decoded
+    ``glucose_value`` (see :class:`BleSession`) updates the selected user's
+    row and, if that user's history is currently shown, extends the graph.
     """
 
     def __init__(self) -> None:
-        """Set up the toolbar, data thread, treeview, graph, and layout."""
+        """Set up the toolbar, BLE message log, treeview, graph, and layout."""
         super().__init__()
         self.setWindowTitle("TCC App")
         self.resize(1000, 600)
 
         self._setup_toolbar()
         self._debug_window: DebugWindow | None = None
-
-        self._data_thread = DataThread(self)
-        self._data_thread.new_message.connect(self._on_new_message)
-        self._data_thread.start()
+        self._bluetooth_window: BluetoothWindow | None = None
+        self._ble_log = BleMessageLog(self)
+        self._ble_log.new_message.connect(self._on_new_message)
 
         self._user_items: dict[str, QTreeWidgetItem] = {}
         self.tree = self._build_tree()
@@ -72,13 +73,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_toolbar(self) -> None:
-        """Create the top toolbar with a right-aligned Debug button."""
+        """Create the top toolbar with right-aligned Bluetooth and Debug buttons."""
         toolbar = QToolBar()
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        self.bluetooth_btn = QPushButton("Connect Bluetooth")
+        self.bluetooth_btn.clicked.connect(self._open_bluetooth)
+        toolbar.addWidget(self.bluetooth_btn)
         self.debug_btn = QPushButton("Debug")
         self.debug_btn.clicked.connect(self._open_debug)
         toolbar.addWidget(self.debug_btn)
@@ -93,14 +97,28 @@ class MainWindow(QMainWindow):
         return tree
 
     def _build_graph(self):
-        """Create and return the matplotlib figure, canvas, axes, and line objects."""
-        figure = Figure(tight_layout=True)
+        """Create and return the matplotlib figure, canvas, axes, and line objects.
+
+        Colors are pulled from the live Qt palette rather than hardcoded, so
+        the chart matches whichever theme (dark or light) is actually active
+        instead of always rendering with matplotlib's white default.
+        """
+        palette = self.palette()
+        bg = palette.color(QPalette.ColorRole.Window).name()
+        fg = self._graph_fg = palette.color(QPalette.ColorRole.WindowText).name()
+        accent = palette.color(QPalette.ColorRole.Highlight).name()
+
+        figure = Figure(tight_layout=True, facecolor=bg)
         canvas = FigureCanvas(figure)
-        ax = figure.add_subplot(111)
-        ax.set_title("Select a user")
-        ax.set_xlabel("Reading #")
-        ax.set_ylabel("Glucose (mg/dL)")
-        (line,) = ax.plot([], [], lw=1.5)
+        ax = figure.add_subplot(111, facecolor=bg)
+        ax.set_title("Select a user", color=fg)
+        ax.set_xlabel("Reading #", color=fg)
+        ax.set_ylabel("Glucose (mg/dL)", color=fg)
+        ax.tick_params(colors=fg)
+        for spine in ax.spines.values():
+            spine.set_color(fg)
+        ax.grid(True, color=fg, alpha=0.15)
+        (line,) = ax.plot([], [], lw=1.5, color=accent)
         return figure, canvas, ax, line
 
     # ------------------------------------------------------------------
@@ -110,13 +128,27 @@ class MainWindow(QMainWindow):
     def _open_debug(self) -> None:
         """Open (or raise) the debug messages window."""
         if self._debug_window is None:
-            self._debug_window = DebugWindow(self._data_thread)
+            self._debug_window = DebugWindow(self._ble_log)
         self._debug_window.show()
         self._debug_window.raise_()
         self._debug_window.activateWindow()
 
+    def _open_bluetooth(self) -> None:
+        """Open (or raise) the Bluetooth devices window, starting a scan if new."""
+        if self._bluetooth_window is None:
+            self._bluetooth_window = BluetoothWindow(self._ble_log)
+        self._bluetooth_window.show()
+        self._bluetooth_window.raise_()
+        self._bluetooth_window.activateWindow()
+
     def _on_new_message(self, msg: dict) -> None:
-        """Update the treeview row for the message's user and extend the graph if selected."""
+        """Update the treeview row for the message's user and extend the graph if selected.
+
+        Ignores BLE messages that aren't decoded glucose readings (e.g.
+        control-point responses from other characteristics).
+        """
+        if "glucose_value" not in msg:
+            return
         user_id = msg["user_id"]
         glucose = msg["glucose_value"]
 
@@ -139,10 +171,14 @@ class MainWindow(QMainWindow):
         user_id = current.text(0)
         self._selected_user = user_id
 
-        history = self._data_thread.get_user_data(user_id)
+        history = [
+            msg["glucose_value"]
+            for msg in self._ble_log.get_messages()
+            if msg.get("user_id") == user_id and "glucose_value" in msg
+        ]
         self._graph_x = list(range(1, len(history) + 1))
-        self._graph_y = [d["glucose_value"] for d in history]
-        self._ax.set_title(f"Glucose — {user_id}")
+        self._graph_y = history
+        self._ax.set_title(f"Glucose — {user_id}", color=self._graph_fg)
         self._redraw_graph()
 
     # ------------------------------------------------------------------
@@ -161,7 +197,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Stop the data thread cleanly before the window closes."""
-        self._data_thread.requestInterruption()
-        self._data_thread.wait()
+        """Stop any live BLE session, then close every child window."""
+        if self._bluetooth_window is not None:
+            self._bluetooth_window.stop_session()
+            self._bluetooth_window.close()
+        if self._debug_window is not None:
+            self._debug_window.close()
         super().closeEvent(event)

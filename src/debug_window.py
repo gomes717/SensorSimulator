@@ -1,6 +1,7 @@
-"""Window that shows all delivered data messages and lets the user inspect each one."""
+"""Window that shows all BLE messages received so far and lets the user inspect each one."""
 from __future__ import annotations
 
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
@@ -11,20 +12,20 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from data_thread import DataThread
+from ble_message_log import BleMessageLog
 from message_detail_window import MessageDetailWindow
 
 
 class DebugWindow(QWidget):
-    """Top-level window that lists every message emitted by :class:`DataThread`.
+    """Top-level window that lists every message received over BLE connections.
 
-    Rows are added live as new messages arrive.  Auto-scroll follows the
-    latest entry unless the user scrolls upward; scrolling back to the
-    bottom re-enables auto-scroll.  Clicking any row opens a
-    :class:`MessageDetailWindow` for that message.
+    Rows are added live as new messages arrive from :class:`BleMessageLog`.
+    Auto-scroll follows the latest entry unless the user scrolls upward;
+    scrolling back to the bottom re-enables auto-scroll.  Clicking any row
+    opens a :class:`MessageDetailWindow` for that message.
     """
 
-    def __init__(self, data_thread: DataThread) -> None:
+    def __init__(self, ble_log: BleMessageLog) -> None:
         """Initialise the window, bulk-load existing messages, and subscribe to new ones."""
         super().__init__()
         self.setWindowTitle("Debug Messages")
@@ -35,7 +36,7 @@ class DebugWindow(QWidget):
 
         layout = QVBoxLayout(self)
 
-        info = QLabel("Click a row to inspect the full message.")
+        info = QLabel("Messages received over the connected BLE device. Click a row to inspect it.")
         info.setAlignment(Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(info)
 
@@ -60,8 +61,8 @@ class DebugWindow(QWidget):
         self._auto_scroll = True
         self._table.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
-        self._bulk_load(data_thread.get_messages())
-        data_thread.new_message.connect(self._on_new_message)
+        self._bulk_load(ble_log.get_messages())
+        ble_log.new_message.connect(self._on_new_message)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -105,7 +106,7 @@ class DebugWindow(QWidget):
         self._auto_scroll = value == self._table.verticalScrollBar().maximum()
 
     def _on_new_message(self, msg: dict) -> None:
-        """Slot connected to DataThread.new_message — appends the row live."""
+        """Slot connected to BleMessageLog.new_message — appends the row live."""
         self._append_row(msg)
 
     def _open_detail(self, item: QTableWidgetItem) -> None:
@@ -114,3 +115,13 @@ class DebugWindow(QWidget):
         window = MessageDetailWindow(msg)
         window.show()
         self._detail_windows.append(window)
+
+    # ------------------------------------------------------------------
+    # Qt overrides
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Close every open message detail window before this window closes."""
+        for window in self._detail_windows:
+            window.close()
+        super().closeEvent(event)
