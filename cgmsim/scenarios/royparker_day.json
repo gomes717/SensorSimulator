@@ -1,0 +1,23 @@
+{
+    "model": "royparker",
+    "sensor": "breton",
+    "duration_min": 720,
+    "dt_min": 1,
+    "seed": 42,
+    "params_file": "params/royparker.json",
+    "output_file": "output/royparker_day.csv",
+    "events": [
+        { "type": "basal",    "time_min": 0,   "u_per_h": 1.0 },
+
+        { "type": "meal",     "time_min": 60,  "carbs_g": 60 },
+        { "type": "bolus",    "time_min": 60,  "units": 3.0, "duration_min": 5 },
+
+        { "type": "exercise", "time_min": 260, "pct": 35, "duration_min": 20 },
+
+        { "type": "meal",     "time_min": 330, "carbs_g": 45 },
+        { "type": "bolus",    "time_min": 330, "units": 2.2, "duration_min": 5 },
+
+        { "type": "meal",     "time_min": 600, "carbs_g": 70 },
+        { "type": "bolus",    "time_min": 600, "units": 3.5, "duration_min": 5 }
+    ]
+}
