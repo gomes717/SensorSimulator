@@ -19,35 +19,40 @@ from bluetooth_scanner import BluetoothScanThread
 
 
 class BluetoothWindow(QWidget):
-    """Top-level window listing nearby BLE devices with the ability to connect to one.
+    """Top-level window listing nearby BLE devices with the ability to connect to several.
 
     A scan starts automatically when the window opens and can be repeated
     with the Rescan button. Selecting a row and pressing Connect opens a
-    persistent BLE session to that device; every notification it receives is
+    persistent BLE session to that device *in addition to* any others already
+    connected — up to one per distinct address — so multiple sensors (e.g.
+    a batch of Nordic CGM boards) can stream at once. Every notification is
     forwarded to the shared :class:`BleMessageLog` so the Debug window can
-    display it. The connection is kept alive even if this window is closed,
-    and is only stopped when connecting to a different device or on app exit
-    (see :meth:`stop_session`).
+    display it. Connections are kept alive even if this window is closed,
+    and are only stopped by selecting a connected device and pressing
+    Disconnect, or on app exit (see :meth:`stop_all_sessions`).
     """
 
     def __init__(self, ble_log: BleMessageLog) -> None:
         """Build the device table and controls, then kick off the first scan."""
         super().__init__()
         self.setWindowTitle("Bluetooth Devices")
-        self.resize(520, 400)
+        self.resize(560, 400)
 
         self._ble_log = ble_log
         self._scan_thread: BluetoothScanThread | None = None
-        self._session: BleSession | None = None
+        self._sessions: dict[str, BleSession] = {}  # address -> active session
+        self._names: dict[str, str] = {}  # address -> display name, kept for connected devices
+        self._statuses: dict[str, str] = {}  # address -> last known Status cell text
         self._addresses: list[str] = []
 
         layout = QVBoxLayout(self)
 
         self._status = QLabel("Scanning for nearby BLE devices…")
+        self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
-        self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Name", "Address", "RSSI"])
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["Name", "Address", "RSSI", "Status"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.ResizeToContents
@@ -55,10 +60,14 @@ class BluetoothWindow(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.ResizeToContents
         )
+        self._table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
+        )
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
+        self._table.currentCellChanged.connect(self._on_selection_changed)
         layout.addWidget(self._table)
 
         buttons = QHBoxLayout()
@@ -66,6 +75,7 @@ class BluetoothWindow(QWidget):
         self._rescan_btn.clicked.connect(self._start_scan)
         buttons.addWidget(self._rescan_btn)
         self._connect_btn = QPushButton("Connect")
+        self._connect_btn.setEnabled(False)
         self._connect_btn.clicked.connect(self._connect_selected)
         buttons.addWidget(self._connect_btn)
         self._disconnect_btn = QPushButton("Disconnect")
@@ -81,9 +91,18 @@ class BluetoothWindow(QWidget):
     # ------------------------------------------------------------------
 
     def _start_scan(self) -> None:
-        """Clear the table and start a fresh BLE scan in the background."""
+        """Clear the table and start a fresh BLE scan in the background.
+
+        Rows for already-connected devices are re-seeded immediately after
+        clearing: many BLE peripherals (including the Nordic CGM boards)
+        stop advertising once connected, so they would otherwise vanish
+        from the list on rescan even though their session is still live.
+        """
         self._table.setRowCount(0)
         self._addresses = []
+        for address, name in self._names.items():
+            if address in self._sessions:
+                self._add_device(name, address, None)
         self._status.setText("Scanning for nearby BLE devices…")
         self._rescan_btn.setEnabled(False)
 
@@ -93,8 +112,13 @@ class BluetoothWindow(QWidget):
         self._scan_thread.finished.connect(self._on_scan_finished)
         self._scan_thread.start()
 
-    def _add_device(self, name: str, address: str, rssi: int) -> None:
-        """Append a row for a newly discovered device, skipping duplicates."""
+    def _add_device(self, name: str, address: str, rssi: int | None) -> None:
+        """Append a row for a newly discovered device, skipping duplicates.
+
+        *rssi* is ``None`` when re-seeding a row for an already-connected
+        device that wasn't actually found in this scan (see
+        :meth:`_start_scan`).
+        """
         if address in self._addresses:
             return
         self._addresses.append(address)
@@ -102,7 +126,8 @@ class BluetoothWindow(QWidget):
         self._table.insertRow(row)
         self._table.setItem(row, 0, QTableWidgetItem(name))
         self._table.setItem(row, 1, QTableWidgetItem(address))
-        self._table.setItem(row, 2, QTableWidgetItem(str(rssi)))
+        self._table.setItem(row, 2, QTableWidgetItem(str(rssi) if rssi is not None else "–"))
+        self._table.setItem(row, 3, QTableWidgetItem(self._statuses.get(address, "")))
 
     def _on_scan_failed(self, message: str) -> None:
         """Show the scan error to the user."""
@@ -120,41 +145,49 @@ class BluetoothWindow(QWidget):
     # ------------------------------------------------------------------
 
     def _connect_selected(self) -> None:
-        """Stop any existing session and open a new persistent BLE connection."""
+        """Open a persistent BLE connection to the selected device, alongside any others."""
         row = self._table.currentRow()
         if row < 0:
             self._status.setText("Select a device first.")
             return
 
-        self.stop_session()
-
         address = self._addresses[row]
-        name = self._table.item(row, 0).text()
-        self._status.setText(f"Connecting to {name}…")
-        self._connect_btn.setEnabled(False)
+        if address in self._sessions:
+            self._status.setText(f"Already connected to {address}.")
+            return
 
-        self._session = BleSession(address, name, self)
-        self._session.connected.connect(self._on_connected)
-        self._session.connect_failed.connect(self._on_connect_failed)
-        self._session.disconnected.connect(self._on_disconnected)
-        self._session.new_message.connect(self._ble_log.add_message)
-        self._session.finished.connect(self._on_session_finished)
-        self._session.start()
-        self._disconnect_btn.setEnabled(True)
+        name = self._table.item(row, 0).text()
+        self._names[address] = name
+        self._status.setText(f"Connecting to {name}…")
+        self._set_status_cell(address, "Connecting…")
+
+        session = BleSession(address, name, self)
+        session.connected.connect(self._on_connected)
+        session.connect_failed.connect(self._on_connect_failed)
+        session.disconnected.connect(self._on_disconnected)
+        session.new_message.connect(self._ble_log.add_message)
+        session.finished.connect(lambda addr=address: self._on_session_finished(addr))
+        self._sessions[address] = session
+        session.start()
+        self._update_button_states()
 
     def _on_connected(self, address: str, subscribed: int, notify_total: int, last_error: str) -> None:
         """Report a successful connection and whether the device can push any data at all."""
+        self._set_status_cell(address, "Connected")
         if notify_total == 0:
             self._status.setText(
                 f"Connected to {address}, but it exposes no notify/indicate characteristics — "
                 "it will not send data on its own."
             )
-        elif subscribed == 0 and "authentication" in last_error.lower():
+        elif subscribed == 0 and (
+            "auto-pairing failed" in last_error.lower() or "authentication" in last_error.lower()
+        ):
             self._status.setText(
                 f"Connected to {address}, but its data requires a paired/authenticated "
-                "connection (device likely shows a passkey on its own screen or serial "
-                "console). Pair it first in Windows Settings > Bluetooth & devices, "
-                "entering that passkey, then reconnect here."
+                f"connection and the app's automatic pairing failed ({last_error}). "
+                "Disconnect and press Connect again to retry — every attempt clears any "
+                "stale pairing first — or confirm the sensor's fixed-passkey firmware is "
+                "flashed if it keeps failing."
             )
         elif subscribed == 0:
             self._status.setText(
@@ -169,41 +202,88 @@ class BluetoothWindow(QWidget):
 
     def _on_connect_failed(self, address: str, error: str) -> None:
         """Report a failed connection attempt."""
+        self._set_status_cell(address, "Failed")
         self._status.setText(f"Failed to connect to {address}: {error}")
 
     def _on_disconnected(self, address: str) -> None:
         """Report that a previously connected device disconnected."""
+        self._set_status_cell(address, "")
         self._status.setText(f"Disconnected from {address}.")
 
-    def _on_session_finished(self) -> None:
-        """Re-enable Connect and disable Disconnect once the session thread has stopped."""
-        self._connect_btn.setEnabled(True)
-        self._disconnect_btn.setEnabled(False)
+    def _on_session_finished(self, address: str) -> None:
+        """Drop the finished session and refresh button state once its thread has stopped."""
+        self._sessions.pop(address, None)
+        self._names.pop(address, None)
+        self._statuses.pop(address, None)
+        self._update_button_states()
 
     def _disconnect_clicked(self) -> None:
-        """Disconnect the active BLE session, if any."""
-        if self._session is None or not self._session.isRunning():
+        """Disconnect the BLE session for the selected device, if it is connected."""
+        row = self._table.currentRow()
+        if row < 0:
             return
-        self._disconnect_btn.setEnabled(False)
-        self._status.setText("Disconnecting…")
-        self.stop_session()
+        address = self._addresses[row]
+        if address not in self._sessions:
+            return
+        self._status.setText(f"Disconnecting from {address}…")
+        self._stop_session(address)
+        self._update_button_states()
+
+    def _on_selection_changed(self, *_args) -> None:
+        """Refresh Connect/Disconnect enabled state for the newly selected row."""
+        self._update_button_states()
 
     # ------------------------------------------------------------------
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    def stop_session(self) -> None:
-        """Stop the active BLE session, if any, and wait for it to fully close.
+    def _stop_session(self, address: str) -> None:
+        """Stop the session for *address*, if any, and wait for it to fully close."""
+        session = self._sessions.pop(address, None)
+        if session is not None and session.isRunning():
+            session.stop()
+            session.wait(2000)
 
-        Called before starting a new connection, and by :class:`MainWindow`
-        on app close — deliberately *not* called from :meth:`closeEvent` so
-        that closing this window alone leaves the connection (and Debug
-        logging) running.
+    def stop_all_sessions(self) -> None:
+        """Stop every active BLE session and wait for each to fully close.
+
+        Called by :class:`MainWindow` on app close — deliberately *not*
+        called from :meth:`closeEvent` so that closing this window alone
+        leaves connections (and Debug logging) running.
         """
-        if self._session is not None and self._session.isRunning():
-            self._session.stop()
-            self._session.wait(2000)
-        self._session = None
+        for address in list(self._sessions):
+            self._stop_session(address)
+
+    def _row_for_address(self, address: str) -> int:
+        """Return the table row index for *address*, or -1 if not present."""
+        try:
+            return self._addresses.index(address)
+        except ValueError:
+            return -1
+
+    def _set_status_cell(self, address: str, status: str) -> None:
+        """Record *status* for *address* and reflect it in the Status column if listed."""
+        self._statuses[address] = status
+        row = self._row_for_address(address)
+        if row < 0:
+            return
+        item = self._table.item(row, 3)
+        if item is None:
+            self._table.setItem(row, 3, QTableWidgetItem(status))
+        else:
+            item.setText(status)
+
+    def _update_button_states(self) -> None:
+        """Enable Connect/Disconnect based on whether the selected row is connected."""
+        row = self._table.currentRow()
+        if row < 0:
+            self._connect_btn.setEnabled(False)
+            self._disconnect_btn.setEnabled(False)
+            return
+        address = self._addresses[row]
+        connected = address in self._sessions
+        self._connect_btn.setEnabled(not connected)
+        self._disconnect_btn.setEnabled(connected)
 
     # ------------------------------------------------------------------
     # Qt overrides

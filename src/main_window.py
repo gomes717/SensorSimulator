@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop any live BLE session, then close every child window."""
         if self._bluetooth_window is not None:
-            self._bluetooth_window.stop_session()
+            self._bluetooth_window.stop_all_sessions()
             self._bluetooth_window.close()
         if self._debug_window is not None:
             self._debug_window.close()

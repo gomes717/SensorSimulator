@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -12,6 +13,7 @@ from bleak import BleakClient
 # Standard Bluetooth SIG "Continuous Glucose Monitoring" service characteristics
 # (used e.g. by Nordic's peripheral_cgms sample). Recognised specially so the
 # glucose value can be decoded and reporting sped up instead of just logging hex.
+CGM_SERVICE_UUID = "0000181f-0000-1000-8000-00805f9b34fb"
 CGM_MEASUREMENT_UUID = "00002aa7-0000-1000-8000-00805f9b34fb"
 CGM_SOCP_UUID = "00002aac-0000-1000-8000-00805f9b34fb"
 SOCP_WRITE_CGM_COMMUNICATION_INTERVAL = 0x01
@@ -63,6 +65,21 @@ class BleSession(QThread):
     the standard CGM Service, its measurement is decoded to a glucose value
     and its reporting interval is (re)confirmed at 5 seconds, matching this
     project's patched firmware (see FAST_COMM_INTERVAL_SECONDS above).
+
+    A single physical device can expose several independent CGMS service
+    instances over this one connection (e.g. one board simulating several
+    sensors, as with this project's peripheral_cgms multi-sensor sample) —
+    all sharing the same characteristic UUIDs, distinguishable only by which
+    service instance/handle a notification came from. Each of that board's
+    BLE identities/addresses is meant to represent one specific simulated
+    sensor (its advertised name ends in that sensor's index, e.g. "...
+    Sensor 2"), so this session shows only the CGMS instance at that same
+    index and ignores notifications from the other instances that are also
+    technically visible on this connection — connecting to a given MAC
+    should show that one sensor's data, not all of them. If the name has no
+    trailing index (some other, unrelated multi-instance device), every
+    instance is shown instead, tagged "Sensor N" in user_id so each still
+    gets its own row rather than colliding.
     """
 
     connected = pyqtSignal(str, int, int, str)  # address, subscribed, notify-capable, last error
@@ -75,6 +92,20 @@ class BleSession(QThread):
         super().__init__(parent)
         self._address = address
         self._name = name
+        # Populated in _session(): maps a CGM Measurement characteristic's
+        # handle to which CGMS service instance (0-based) it belongs to. A
+        # single physical device can expose several independent CGMS service
+        # instances over one connection (e.g. one board simulating several
+        # sensors), all sharing the same characteristic UUID, so the handle
+        # is the only thing that tells their notifications apart.
+        self._instance_by_handle: dict[int, int] = {}
+        self._instance_count = 0
+        # If the advertised name ends in a number (e.g. "Nordic Glucose
+        # Sensor 2"), this identity is meant to represent that one specific
+        # simulated sensor, even though every instance is technically
+        # visible on any connection to this device (see class docstring).
+        match = re.search(r"(\d+)\s*$", name or "")
+        self._own_instance_index = int(match.group(1)) if match else None
 
     def stop(self) -> None:
         """Request the session to close the connection and end its run loop."""
@@ -89,13 +120,17 @@ class BleSession(QThread):
 
     async def _session(self) -> None:
         """Pair (Windows only, best-effort), open the connection, subscribe, then wait."""
+        pairing_error = ""
         if sys.platform == "win32":
             try:
                 from windows_ble_pairing import pair_with_pin  # local import: Windows-only dep
 
                 await pair_with_pin(self._address, CGM_TEST_PASSKEY)
-            except Exception:  # pylint: disable=broad-except
-                pass  # not every device needs pairing; fall through to a normal connect
+            except Exception as exc:  # pylint: disable=broad-except
+                # Not every device needs pairing, so this alone isn't fatal — fall
+                # through to a normal connect — but remember why in case notify
+                # subscriptions below fail for lack of an authenticated link.
+                pairing_error = str(exc)
 
         async with BleakClient(self._address) as client:
             if not client.is_connected:
@@ -104,10 +139,20 @@ class BleSession(QThread):
             notify_count = 0
             subscribed_count = 0
             last_error = ""
-            socp_characteristic = None
+            socp_characteristics = []
+            instance_index = -1
             for service in client.services:
+                if service.uuid.lower() == CGM_SERVICE_UUID:
+                    # A single device can expose several independent CGMS
+                    # service instances over this one connection (e.g. one
+                    # board simulating several sensors); each is a separate
+                    # primary service sharing the same characteristic UUIDs,
+                    # so count them in the order bleak enumerates them.
+                    instance_index += 1
                 for characteristic in service.characteristics:
                     uuid = characteristic.uuid.lower()
+                    if uuid == CGM_MEASUREMENT_UUID:
+                        self._instance_by_handle[characteristic.handle] = instance_index
                     if "notify" in characteristic.properties or "indicate" in characteristic.properties:
                         notify_count += 1
                         try:
@@ -117,9 +162,18 @@ class BleSession(QThread):
                             last_error = str(exc)
                             continue
                     if uuid == CGM_SOCP_UUID and "write" in characteristic.properties:
-                        socp_characteristic = characteristic
+                        socp_characteristics.append((instance_index, characteristic))
 
-            if socp_characteristic is not None:
+            if subscribed_count == 0 and notify_count > 0 and pairing_error:
+                last_error = f"auto-pairing failed: {pairing_error}"
+
+            self._instance_count = instance_index + 1
+            for socp_instance, socp_characteristic in socp_characteristics:
+                # Only (re)configure the instance this identity actually
+                # represents — leave sibling instances, which belong to
+                # other simulated sensors, untouched.
+                if self._own_instance_index is not None and socp_instance != self._own_instance_index:
+                    continue
                 try:
                     await client.write_gatt_char(
                         socp_characteristic,
@@ -135,10 +189,37 @@ class BleSession(QThread):
 
         self.disconnected.emit(self._address)
 
+    def _user_id(self) -> str:
+        """Return a display identifier that stays unique across multiple connected devices.
+
+        Several identical sensor boards (e.g. a batch of Nordic peripheral_cgms
+        kits) commonly advertise the exact same BLE name, so the name alone
+        can't be trusted to distinguish them once more than one is connected
+        at a time. Suffixing with the last two bytes of the address keeps
+        each device's readings on their own row in the UI.
+        """
+        if not self._name:
+            return self._address
+        suffix = self._address.replace("-", ":").split(":")[-2:]
+        return f"{self._name} ({':'.join(suffix)})" if suffix else self._name
+
     def _handle_notification(self, characteristic, data: bytearray) -> None:
-        """Turn a raw GATT notification into a message dict and emit it."""
+        """Turn a raw GATT notification into a message dict and emit it.
+
+        Drops CGM Measurement notifications from sibling instances that
+        don't belong to this identity's own sensor (see class docstring).
+        """
+        user_id = self._user_id()
+        if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID and self._instance_count > 1:
+            instance = self._instance_by_handle.get(characteristic.handle)
+            if self._own_instance_index is not None:
+                if instance != self._own_instance_index:
+                    return
+            elif instance is not None:
+                user_id = f"{user_id} · Sensor {instance + 1}"
+
         message = {
-            "user_id": self._name or self._address,
+            "user_id": user_id,
             "dev_id": self._address,
             "characteristic": characteristic.uuid,
             "raw_hex": data.hex(),

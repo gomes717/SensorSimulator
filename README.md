@@ -4,8 +4,8 @@ A PyQt6 desktop application that connects to a BLE continuous glucose monitor (C
 
 ## Features
 
-- Scan for and connect to nearby BLE devices, with automatic pairing for devices needing it (Windows)
-- Live treeview of users with their latest glucose reading, sourced from the connected sensor
+- Scan for and connect to several nearby BLE devices at once, with automatic pairing for devices needing it (Windows)
+- Live treeview of users with their latest glucose reading, sourced from all connected sensors
 - Per-user glucose graph that updates as new readings arrive
 - Debug window listing every BLE message received, with detail view on click
 
