@@ -1,0 +1,19 @@
+{
+    "model": "uva_padova",
+    "sensor": "facchinetti",
+    "duration_min": 720,
+    "dt_min": 1,
+    "seed": 7,
+    "params_file": "params/uva_padova.json",
+    "output_file": "output/uva_padova_day.csv",
+    "events": [
+        { "type": "meal",  "time_min": 60,  "carbs_g": 60, "duration_min": 15 },
+        { "type": "bolus", "time_min": 60,  "units": 6.0,  "duration_min": 5 },
+
+        { "type": "meal",  "time_min": 330, "carbs_g": 45, "duration_min": 15 },
+        { "type": "bolus", "time_min": 330, "units": 4.5,  "duration_min": 5 },
+
+        { "type": "meal",  "time_min": 600, "carbs_g": 70, "duration_min": 20 },
+        { "type": "bolus", "time_min": 600, "units": 7.0,  "duration_min": 5 }
+    ]
+}
