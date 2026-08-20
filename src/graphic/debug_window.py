@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from ble_message_log import BleMessageLog
-from message_detail_window import MessageDetailWindow
+from core.ble_message_log import BleMessageLog
+from graphic.message_detail_window import MessageDetailWindow
 
 
 class DebugWindow(QWidget):

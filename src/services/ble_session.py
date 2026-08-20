@@ -10,6 +10,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from bleak import BleakClient
 
+from api import ble_uuids
+from api import protocol
+
 # Standard Bluetooth SIG "Continuous Glucose Monitoring" service characteristics
 # (used e.g. by Nordic's peripheral_cgms sample). Recognised specially so the
 # glucose value can be decoded and reporting sped up instead of just logging hex.
@@ -17,6 +20,25 @@ CGM_SERVICE_UUID = "0000181f-0000-1000-8000-00805f9b34fb"
 CGM_MEASUREMENT_UUID = "00002aa7-0000-1000-8000-00805f9b34fb"
 CGM_SOCP_UUID = "00002aac-0000-1000-8000-00805f9b34fb"
 SOCP_WRITE_CGM_COMMUNICATION_INTERVAL = 0x01
+
+# Maps each simulator config characteristic's UUID to the short key used by
+# BleSession.queue_write()/request_read() and by the config windows
+# (person_config_window.py etc.) — must match src/config_service.c's
+# characteristic UUIDs exactly.
+CONFIG_CHAR_KEY_BY_UUID = {
+    ble_uuids.PERSON_CONFIG_UUID: "person",  # read + write
+    ble_uuids.SENSOR_CONFIG_UUID: "sensor",  # read + write
+    ble_uuids.MODE_CONFIG_UUID: "mode",  # read + write
+    ble_uuids.FOOD_EVENT_UUID: "food",  # write-only, appends one event
+    ble_uuids.EXERCISE_EVENT_UUID: "exercise",  # write-only, appends one event
+    ble_uuids.FOOD_INSTANT_UUID: "food_instant",  # write-only, one-shot, does not reset the board
+    ble_uuids.EXERCISE_INSTANT_UUID: "exercise_instant",  # write-only, one-shot, does not reset the board
+    ble_uuids.CGMS_ONLY_UUID: "cgms_only",  # read + write, not persisted on the board
+    ble_uuids.FOOD_EVENTS_READBACK_UUID: "food_list",  # read-only, full list
+    ble_uuids.EXERCISE_EVENTS_READBACK_UUID: "exercise_list",  # read-only, full list
+    ble_uuids.RUN_STATE_UUID: "run_state",  # read + write, not persisted on the board
+    ble_uuids.RESET_SYNC_UUID: "reset_sync",  # notify-only
+}
 # This project's peripheral_cgms firmware has been patched to interpret the
 # communication interval in seconds instead of the spec's whole minutes (see
 # cgms.c), so this value is seconds, not minutes, and already matches the
@@ -86,6 +108,9 @@ class BleSession(QThread):
     connect_failed = pyqtSignal(str, str)  # address, error message
     disconnected = pyqtSignal(str)
     new_message = pyqtSignal(dict)
+    write_failed = pyqtSignal(str, str, str)  # address, char_key, error message
+    config_read = pyqtSignal(str, str, bytes)  # address, char_key, raw value
+    reset_sync = pyqtSignal(str)  # address — see ble_uuids.RESET_SYNC_UUID
 
     def __init__(self, address: str, name: str, parent=None) -> None:
         """Store the target device's address and display name for this session."""
@@ -107,6 +132,16 @@ class BleSession(QThread):
         match = re.search(r"(\d+)\s*$", name or "")
         self._own_instance_index = int(match.group(1)) if match else None
 
+        # Simulator config service (see ble_uuids.py / src/config_service.c):
+        # characteristics discovered in _session(), keyed by CONFIG_CHAR_KEY_BY_UUID's
+        # short names. Writes are queued from any thread via queue_write() and
+        # drained by _session()'s own event loop, since bleak's client only
+        # works on the loop it was created on.
+        self._config_characteristics: dict[str, object] = {}
+        self._write_queue: asyncio.Queue = asyncio.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._client: BleakClient | None = None  # set once connected, used by request_read()
+
     def stop(self) -> None:
         """Request the session to close the connection and end its run loop."""
         self.requestInterruption()
@@ -120,10 +155,11 @@ class BleSession(QThread):
 
     async def _session(self) -> None:
         """Pair (Windows only, best-effort), open the connection, subscribe, then wait."""
+        self._loop = asyncio.get_running_loop()
         pairing_error = ""
         if sys.platform == "win32":
             try:
-                from windows_ble_pairing import pair_with_pin  # local import: Windows-only dep
+                from services.windows_ble_pairing import pair_with_pin  # local import: Windows-only dep
 
                 await pair_with_pin(self._address, CGM_TEST_PASSKEY)
             except Exception as exc:  # pylint: disable=broad-except
@@ -135,6 +171,7 @@ class BleSession(QThread):
         async with BleakClient(self._address) as client:
             if not client.is_connected:
                 raise ConnectionError("Device did not accept the connection")
+            self._client = client
 
             notify_count = 0
             subscribed_count = 0
@@ -163,6 +200,13 @@ class BleSession(QThread):
                             continue
                     if uuid == CGM_SOCP_UUID and "write" in characteristic.properties:
                         socp_characteristics.append((instance_index, characteristic))
+                    config_key = CONFIG_CHAR_KEY_BY_UUID.get(uuid)
+                    if config_key is not None:
+                        # Some of these are write-only, some read-only, some both
+                        # (see CONFIG_CHAR_KEY_BY_UUID) — store regardless of which
+                        # properties are present; queue_write()/request_read() are
+                        # only ever called for the direction each key supports.
+                        self._config_characteristics[config_key] = characteristic
 
             if subscribed_count == 0 and notify_count > 0 and pairing_error:
                 last_error = f"auto-pairing failed: {pairing_error}"
@@ -185,9 +229,61 @@ class BleSession(QThread):
             self.connected.emit(self._address, subscribed_count, notify_count, last_error)
 
             while not self.isInterruptionRequested():
-                await asyncio.sleep(0.2)
+                try:
+                    char_key, payload = await asyncio.wait_for(self._write_queue.get(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                characteristic = self._config_characteristics.get(char_key)
+                if characteristic is None:
+                    self.write_failed.emit(
+                        self._address, char_key, "device does not expose this characteristic"
+                    )
+                    continue
+                try:
+                    await client.write_gatt_char(characteristic, payload, response=True)
+                except Exception as exc:  # pylint: disable=broad-except
+                    self.write_failed.emit(self._address, char_key, str(exc))
 
         self.disconnected.emit(self._address)
+
+    def queue_write(self, char_key: str, payload: bytes) -> None:
+        """Thread-safe: queue a simulator config characteristic write for this session's loop.
+
+        *char_key* is one of "person"/"sensor"/"mode"/"food"/"exercise" (see
+        CONFIG_CHAR_KEY_BY_UUID). Safe to call from any thread — writes are
+        actually performed by _session()'s own asyncio loop, since bleak's
+        client can only be driven from the loop it was created on. Silently
+        dropped if the session hasn't finished connecting yet.
+        """
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(self._write_queue.put_nowait, (char_key, payload))
+
+    def request_read(self, char_key: str) -> None:
+        """Thread-safe: ask the board for whatever it currently has for *char_key*.
+
+        Result (or failure) arrives asynchronously via the config_read (or
+        write_failed) signal — this call itself never blocks the calling
+        thread. Safe to call from any thread; the actual GATT read runs on
+        this session's own event loop, same reasoning as queue_write().
+        """
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self._do_read(char_key), self._loop)
+
+    async def _do_read(self, char_key: str) -> None:
+        characteristic = self._config_characteristics.get(char_key)
+        if characteristic is None or self._client is None:
+            self.write_failed.emit(
+                self._address, char_key, "device does not expose this characteristic"
+            )
+            return
+        try:
+            data = await self._client.read_gatt_char(characteristic)
+        except Exception as exc:  # pylint: disable=broad-except
+            self.write_failed.emit(self._address, char_key, str(exc))
+            return
+        self.config_read.emit(self._address, char_key, bytes(data))
 
     def _user_id(self) -> str:
         """Return a display identifier that stays unique across multiple connected devices.
@@ -227,4 +323,15 @@ class BleSession(QThread):
         }
         if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID:
             message.update(_decode_cgm_measurement(bytes(data)))
+            print(f"[ble] CGM measurement from {user_id}: {message.get('glucose_value')} mg/dL "
+                  f"raw={data.hex()}")
+        elif characteristic.uuid.lower() == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
+            decoded = protocol.decode_food_exercise_status(bytes(data))
+            if decoded is not None:
+                message.update(decoded)
+            print(f"[ble] food/exercise status from {user_id}: {decoded}")
+        elif characteristic.uuid.lower() == ble_uuids.RESET_SYNC_UUID:
+            print(f"[ble] reset_sync from {user_id}: generation={data[0] if data else '?'}")
+            self.reset_sync.emit(self._address)
+            return  # control event, not a data point — don't add it to new_message
         self.new_message.emit(message)

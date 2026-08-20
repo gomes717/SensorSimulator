@@ -9,10 +9,14 @@
  * emits a fresh reading on every call — a real CGM's own "how often does
  * a value change" is a transport/reporting-cadence question, not something
  * this model layer throttles; that cadence is entirely up to whatever
- * drains these readings (comm_thread's own poll/notify interval on the
- * firmware side). valid == 0 is not used by any of these three sensors
- * (kept in CGMReading for callers that may not always have a fresh value,
- * e.g. a future on-demand SMBG-style sensor).
+ * drains these readings (comm_thread's own poll/notify interval). valid == 0
+ * is not used by any of these three sensors (kept in CGMReading for callers
+ * that may not always have a fresh value, e.g. a future on-demand
+ * SMBG-style sensor).
+ *
+ * Ported unchanged from SensorSimulator/cgmsim/inc/cgmsim_sensors.h — this
+ * noise math only ever runs here (on-device); the Python app's "expected"
+ * trace is deliberately noiseless (see SensorSimulator/src/models/engine.py).
  */
 
 #include "cgmsim_types.h"

@@ -138,7 +138,6 @@ typedef enum { SENSOR_IDEAL_CGM, SENSOR_BRETON, SENSOR_FACCHINETTI } SensorKind;
 typedef struct {
     SensorKind kind;
     union {
-        IdealCGMState     ideal;
         BretonState        breton;
         FacchinetttiState facchinetti;
     } state;
@@ -153,7 +152,7 @@ static int sensor_kind_from_name(const char *name, SensorKind *out) {
 
 static void sensor_init(Sensor *sn, unsigned int seed) {
     switch (sn->kind) {
-        case SENSOR_IDEAL_CGM:   ideal_cgm_init(&sn->state.ideal, 5.0); break;
+        case SENSOR_IDEAL_CGM:   break; /* no state to initialize */
         case SENSOR_BRETON:      breton_init(&sn->state.breton, seed); break;
         case SENSOR_FACCHINETTI: facchinetti_init(&sn->state.facchinetti, seed); break;
     }
@@ -161,7 +160,7 @@ static void sensor_init(Sensor *sn, unsigned int seed) {
 
 static CGMReading sensor_update(Sensor *sn, double gp_mg_dl, double dt) {
     switch (sn->kind) {
-        case SENSOR_IDEAL_CGM:   return ideal_cgm_update(&sn->state.ideal, gp_mg_dl, dt);
+        case SENSOR_IDEAL_CGM:   return ideal_cgm_update(gp_mg_dl);
         case SENSOR_BRETON:      return breton_update(&sn->state.breton, gp_mg_dl, dt);
         case SENSOR_FACCHINETTI: return facchinetti_update(&sn->state.facchinetti, gp_mg_dl, dt);
     }

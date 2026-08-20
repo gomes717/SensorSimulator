@@ -9,24 +9,16 @@ void suite_sensors(void) {
 
     /* ── Ideal CGM ─────────────────────────────────────────── */
 
-    IdealCGMState cgm;
-    ideal_cgm_init(&cgm, 5.0);
-
-    /* 1. First call (timer pre-loaded) produces a valid reading */
-    CGMReading r1 = ideal_cgm_update(&cgm, TRUE_G, 1.0);
+    /* 1. Every call produces a valid reading — no internal state, no
+     * sampling-interval gate (see cgmsim_sensors.h). */
+    CGMReading r1 = ideal_cgm_update(TRUE_G);
     MT_CHECK(r1.valid == 1);
     MT_CHECK_DBL(r1.value_mg_dl, TRUE_G, 1e-9);
 
-    /* 2. Subsequent 1-min calls do NOT produce readings (within 5-min interval) */
-    CGMReading r2 = ideal_cgm_update(&cgm, TRUE_G, 1.0);
-    MT_CHECK(r2.valid == 0);
-
-    /* 3. After 4 more minutes (5 total) a reading is produced */
-    CGMReading r_mid = {0, 0};
-    for (int i = 0; i < 4; i++)
-        r_mid = ideal_cgm_update(&cgm, TRUE_G + 5.0, 1.0);
-    MT_CHECK(r_mid.valid == 1);
-    MT_CHECK_DBL(r_mid.value_mg_dl, TRUE_G + 5.0, 1e-9);
+    /* 2. The very next call is valid too, and tracks the true value exactly. */
+    CGMReading r2 = ideal_cgm_update(TRUE_G + 5.0);
+    MT_CHECK(r2.valid == 1);
+    MT_CHECK_DBL(r2.value_mg_dl, TRUE_G + 5.0, 1e-9);
 
     /* ── Ideal SMBG ────────────────────────────────────────── */
 
@@ -44,7 +36,7 @@ void suite_sensors(void) {
     BretonState b;
     breton_init(&b, 42u);
 
-    /* 6. Reading is produced at the first step (timer pre-loaded) */
+    /* 6. Every call produces a valid reading. */
     CGMReading rb1 = breton_update(&b, TRUE_G, 1.0);
     MT_CHECK(rb1.valid == 1);
 
@@ -56,17 +48,12 @@ void suite_sensors(void) {
     breton_init(&b2, 999u);
     CGMReading rb_a = breton_update(&b,  TRUE_G, 1.0);
     CGMReading rb_b = breton_update(&b2, TRUE_G, 1.0);
-    /* At least one of the two 1-min intermediate readings differs */
-    int differ = (fabs(rb_a.value_mg_dl - rb_b.value_mg_dl) > 0.01)
-                 || (rb_a.valid != rb_b.valid);
-    MT_CHECK(differ);
+    MT_CHECK(fabs(rb_a.value_mg_dl - rb_b.value_mg_dl) > 0.01);
 
     /* 9. Breton output is clamped to [0, 1000] */
     BretonState bclamp;
     breton_init(&bclamp, 1u);
-    /* Run 5 minutes to trigger output, first pass with very high glucose */
     CGMReading rc1 = breton_update(&bclamp, 5000.0, 1.0);
-    for (int i = 0; i < 4; i++) breton_update(&bclamp, 5000.0, 1.0);
     CGMReading rc2 = breton_update(&bclamp, 5000.0, 1.0);
     MT_CHECK(rc1.value_mg_dl <= 1000.0);
     MT_CHECK(rc2.value_mg_dl <= 1000.0);
@@ -92,9 +79,7 @@ void suite_sensors(void) {
     /* 13. After recalibration, bias b(0) = b0 = -14.8 */
     MT_CHECK_DBL(f.b0, -14.8, 1e-9);
 
-    /* 14. Non-valid steps have value 0 */
+    /* 14. Every call produces a valid reading, including back-to-back ones. */
     CGMReading rf2 = facchinetti_update(&f, TRUE_G, 1.0);
-    /* This is 1-min after output, so valid=0 */
-    MT_CHECK(rf2.valid == 0);
-    MT_CHECK_DBL(rf2.value_mg_dl, 0.0, 1e-9);
+    MT_CHECK(rf2.valid == 1);
 }

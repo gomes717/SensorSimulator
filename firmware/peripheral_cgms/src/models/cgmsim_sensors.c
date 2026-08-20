@@ -1,5 +1,5 @@
 #include <math.h>
-#include "../inc/cgmsim_sensors.h"
+#include "cgmsim_sensors.h"
 
 /* ── Minimal Gaussian RNG (Box-Muller, LCG state) ──────────────────────── */
 static double lcg_randn(unsigned int *state) {

@@ -1,0 +1,20 @@
+/*
+ * Partitions the board's external SPI-NOR flash (mx25r64, on spi00 — already
+ * enabled by the board's default devicetree but with no partitions defined)
+ * so the simulator config (struct sim_config, see src/sim_config.h) can be
+ * persisted there across reboots, per the assignment's requirement to store
+ * it in external flash rather than the internal MRAM used for BT bonding.
+ */
+
+&mx25r64 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		sim_storage_partition: partition@0 {
+			label = "sim_config_storage";
+			reg = <0x00000000 0x00001000>; /* 4 KB, one erase sector */
+		};
+	};
+};

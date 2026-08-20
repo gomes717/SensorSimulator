@@ -1,0 +1,86 @@
+{
+  "persons": [
+    {
+      "name": "Sample Patient",
+      "model_id": 3,
+      "params": {
+        "Gpeq": 100.0,
+        "BW": 70.0,
+        "Gb": 172.0,
+        "Ib": 10.0,
+        "HRb": 80.0,
+        "p1": 0.0041,
+        "p2": 0.0155,
+        "p3": 7e-06,
+        "alpha": 0.000259,
+        "beta": 0.000339,
+        "tauHR": 5.0,
+        "tau": 600.0,
+        "f": 0.1,
+        "AG": 0.8,
+        "Vg": 1.6,
+        "tau_m": 60.0,
+        "k21": 0.0085,
+        "kd": 0.0247,
+        "ka": 0.011,
+        "ke": 0.0357,
+        "Vi": 0.104,
+        "IIRb": 0.5
+      },
+      "food_events": [
+        {
+          "time_of_day_min": 0,
+          "carbs_g": 30.0,
+          "duration_min": 10
+        },
+        {
+          "time_of_day_min": 240,
+          "carbs_g": 50.0,
+          "duration_min": 2
+        },
+        {
+          "time_of_day_min": 600,
+          "carbs_g": 40.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 900,
+          "carbs_g": 40.0,
+          "duration_min": 15
+        }
+      ],
+      "exercise_events": [
+        {
+          "time_of_day_min": 60,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        },
+        {
+          "time_of_day_min": 300,
+          "duration_min": 45,
+          "intensity_pct": 80.0
+        },
+        {
+          "time_of_day_min": 480,
+          "duration_min": 30,
+          "intensity_pct": 100.0
+        },
+        {
+          "time_of_day_min": 720,
+          "duration_min": 60,
+          "intensity_pct": 70.0
+        }
+      ],
+      "basal_u_per_h": null
+    }
+  ],
+  "sensors": [
+    {
+      "name": "Sample Sensor",
+      "sensor_id": 0,
+      "params": {
+        "sampling_time_min": 5.0
+      }
+    }
+  ]
+}

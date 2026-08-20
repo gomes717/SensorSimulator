@@ -40,3 +40,5 @@ desktop.ini
 
 # Distribution / packaging
 MANIFEST
+# Added by code-review-graph
+.code-review-graph/

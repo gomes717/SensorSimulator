@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ble_message_log import BleMessageLog
-from ble_session import BleSession
-from bluetooth_scanner import BluetoothScanThread
+from core.ble_message_log import BleMessageLog
+from services.ble_session import BleSession
+from services.bluetooth_scanner import BluetoothScanThread
 
 
 class BluetoothWindow(QWidget):
@@ -253,6 +253,18 @@ class BluetoothWindow(QWidget):
         """
         for address in list(self._sessions):
             self._stop_session(address)
+
+    def sessions(self) -> dict[str, BleSession]:
+        """Return the currently connected BLE sessions, keyed by address.
+
+        Used by the simulator config windows' DeviceTargetBar to populate a
+        "send to this device" combo without needing their own session tracking.
+        """
+        return dict(self._sessions)
+
+    def display_name(self, address: str) -> str:
+        """Return the display name for *address*, falling back to the address itself."""
+        return self._names.get(address, address)
 
     def _row_for_address(self, address: str) -> int:
         """Return the table row index for *address*, or -1 if not present."""

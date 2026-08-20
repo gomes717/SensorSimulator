@@ -1,7 +1,12 @@
 # CGMSIM – Mathematical Models Reference
 
 Sources: [cgmsim.com](https://cgmsim.com/support/model/overview.html) and
-[loopinsight1](https://github.com/hpeuscher/loopinsight1).
+[loopinsight1](https://github.com/hpeuscher/loopinsight1) for the equations
+as implemented here; see the **References** section at the bottom for the
+original peer-reviewed papers each model/sensor is from. For the narrative
+"why these four models, why this numerical method, how the MCU's timestep
+maps to `dt_min`" companion to this reference, see
+[`../docs/MODELS.md`](../docs/MODELS.md).
 
 ---
 
@@ -484,9 +489,12 @@ EGP_rate [g/min] = 0.11 [g/kg/h] × weight_kg / 60 × modifier(t)
 ### 6.1  Ideal CGM
 
 ```
-CGM(t) = G(t)     every samplingTime minutes (default 5 min)
+CGM(t) = G(t)     every simulation step
 ```
-No noise, no lag.
+No noise, no lag, no internal state — every call returns the current true
+value (removed 2026-08-18: an earlier version throttled output to once per
+configurable `samplingTime`, default 5 min; see the Parameter reference note
+below for why that was removed).
 
 ### 6.2  Ideal SMBG
 
@@ -503,8 +511,9 @@ noise(t) = PACF·noise(t−1) + σ·ε(t),    ε ~ N(0,1)
 CGM(t)   = α·IG(t) + β + noise(t)
 ```
 
-Default: PACF = 0.7, σ = 1.5 mg/dl, α = 1.0, β = 0.0.  
-Updated every minute; output every 5 min.
+Default: PACF = 0.7, σ = 1.5 mg/dl, α = 1.0, β = 0.0.
+Noise updated and a reading output on every simulation step (no output
+throttling — see the Parameter reference note below).
 
 ### 6.4  Facchinetti et al. 2014 – Time-Varying CGM Error
 
@@ -538,9 +547,53 @@ Default coefficients:
 
 ### Parameter reference
 
-- `sampling_time_min` — how often a reading is emitted (all sensors default to 5 min, matching real CGM behavior).
+- No sensor has a `sampling_time_min` parameter (removed 2026-08-18).
+  Originally every sensor throttled its own output to once per configurable
+  interval (default 5 min), mirroring real CGM hardware's sampling rate.
+  That's now gone: every sensor emits a fresh reading on every simulation
+  step, unconditionally. How often a *client* actually observes a new value
+  is a transport/reporting-cadence concern (on the board: `comm_thread`'s
+  own poll/notify interval), not something this model layer decides —
+  keeping the two throttles separate was confusing in practice (BLE
+  notifications arrived every few seconds regardless, since the standard
+  CGMS library periodically re-notifies its last stored record, but the
+  *value* only changed every 5 minutes, looking frozen in between).
 - `pacf` (Breton) — noise autocorrelation coefficient; higher means smoother, more slowly-drifting noise from one reading to the next (real sensor noise isn't white — it wanders).
 - `sigma` (Breton), `sigma_v`/`sigma_c` (Facchinetti) — noise magnitude; how far a single reading can stray from the true value.
 - `alpha`, `beta` (Breton) — linear calibration gain/offset applied on top of the true glucose — a fixed miscalibration, not noise.
 - `a0-a2`, `b0-b2` (Facchinetti) — time-varying calibration drift as the sensor ages since its last calibration (`t_calib_days`), reset by `facchinetti_recalibrate`.
 - `aw1`/`aw2` and `ac1`/`ac2` (Facchinetti) — AR(2) coefficients for two separate noise components: a per-sensor measurement noise term and a shared/common error component, combined into one `noise(t)`.
+
+---
+
+## References
+
+Original peer-reviewed sources for each model/sensor above (the equations
+as transcribed in this file come via cgmsim.com/loopinsight1, cross-checked
+against these):
+
+1. **Cambridge (Hovorka) model** — Hovorka R, Canonico V, Chassin LJ, et al.
+   "Nonlinear model predictive control of glucose concentration in subjects
+   with type 1 diabetes." *Physiological Measurement*, 25(4):905–920, 2004.
+   [doi:10.1088/0967-3334/25/4/010](https://iopscience.iop.org/article/10.1088/0967-3334/25/4/010)
+2. **UVA/Padova T1DMS model** — Dalla Man C, Rizza RA, Cobelli C. "Meal
+   simulation model of the glucose-insulin system." *IEEE Transactions on
+   Biomedical Engineering*, 54(10):1740–1749, 2007.
+   [PubMed 17926672](https://pubmed.ncbi.nlm.nih.gov/17926672/)
+3. **Roy/Parker exercise model** — Roy A, Parker RS. "Dynamic modeling of
+   exercise effects on plasma glucose and insulin levels." *Journal of
+   Diabetes Science and Technology*, 1(3):338–347, 2007.
+   [PubMed 19885088](https://www.ncbi.nlm.nih.gov/pubmed/19885088)
+4. **Deichmann exercise-augmented minimal model** — Deichmann J, Bachmann S,
+   Burckhardt M-A, Szinnai G, Kaltenbach H-M. "Simulation-Based Evaluation
+   of Treatment Adjustment to Exercise in Type 1 Diabetes." *Frontiers in
+   Endocrinology*, 12:723812, 2021.
+   [doi:10.3389/fendo.2021.723812](https://doi.org/10.3389/fendo.2021.723812)
+5. **Breton & Kovatchev CGM sensor noise** — Breton M, Kovatchev B.
+   "Analysis, modeling, and simulation of the accuracy of continuous glucose
+   sensors." *Journal of Diabetes Science and Technology*, 2(5):853–862,
+   2008. [PMC2740661](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2740661/)
+6. **Facchinetti et al. time-varying CGM error** — Facchinetti A, Del Favero
+   S, Sparacino G, Cobelli C. "Modeling the glucose sensor error." *IEEE
+   Transactions on Biomedical Engineering*, 61(3):620–629, 2014.
+   [doi:10.1109/TBME.2013.2284023](https://pubmed.ncbi.nlm.nih.gov/24108706/)
