@@ -62,6 +62,13 @@ class PersonProfile:
     exercise_events: list[ExerciseEvent] = field(default_factory=list)
     # None -> use the model's own steady-state basal (see engine.py's basal lookup)
     basal_u_per_h: float | None = None
+    # Where this patient's glucose comes from: "model" (run the physiological
+    # model, current behavior) or "csv" (replay a recorded 24 h region from a
+    # Dexcom CSV). CSV playback is not wired yet — see docs/TODO.md — but the
+    # choice and its source region are persisted here.
+    data_source: str = "model"
+    csv_path: str | None = None
+    csv_window_start_iso: str | None = None
 
 
 @dataclass

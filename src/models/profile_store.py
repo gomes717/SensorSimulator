@@ -25,6 +25,9 @@ def _person_from_dict(d: dict) -> PersonProfile:
         food_events=[FoodEvent(**ev) for ev in d.get("food_events", [])],
         exercise_events=[ExerciseEvent(**ev) for ev in d.get("exercise_events", [])],
         basal_u_per_h=d.get("basal_u_per_h"),
+        data_source=d.get("data_source", "model"),
+        csv_path=d.get("csv_path"),
+        csv_window_start_iso=d.get("csv_window_start_iso"),
     )
 
 

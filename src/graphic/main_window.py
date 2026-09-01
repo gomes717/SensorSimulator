@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from PyQt6.QtGui import QCloseEvent, QPalette
+from PyQt6.QtGui import QBrush, QCloseEvent, QColor, QPalette
 from PyQt6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
+    QApplication,
     QDialog,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -31,7 +32,10 @@ from matplotlib.figure import Figure  # noqa: E402
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
+from graphic.avatar import avatar_icon
 from graphic.bluetooth_window import BluetoothWindow
+from graphic.configuration_window import ConfigurationWindow
+from graphic.csv_analysis_window import CsvAnalysisWindow
 from graphic.debug_window import DebugWindow
 from graphic.device_target import restart_board
 from graphic.exercise_config_window import ExerciseConfigWindow
@@ -39,7 +43,8 @@ from graphic.food_config_window import FoodConfigWindow
 from graphic.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog
 from graphic.person_config_window import PersonConfigWindow
 from graphic.sensor_config_window import SensorConfigWindow
-from models import cambridge, profile_store
+from graphic.view_config_window import ViewConfigWindow
+from models import app_settings, cambridge, cgm_metrics, profile_store
 from models import sensors as sensor_defaults
 from models.engine import SimulationEngine
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
@@ -73,6 +78,8 @@ class MainWindow(QMainWindow):
         self._sensor_config_window: SensorConfigWindow | None = None
         self._food_config_window: FoodConfigWindow | None = None
         self._exercise_config_window: ExerciseConfigWindow | None = None
+        self._csv_analysis_window: CsvAnalysisWindow | None = None
+        self._view_config_window: ViewConfigWindow | None = None
 
         self._ble_log = BleMessageLog(self)
         self._ble_log.new_message.connect(self._on_new_message)
@@ -86,6 +93,17 @@ class MainWindow(QMainWindow):
         self._cgms_only = False
         self._engine: SimulationEngine | None = None
         self._run_state = "stopped"  # "stopped" | "running" | "paused"
+
+        # Glucose range thresholds (mg/dL) for the graph bands + metrics panels;
+        # edited in the Configuration window, persisted to data/settings.json.
+        self._thresholds = app_settings.load()
+        # Built eagerly (hidden) so its Person/Sensor combos exist for the
+        # _refresh_*_combo() calls at the end of __init__ — the Configuration
+        # window hosts the widgets, MainWindow still owns the state.
+        self._configuration_window = ConfigurationWindow(self, self._on_thresholds_changed)
+        self._cfg = self._configuration_window
+        # user_id -> stable small integer shown next to the avatar in the tree
+        self._user_ids: dict[str, int] = {}
 
         # Fixed reference point for every graph's x-axis: real elapsed wall-clock
         # seconds since the app launched. Using one never-reset reference (instead
@@ -119,7 +137,7 @@ class MainWindow(QMainWindow):
 
         self._bottom = self._build_bottom_bar()
 
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter = self._right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.addWidget(self._canvas)
         right_splitter.addWidget(self._fe_canvas)
         right_splitter.addWidget(self._bottom)
@@ -188,6 +206,15 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        self.view_btn = QPushButton("View")
+        self.view_btn.clicked.connect(self._open_view_config)
+        toolbar.addWidget(self.view_btn)
+        self.csv_analysis_btn = QPushButton("CSV Analysis")
+        self.csv_analysis_btn.clicked.connect(self._open_csv_analysis)
+        toolbar.addWidget(self.csv_analysis_btn)
+        self.configuration_btn = QPushButton("Configuration")
+        self.configuration_btn.clicked.connect(self._open_configuration)
+        toolbar.addWidget(self.configuration_btn)
         self.bluetooth_btn = QPushButton("Connect Bluetooth")
         self.bluetooth_btn.clicked.connect(self._open_bluetooth)
         toolbar.addWidget(self.bluetooth_btn)
@@ -210,40 +237,119 @@ class MainWindow(QMainWindow):
         Colors are pulled from the live Qt palette rather than hardcoded, so
         the chart matches whichever theme (dark or light) is actually active
         instead of always rendering with matplotlib's white default.
+
+        Reads the *application* palette (not self.palette()) so a rebuild
+        triggered right after a theme switch sees the new colors immediately,
+        without waiting for the queued ApplicationPaletteChange event.
         """
-        palette = self.palette()
+        palette = QApplication.instance().palette()
         bg = palette.color(QPalette.ColorRole.Window).name()
         fg = self._graph_fg = palette.color(QPalette.ColorRole.WindowText).name()
         accent = palette.color(QPalette.ColorRole.Highlight).name()
 
-        figure = Figure(tight_layout=True, facecolor=bg)
+        figure = Figure(facecolor=bg)
+        # Fixed margins (not tight_layout) so this plot box lines up horizontally
+        # with the food/exercise plot box below — see the *_MARGINS class attrs.
+        figure.subplots_adjust(**self._GLUCOSE_MARGINS)
         canvas = FigureCanvas(figure)
         ax = figure.add_subplot(111, facecolor=bg)
         ax.set_title("Select a user", color=fg)
-        ax.set_xlabel("Time (s)", color=fg)
+        # No x-label here — this graph shares its time axis with the
+        # food/exercise graph below, which carries the single "Time (s)" label.
         ax.set_ylabel("Glucose (mg/dL)", color=fg)
         ax.tick_params(colors=fg)
         for spine in ax.spines.values():
             spine.set_color(fg)
         ax.grid(True, color=fg, alpha=0.15)
-        (line,) = ax.plot([], [], lw=1.5, color=accent, label="Received")
+        self._range_bands: list = []
+        self._mean_line = ax.axhline(0.0, color=fg, lw=1.0, linestyle="-.", alpha=0.0, label="Mean")
+        # "Received" = faint continuous base + one colored overlay per range
+        # category (red out of range, yellow borderline, green in target); see
+        # _recolor_main_trace(). "Expected" stays a single dashed line.
+        (line,) = ax.plot([], [], lw=0.8, color=fg, alpha=0.35, label="Received")
+        self._seg_lines = {
+            cat: ax.plot([], [], lw=1.7, color=color, solid_capstyle="round")[0]
+            for cat, color in self._LINE_COLORS.items()
+        }
         (expected_line,) = ax.plot(
             [], [], lw=1.5, color=accent, linestyle="--", alpha=0.7, label="Expected (model)"
         )
-        legend = ax.legend(loc="upper left", fontsize=8, facecolor=bg)
+        legend = ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3, fontsize=8,
+            frameon=False,
+        )
         for text in legend.get_texts():
             text.set_color(fg)
+        self._apply_range_bands(ax)
+        ax.set_ylim(*self._EMPTY_YLIM)  # until real data arrives (see _fit_glucose_ylim)
         return figure, canvas, ax, line, expected_line
+
+    # red = TBR2/TAR2 (out of range), yellow = TBR1/TAR1 (borderline), green = TIR
+    _RED = "#d32f2f"
+    _YELLOW = "#f4b400"
+    _GREEN = "#2e7d32"
+    _LINE_COLORS = {"r": _RED, "y": _YELLOW, "g": _GREEN}
+    # Clinical range band colors (translucent), same 5-band order: TBR2, TBR1, TIR, TAR1, TAR2.
+    _BAND_COLORS = (_RED, _YELLOW, _GREEN, _YELLOW, _RED)
+    # Left/right are shared so the two stacked plot boxes line up on the time
+    # axis; top/bottom differ — the glucose graph only reserves room for its
+    # legend, the food/exercise graph also carries the "Time (s)" label.
+    _GLUCOSE_MARGINS = dict(left=0.09, right=0.91, top=0.90, bottom=0.18)
+    _FOODEX_MARGINS = dict(left=0.09, right=0.91, top=0.86, bottom=0.32)
+
+    def _apply_range_bands(self, ax=None) -> None:
+        """(Re)draw the 5 horizontal range bands from the current thresholds.
+
+        axhspan patches don't feed the data limits, so the y-axis still
+        autoscales to the glucose lines alone.
+        """
+        ax = ax or self._ax
+        for patch in getattr(self, "_range_bands", []):
+            patch.remove()
+        t = self._thresholds
+        edges = [0.0, t["tbr2_below"], t["tbr1_below"], t["tar1_above"], t["tar2_above"], 600.0]
+        self._range_bands = [
+            ax.axhspan(lo, hi, color=color, alpha=0.16, zorder=0)
+            for lo, hi, color in zip(edges, edges[1:], self._BAND_COLORS)
+        ]
+
+    def _category(self, value: float) -> str:
+        """'r' out of range (low/high), 'y' borderline, 'g' in target — vs current thresholds."""
+        t = self._thresholds
+        if value < t["tbr2_below"] or value > t["tar2_above"]:
+            return "r"
+        if value < t["tbr1_below"] or value > t["tar1_above"]:
+            return "y"
+        return "g"
+
+    def _recolor_main_trace(self) -> None:
+        """Split the Received series into red/yellow/green overlays by range category."""
+        xs, ys = self._graph_x, self._graph_y
+        n = len(ys)
+        nan = float("nan")
+        arrs = {"r": [nan] * n, "y": [nan] * n, "g": [nan] * n}
+        if n:
+            cats = [self._category(v) for v in ys]
+            for i, v in enumerate(ys):
+                here = cats[i]
+                arrs[here][i] = v
+                if i > 0 and cats[i - 1] != here:
+                    arrs[cats[i - 1]][i] = v
+                if i < n - 1 and cats[i + 1] != here:
+                    arrs[cats[i + 1]][i] = v
+        for cat, line in self._seg_lines.items():
+            line.set_data(xs, arrs[cat])
 
     def _build_food_exercise_graph(self):
         """Create the food/exercise figure: carbs rate (left axis) and exercise % (right axis)."""
-        palette = self.palette()
+        palette = QApplication.instance().palette()
         bg = palette.color(QPalette.ColorRole.Window).name()
         fg = palette.color(QPalette.ColorRole.WindowText).name()
         carbs_color = palette.color(QPalette.ColorRole.Highlight).name()
         exercise_color = "#e0813f"  # fixed accent, distinguishable from the theme highlight color
 
-        figure = Figure(tight_layout=True, facecolor=bg)
+        figure = Figure(facecolor=bg)
+        figure.subplots_adjust(**self._FOODEX_MARGINS)
         canvas = FigureCanvas(figure)
         ax = figure.add_subplot(111, facecolor=bg)
         ax.set_title("Food / Exercise", color=fg)
@@ -263,71 +369,29 @@ class MainWindow(QMainWindow):
         )
 
         lines = [carbs_line, exercise_line]
-        legend = ax.legend(lines, [line.get_label() for line in lines], loc="upper left", fontsize=8, facecolor=bg)
+        legend = ax.legend(
+            lines, [line.get_label() for line in lines],
+            loc="upper center", bbox_to_anchor=(0.5, -0.34), ncol=2, fontsize=8,
+            frameon=False,
+        )
         for text in legend.get_texts():
             text.set_color(fg)
         return figure, canvas, ax, ax2, carbs_line, exercise_line
 
     def _build_bottom_bar(self) -> QWidget:
-        """Create the Person/Sensor selectors, their config buttons, and the mode toggles.
+        """Create the run controls (Start/Pause, Stop, Insert Now) and the live
+        range-metrics panel for the selected user.
 
-        Laid out as two rows (selectors on top, toggles/run controls below)
-        with real margins/spacing so it reads as a proper control panel
-        rather than a single cramped strip of widgets.
+        The Person/Sensor selectors and mode toggles that used to live here
+        moved to the Configuration window (toolbar → Configuration).
         """
         bar = QWidget()
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        selectors_row = QHBoxLayout()
-        selectors_row.setSpacing(8)
-
-        selectors_row.addWidget(QLabel("Person:"))
-        self._person_combo = QComboBox()
-        self._person_combo.setMinimumWidth(140)
-        self._person_combo.currentIndexChanged.connect(self._on_person_selected)
-        selectors_row.addWidget(self._person_combo)
-        self._person_configure_btn = QPushButton("Configure…")
-        self._person_configure_btn.clicked.connect(self._open_person_config)
-        selectors_row.addWidget(self._person_configure_btn)
-        self._food_btn = QPushButton("Food…")
-        self._food_btn.clicked.connect(self._open_food_config)
-        selectors_row.addWidget(self._food_btn)
-        self._exercise_btn = QPushButton("Exercise…")
-        self._exercise_btn.clicked.connect(self._open_exercise_config)
-        selectors_row.addWidget(self._exercise_btn)
-
-        selectors_row.addSpacing(24)
-
-        selectors_row.addWidget(QLabel("Sensor:"))
-        self._sensor_combo = QComboBox()
-        self._sensor_combo.setMinimumWidth(140)
-        self._sensor_combo.currentIndexChanged.connect(self._on_sensor_selected)
-        selectors_row.addWidget(self._sensor_combo)
-        self._sensor_configure_btn = QPushButton("Configure…")
-        self._sensor_configure_btn.clicked.connect(self._open_sensor_config)
-        selectors_row.addWidget(self._sensor_configure_btn)
-
-        selectors_row.addStretch(1)
-        outer.addLayout(selectors_row)
-
         controls_row = QHBoxLayout()
         controls_row.setSpacing(8)
-
-        self._fast_mode_check = QCheckBox("Fast mode (1 s = 1 sim-minute)")
-        self._fast_mode_check.toggled.connect(self._on_fast_mode_toggled)
-        controls_row.addWidget(self._fast_mode_check)
-
-        self._model_only_check = QCheckBox("Model Only (no device)")
-        self._model_only_check.toggled.connect(self._on_model_only_toggled)
-        controls_row.addWidget(self._model_only_check)
-
-        self._cgms_only_check = QCheckBox("CGMS Only (standard CGM stream only)")
-        self._cgms_only_check.toggled.connect(self._on_cgms_only_toggled)
-        controls_row.addWidget(self._cgms_only_check)
-
-        controls_row.addSpacing(24)
 
         self._start_pause_btn = QPushButton("Start")
         self._start_pause_btn.setMinimumWidth(90)
@@ -350,7 +414,55 @@ class MainWindow(QMainWindow):
         controls_row.addStretch(1)
         outer.addLayout(controls_row)
 
+        outer.addWidget(self._build_stats_panel())
+
         return bar
+
+    def _build_stats_panel(self) -> QGroupBox:
+        """Live TIR/TBR/TAR, mean and variance for the currently plotted glucose series."""
+        group = QGroupBox("Range metrics (current view)")
+        grid = QGridLayout(group)
+        self._stat_value_labels: dict[str, QLabel] = {}
+        cells = (
+            ("tir", "TIR"), ("tbr", "TBR"), ("tbr1", "TBR1"), ("tbr2", "TBR2"),
+            ("tar", "TAR"), ("tar1", "TAR1"), ("tar2", "TAR2"),
+            ("mean", "Mean"), ("variance", "Variance"),
+        )
+        for i, (key, caption) in enumerate(cells):
+            row, col = divmod(i, 5)
+            box = QVBoxLayout()
+            cap = QLabel(caption)
+            cap.setStyleSheet("font-size: 10px;")
+            val = QLabel("—")
+            self._stat_value_labels[key] = val
+            box.addWidget(cap)
+            box.addWidget(val)
+            grid.addLayout(box, row, col)
+        return group
+
+    def _update_stats_panel(self) -> None:
+        """Recompute the range-metrics panel from whichever glucose series is shown."""
+        series = self._graph_y or self._expected_y
+        m = cgm_metrics.compute(
+            series,
+            tbr2_below=self._thresholds["tbr2_below"],
+            tbr1_below=self._thresholds["tbr1_below"],
+            tar1_above=self._thresholds["tar1_above"],
+            tar2_above=self._thresholds["tar2_above"],
+        )
+        if m.n == 0:
+            for val in self._stat_value_labels.values():
+                val.setText("—")
+            return
+        self._stat_value_labels["tir"].setText(f"{m.tir_pct:.0f}%")
+        self._stat_value_labels["tbr"].setText(f"{m.tbr_pct:.0f}%")
+        self._stat_value_labels["tbr1"].setText(f"{m.tbr1_pct:.0f}%")
+        self._stat_value_labels["tbr2"].setText(f"{m.tbr2_pct:.0f}%")
+        self._stat_value_labels["tar"].setText(f"{m.tar_pct:.0f}%")
+        self._stat_value_labels["tar1"].setText(f"{m.tar1_pct:.0f}%")
+        self._stat_value_labels["tar2"].setText(f"{m.tar2_pct:.0f}%")
+        self._stat_value_labels["mean"].setText(f"{m.mean:.0f}")
+        self._stat_value_labels["variance"].setText(f"{m.variance:.0f}")
 
     # ------------------------------------------------------------------
     # Window management
@@ -376,6 +488,63 @@ class MainWindow(QMainWindow):
         window.show()
         window.raise_()
         window.activateWindow()
+
+    def _open_configuration(self) -> None:
+        """Open (or raise) the Configuration window (selectors, modes, thresholds)."""
+        self._configuration_window.show()
+        self._configuration_window.raise_()
+        self._configuration_window.activateWindow()
+
+    def _open_csv_analysis(self) -> None:
+        """Open (or raise) the CSV Analysis window."""
+        if self._csv_analysis_window is None:
+            self._csv_analysis_window = CsvAnalysisWindow()
+        self._csv_analysis_window.show()
+        self._csv_analysis_window.raise_()
+        self._csv_analysis_window.activateWindow()
+
+    def _open_view_config(self) -> None:
+        """Open (or raise) the View window (theme / appearance)."""
+        if self._view_config_window is None:
+            self._view_config_window = ViewConfigWindow(self._on_theme_changed)
+        self._view_config_window.show()
+        self._view_config_window.raise_()
+        self._view_config_window.activateWindow()
+
+    def _on_theme_changed(self) -> None:
+        """After a palette switch: rebuild the graph canvases so they repaint in
+        the new colors (they read the Qt palette only at build time)."""
+        self._rebuild_graphs()
+
+    def _rebuild_graphs(self) -> None:
+        """Recreate both matplotlib canvases in place, preserving the current data."""
+        sizes = self._right_splitter.sizes()
+        (
+            self._figure, self._canvas, self._ax, self._line, self._expected_line
+        ) = self._build_graph()
+        (
+            self._fe_figure, self._fe_canvas, self._fe_ax, self._fe_ax2,
+            self._carbs_line, self._exercise_line,
+        ) = self._build_food_exercise_graph()
+        old_g = self._right_splitter.replaceWidget(0, self._canvas)
+        old_fe = self._right_splitter.replaceWidget(1, self._fe_canvas)
+        for old in (old_g, old_fe):
+            if old is not None:
+                old.deleteLater()
+        self._right_splitter.setSizes(sizes)
+
+        if self._model_only and self._active_person is not None:
+            self._ax.set_title(f"Model — {self._active_person.name}", color=self._graph_fg)
+        elif not self._model_only and self._selected_user:
+            self._ax.set_title(f"Glucose — {self._selected_user}", color=self._graph_fg)
+        self._redraw_graph()
+        self._redraw_food_ex_graph()
+
+    def _on_thresholds_changed(self) -> None:
+        """Reload thresholds after a Configuration-window save and redraw the bands/metrics."""
+        self._thresholds = app_settings.load()
+        self._apply_range_bands()
+        self._redraw_graph()
 
     def _open_person_config(self) -> None:
         """Open (or raise) the Person configuration window."""
@@ -480,21 +649,22 @@ class MainWindow(QMainWindow):
         deliberately picking "(none)"), defaults to the first saved profile
         so the graph shows data right away instead of sitting empty.
         """
+        combo = self._cfg.person_combo
         had_active = self._active_person is not None
         current_name = self._active_person.name if self._active_person else None
-        self._person_combo.blockSignals(True)
-        self._person_combo.clear()
-        self._person_combo.addItem("(none)", None)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(none)", None)
         select_index = 0
         for i, profile in enumerate(self._person_profiles):
-            self._person_combo.addItem(profile.name, profile)
+            combo.addItem(profile.name, profile)
             if profile.name == current_name:
                 select_index = i + 1
         if select_index == 0 and not had_active and self._person_profiles:
             select_index = 1
-        self._person_combo.setCurrentIndex(select_index)
-        self._person_combo.blockSignals(False)
-        self._active_person = self._person_combo.currentData()
+        combo.setCurrentIndex(select_index)
+        combo.blockSignals(False)
+        self._active_person = combo.currentData()
 
     def _refresh_sensor_combo(self) -> None:
         """Repopulate the Sensor combo, keeping the current selection if it still exists.
@@ -502,30 +672,31 @@ class MainWindow(QMainWindow):
         Defaults to the first saved profile on first load, same reasoning as
         _refresh_person_combo.
         """
+        combo = self._cfg.sensor_combo
         had_active = self._active_sensor is not None
         current_name = self._active_sensor.name if self._active_sensor else None
-        self._sensor_combo.blockSignals(True)
-        self._sensor_combo.clear()
-        self._sensor_combo.addItem("(none)", None)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(none)", None)
         select_index = 0
         for i, profile in enumerate(self._sensor_profiles):
-            self._sensor_combo.addItem(profile.name, profile)
+            combo.addItem(profile.name, profile)
             if profile.name == current_name:
                 select_index = i + 1
         if select_index == 0 and not had_active and self._sensor_profiles:
             select_index = 1
-        self._sensor_combo.setCurrentIndex(select_index)
-        self._sensor_combo.blockSignals(False)
-        self._active_sensor = self._sensor_combo.currentData()
+        combo.setCurrentIndex(select_index)
+        combo.blockSignals(False)
+        self._active_sensor = combo.currentData()
 
     def _on_person_selected(self, _index: int) -> None:
         """Switch the active person and restart the parallel simulation for them."""
-        self._active_person = self._person_combo.currentData()
+        self._active_person = self._cfg.person_combo.currentData()
         self._restart_engine()
 
     def _on_sensor_selected(self, _index: int) -> None:
         """Switch the active sensor (used only when explicitly sent to a board)."""
-        self._active_sensor = self._sensor_combo.currentData()
+        self._active_sensor = self._cfg.sensor_combo.currentData()
 
     # ------------------------------------------------------------------
     # Mode toggles
@@ -571,12 +742,12 @@ class MainWindow(QMainWindow):
         again.
         """
         for widget in (
-            self._person_configure_btn,
-            self._food_btn,
-            self._exercise_btn,
-            self._sensor_configure_btn,
-            self._fast_mode_check,
-            self._model_only_check,
+            self._cfg.person_configure_btn,
+            self._cfg.food_btn,
+            self._cfg.exercise_btn,
+            self._cfg.sensor_configure_btn,
+            self._cfg.fast_mode_check,
+            self._cfg.model_only_check,
             self._start_pause_btn,
             self._stop_btn,
             self._insert_food_btn,
@@ -601,13 +772,13 @@ class MainWindow(QMainWindow):
         """
         self._cgms_only = checked
         if checked:
-            if self._model_only_check.isChecked():
+            if self._cfg.model_only_check.isChecked():
                 # Mutually exclusive with CGMS Only — flip it off without
                 # letting _on_model_only_toggled transiently spin up an
                 # engine we're about to stop anyway.
-                self._model_only_check.blockSignals(True)
-                self._model_only_check.setChecked(False)
-                self._model_only_check.blockSignals(False)
+                self._cfg.model_only_check.blockSignals(True)
+                self._cfg.model_only_check.setChecked(False)
+                self._cfg.model_only_check.blockSignals(False)
                 self._model_only = False
                 self.tree.setEnabled(True)
             self._stop_engine()
@@ -798,12 +969,9 @@ class MainWindow(QMainWindow):
 
         if "glucose_value" in msg:
             glucose = msg["glucose_value"]
-            item = self._user_items.get(user_id)
-            if item is None:
-                item = QTreeWidgetItem([user_id, "—"])
-                self.tree.addTopLevelItem(item)
-                self._user_items[user_id] = item
+            item = self._ensure_user_item(user_id)
             item.setText(1, f"{glucose:.2f}")
+            self._update_user_alert(item, user_id, glucose)
 
             if plotting:
                 self._graph_x.append(self._elapsed_seconds(msg["timestamp"]))
@@ -816,6 +984,33 @@ class MainWindow(QMainWindow):
             self._food_ex_exercise_y.append(msg.get("exercise_pct", 0.0))
             self._redraw_food_ex_graph()
 
+    def _ensure_user_item(self, user_id: str) -> QTreeWidgetItem:
+        """Return the tree row for *user_id*, creating it with an ID + avatar on first sight."""
+        item = self._user_items.get(user_id)
+        if item is not None:
+            return item
+        uid = self._user_ids.setdefault(user_id, len(self._user_ids) + 1)
+        item = QTreeWidgetItem([f"#{uid}  {user_id}", "—"])
+        item.setIcon(0, avatar_icon(user_id, user_id))
+        item.setData(0, Qt.ItemDataRole.UserRole, user_id)
+        self.tree.addTopLevelItem(item)
+        self._user_items[user_id] = item
+        return item
+
+    def _update_user_alert(self, item: QTreeWidgetItem, user_id: str, glucose: float) -> None:
+        """Show a LOW/HIGH badge beside the user's name when out of the target range."""
+        uid = self._user_ids.get(user_id, 0)
+        base = f"#{uid}  {user_id}"
+        if glucose < self._thresholds["tbr1_below"]:
+            item.setText(0, f"{base}   ▼ LOW")
+            item.setForeground(0, QBrush(QColor("#c0392b")))
+        elif glucose > self._thresholds["tar1_above"]:
+            item.setText(0, f"{base}   ▲ HIGH")
+            item.setForeground(0, QBrush(QColor("#e67e22")))
+        else:
+            item.setText(0, base)
+            item.setForeground(0, QBrush())
+
     def _on_user_selected(self, current: QTreeWidgetItem | None, _prev) -> None:
         """Switch which device's live data is plotted, resetting both graphs to t=0.
 
@@ -827,7 +1022,7 @@ class MainWindow(QMainWindow):
         """
         if current is None:
             return
-        self._selected_user = current.text(0)
+        self._selected_user = current.data(0, Qt.ItemDataRole.UserRole) or current.text(0)
         self._reset_graph_view()
         if not self._model_only:
             self._ax.set_title(f"Glucose — {self._selected_user}", color=self._graph_fg)
@@ -837,23 +1032,63 @@ class MainWindow(QMainWindow):
     # Graph redraw helpers
     # ------------------------------------------------------------------
 
+    def _sync_time_axis(self) -> None:
+        """Give both stacked graphs the same x-range so points at the same time line up."""
+        xs = self._graph_x + self._expected_x + self._food_ex_x
+        if not xs:
+            return
+        lo, hi = min(xs), max(xs)
+        if hi <= lo:
+            hi = lo + 1.0
+        self._ax.set_xlim(lo, hi)
+        self._fe_ax.set_xlim(lo, hi)
+
+    # y-axis when the glucose graph has no data yet (mg/dL)
+    _EMPTY_YLIM = (40.0, 200.0)
+
+    def _fit_glucose_ylim(self) -> None:
+        """Set the glucose y-axis to the data's own min/max plus a small margin.
+
+        Explicit instead of autoscale so the range bands (which extend well
+        past any real reading) can't stretch the axis up to 600.
+        """
+        ys = [v for v in (self._graph_y + self._expected_y) if v == v]
+        if not ys:
+            self._ax.set_ylim(*self._EMPTY_YLIM)
+            return
+        lo, hi = min(ys), max(ys)
+        pad = max(10.0, (hi - lo) * 0.10)
+        self._ax.set_ylim(max(0.0, lo - pad), hi + pad)
+
     def _redraw_graph(self) -> None:
         """Push updated x/y data to both line artists and request a canvas refresh."""
         self._line.set_data(self._graph_x, self._graph_y)
+        self._recolor_main_trace()
         self._expected_line.set_data(self._expected_x, self._expected_y)
-        self._ax.relim()
-        self._ax.autoscale_view()
+        self._fit_glucose_ylim()
+        series = self._graph_y or self._expected_y
+        if series:
+            mean = sum(series) / len(series)
+            self._mean_line.set_ydata([mean, mean])
+            self._mean_line.set_alpha(0.6)
+        else:
+            self._mean_line.set_alpha(0.0)
+        self._sync_time_axis()
+        self._update_stats_panel()
         self._canvas.draw_idle()
+        self._fe_canvas.draw_idle()
 
     def _redraw_food_ex_graph(self) -> None:
         """Push updated x/y data to the food/exercise line artists and request a canvas refresh."""
         self._carbs_line.set_data(self._food_ex_x, self._food_ex_carbs_y)
         self._exercise_line.set_data(self._food_ex_x, self._food_ex_exercise_y)
         self._fe_ax.relim()
-        self._fe_ax.autoscale_view()
+        self._fe_ax.autoscale_view(scalex=False)
         self._fe_ax2.relim()
-        self._fe_ax2.autoscale_view()
+        self._fe_ax2.autoscale_view(scalex=False)
+        self._sync_time_axis()
         self._fe_canvas.draw_idle()
+        self._canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # Qt overrides
@@ -871,6 +1106,9 @@ class MainWindow(QMainWindow):
             self._sensor_config_window,
             self._food_config_window,
             self._exercise_config_window,
+            self._configuration_window,
+            self._csv_analysis_window,
+            self._view_config_window,
         ):
             if window is not None:
                 window.close()

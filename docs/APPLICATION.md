@@ -113,6 +113,14 @@ without creating a dependency on the GUI or BLE stack.
 - `profile_store.py` — JSON persistence of every saved `PersonProfile`/
   `SensorProfile` to `data/profiles.json` (`dataclasses.asdict` + `json`,
   no external serialization library).
+- `app_settings.py` — same style, for app-wide settings in
+  `data/settings.json` (currently the glucose range thresholds).
+- `cgm_metrics.py` — pure `compute()` of the clinical range metrics
+  (TIR/TBR1/TBR2/TAR1/TAR2, mean, population variance, SD, CV) for a list
+  of glucose values; shared by the CSV Analysis window and the main
+  window's live metrics panel.
+- `dexcom_csv.py` — pure stdlib reader for Dexcom Clarity CGM exports
+  (`dataset/Dexcom_*.csv`), returning the EGV `(timestamp, glucose)` rows.
 
 ## 3. UI layer (`graphic/`)
 
@@ -123,7 +131,9 @@ re-opening one raises the same instance instead of creating a duplicate.
 
 | Window/dialog | Role |
 |---|---|
-| `main_window.py` — `MainWindow` | Toolbar; user treeview (one row per connected device, live glucose); glucose graph (received solid + expected dashed); food/exercise graph (carb rate + exercise %); Person/Sensor selector bar; Fast-mode/Model-Only/CGMS-Only toggles; Start/Pause/Resume/Stop; Insert Food/Exercise Now buttons |
+| `main_window.py` — `MainWindow` | Toolbar (Configuration, CSV Analysis, Bluetooth, Debug); user treeview (one row per connected device — per-user `#id` + generated avatar disc, live glucose, LOW/HIGH badge beside the name when out of range); glucose graph (received solid + expected dashed, with TBR2/TBR1/TIR/TAR1/TAR2 range shading and a mean line); food/exercise graph (carb rate + exercise %); Start/Pause/Resume/Stop; Insert Food/Exercise Now buttons; live range-metrics panel (TIR/TBR/TAR, mean, variance for the current view) |
+| `configuration_window.py` — `ConfigurationWindow` | The Person/Sensor selectors, their Configure/Food/Exercise buttons and the Fast-mode/Model-Only/CGMS-Only toggles moved out of the main window; plus the editable glucose range thresholds (persisted via `models/app_settings.py` to `data/settings.json`) and a per-person data-source choice (physiological model vs CSV region — stored on the profile, playback not wired yet) |
+| `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom CGM export (`models/dexcom_csv.py`), zoom/pan the full trace, slide a 24 h window over it, and read that window's range metrics (`models/cgm_metrics.py`: TIR/TBR/TAR, mean, variance, SD, CV). Analysis only — does not feed the live simulation |
 | `bluetooth_window.py` — `BluetoothWindow` | Device list, scan trigger, multi-device connect/disconnect; owns the `sessions()` dict every other window resolves a "target device" through |
 | `debug_window.py` — `DebugWindow` | Live scrolling list of every BLE message received (any device), sourced from `core/ble_message_log.py` |
 | `message_detail_window.py` — `MessageDetailWindow` | Full field dump of one selected message from Debug |

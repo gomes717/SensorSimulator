@@ -70,7 +70,12 @@ Everything that crosses the BLE link falls into one of three categories:
 | **Simulator configuration** | app ↔ board | Custom "sim config" service: person/sensor/mode/food/exercise/run-state/instant-events | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
 | **Confirmation/sync** | board → app | Reset Sync (notify) | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
 
-The high-level flow for a normal session:
+### 4.1 Development flow (Start → streaming)
+
+This is the normal "just run it" flow — board and app are already
+configured (defaults or a previous send), and the user just wants to watch
+the two curves. It's the one to reach for while developing/demoing the
+model math end to end:
 
 ```mermaid
 sequenceDiagram
@@ -79,15 +84,6 @@ sequenceDiagram
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
-
-    U->>App: Configure person/sensor, Send to Board
-    App->>BLE: queue_write("person", bytes)
-    BLE->>FW: GATT write (Person Config char)
-    FW->>FW: persist to external flash
-    FW->>Model: apply_config() — reinit state, sim_clock_min = 0
-    Model-->>FW: reset_sync notify
-    FW-->>BLE: notification
-    BLE-->>App: reset_sync signal ("Applied on board")
 
     U->>App: Start
     App->>App: anchor local SimulationEngine at t=0
@@ -104,13 +100,61 @@ sequenceDiagram
     App->>App: local engine ticks every 1 s, appends to "expected" graph
 ```
 
-The diagram above is the *reset* flow — every write except the two below
-goes through it. Two writes deliberately don't:
+### 4.2 Send configuration flow
 
-**Instant food/exercise events** ("Insert Food Now…"/"Insert Exercise
-Now…", `graphic/instant_event_dialog.py`) inject a one-shot event into an
-already-running simulation without resetting `sim_clock_min` or model
-state, so there's no `reset_sync` round-trip for them:
+Every config window's "Send to Board" button (Person, Sensor, Food,
+Exercise) drives this — the write always triggers a full reset on the
+board side (`apply_config_locked()`), which is how the app knows the write
+landed:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant App as App (graphic/*_config_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: Edit Person/Sensor/Food/Exercise, click "Send to Board"
+    App->>BLE: queue_write(char_key, bytes)
+    BLE->>FW: GATT write (config characteristic)
+    FW->>FW: update in-RAM sim_config, save to external flash
+    FW->>Model: apply_config() — reinit model/sensor state, sim_clock_min = 0
+    Model-->>FW: reset_sync notify
+    FW-->>BLE: notification
+    BLE-->>App: reset_sync signal
+    App-->>U: "✓ Applied on board" (device_target.py await_send_confirmation)
+```
+
+### 4.3 Read configuration flow
+
+Every config window's "Read from Board" button drives this — a plain
+GATT read/response, no notify, no reset (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)
+§3):
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant App as App (graphic/*_config_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+
+    U->>App: Click "Read from Board"
+    App->>BLE: request_read(char_key)
+    BLE->>FW: GATT read (config characteristic)
+    FW-->>BLE: raw bytes (in-RAM sim_config)
+    BLE-->>App: config_read(address, char_key, raw_bytes)
+    App->>App: protocol.decode_*(raw_bytes)
+    App->>App: overwrite selected profile / active person data
+```
+
+### 4.4 Instant food/exercise events
+
+One more write deliberately skips the reset flow in §4.2: "Insert Food
+Now…"/"Insert Exercise Now…" (`graphic/instant_event_dialog.py`) injects a
+one-shot event into an already-running simulation without resetting
+`sim_clock_min` or model state, so there's no `reset_sync` round-trip for
+it:
 
 ```mermaid
 sequenceDiagram
@@ -133,7 +177,7 @@ these events along with everything else `apply_config_locked()` resets —
 see `PROTOCOL_SPEC.md`'s "Instant food/exercise events" section for the
 byte format, decay/delivery rules, and a bug this reset used to have.
 
-**CGMS Only mode** (§6 below) is the other exception — enabling it never
+**CGMS Only mode** (§7 below) is the other exception — enabling it never
 resets either.
 
 ## 5. Two independent clocks, deliberately
@@ -179,6 +223,36 @@ performs the same full reset a Run-state `STOPPED` write does, and — unlike
 the board's normal "autonomous, defaults to running" behavior — requires an
 explicit Start afterward rather than auto-resuming. See `PROTOCOL_SPEC.md`'s
 "CGMS Only mode" section for the full write-rejection and transition rules.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant App as App (graphic/main_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: Check "CGMS Only"
+    App->>App: lock Person/Sensor/Food/Exercise/Fast/Model-Only/<br/>Start-Pause-Stop/Insert-Now controls, discard local SimulationEngine
+    App->>BLE: queue_write("cgms_only", 1)
+    BLE->>FW: GATT write (CGMS Only char)
+    FW->>Model: set_run_state(RUNNING) if not already running — no reset
+    FW->>FW: enable write-rejection for person/sensor/mode/<br/>food/exercise/instant characteristics
+    loop every measurement_interval (5 s)
+        Model->>Model: step physiological model + sensor noise
+        FW->>BLE: CGM Measurement notify only (Food/Exercise Status suppressed)
+        BLE-->>App: new_message signal
+        App->>App: append to "received" graph (no "expected" line)
+    end
+
+    U->>App: Uncheck "CGMS Only"
+    App->>BLE: queue_write("cgms_only", 0)
+    BLE->>FW: GATT write (CGMS Only char)
+    FW->>Model: set_run_state(STOPPED) — full reset, then hold
+    FW->>FW: disable write-rejection
+    App->>App: unlock controls
+    Note over U,App: Board now waits for an explicit Start — no auto-resume
+```
 
 ## 8. Where each concern actually lives
 
