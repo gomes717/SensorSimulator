@@ -28,7 +28,7 @@ stream.
 
 ## Guard rails (from the grill)
 
-- **Drop-dead date: 2026-09-15 (defense).** If xDrip+ is not reading the board
+- **Drop-dead date: 2026-10-30 (defense; moved from 15/09 on 2026-09-08).** If xDrip+ is not reading the board
   end-to-end by then, ship issue 09's baseline reframe (already done), move this
   to "future work", spend no more time.
 - **Track A always wins.** The moment this contends for time with any Phase 1

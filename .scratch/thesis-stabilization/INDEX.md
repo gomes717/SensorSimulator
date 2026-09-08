@@ -23,7 +23,7 @@ See `spec.md` for framing and decisions.
 
 | # | Title | Status |
 |---|---|---|
-| 12 | Dexcom real G6 compatibility | ready — drop-dead **2026-09-15**, Android confirmed |
+| 12 | Dexcom real G6 compatibility | ready — drop-dead **2026-10-30**, Android confirmed |
 
 ## Phase 3 — pre-write-up
 

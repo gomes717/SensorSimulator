@@ -54,13 +54,13 @@ beyond the items in `issues/`** — but every item there is in scope.
 | Phase | Contents | Issues |
 |---|---|---|
 | 1 | Track A correctness + test net | 01–11 |
-| 2 | Dexcom real G6 compat — stretch, drop-dead 2 weeks before the draft is due | 12 |
+| 2 | Dexcom real G6 compat — stretch, drop-dead 2026-10-30 | 12 |
 | 3 | Pre-write-up: metrics, results tables, UX cluster, minimal reorg | 13–17 |
 | — | Architectural debt, documented for a future maintainer (backlog) | 18–20 |
 
 ## Open items
 
-- **Defense / draft-due date: TBD** — fill the concrete drop-dead date into issue 12.
+- **Defense: 2026-10-30** (moved from 15/09 on 2026-09-08). Issue 12 drop-dead = the defense date.
 - **Q24 "both":** assumed to mean *G6 only* for the stretch + you do the format
   RE yourself + the `.tex` "out of scope" wording gets revised. Correct issue 12
   if that was wrong.
