@@ -19,16 +19,28 @@ class _InstantDialog(QDialog):
     the standard OK/Cancel buttons. Subclasses add their own spin rows before
     calling _finish()."""
 
-    def __init__(self, title: str, slots: int = 1, parent=None) -> None:
+    def __init__(
+        self,
+        title: str,
+        slots: int = 1,
+        parent=None,
+        *,
+        slot_choices: list[tuple[int | None, str]] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self._layout = QFormLayout(self)
         self._slot_combo: QComboBox | None = None
-        if slots and slots > 1:
+        # Prefer named choices (value, label) — "All sensors" + one per assigned
+        # slot — over raw slot numbers (issue 04). Fall back to numbers if only
+        # a count is given.
+        if not slot_choices and slots and slots > 1:
+            slot_choices = [(i, f"Sensor {i + 1}") for i in range(slots)]
+        if slot_choices and len(slot_choices) > 1:
             self._slot_combo = QComboBox()
-            for i in range(slots):
-                self._slot_combo.addItem(f"{i}", i)
-            self._layout.addRow("Slot:", self._slot_combo)
+            for value, label in slot_choices:
+                self._slot_combo.addItem(label, value)
+            self._layout.addRow("Target:", self._slot_combo)
 
     def _finish(self) -> None:
         buttons = QDialogButtonBox(
@@ -47,8 +59,14 @@ class _InstantDialog(QDialog):
 class FoodInstantDialog(_InstantDialog):
     """Prompts for a one-shot carb bolus: quantity and how long to spread it over."""
 
-    def __init__(self, parent=None, slots: int = 1) -> None:
-        super().__init__("Insert Food Now", slots, parent)
+    def __init__(
+        self,
+        parent=None,
+        slots: int = 1,
+        *,
+        slot_choices: list[tuple[int | None, str]] | None = None,
+    ) -> None:
+        super().__init__("Insert Food Now", slots, parent, slot_choices=slot_choices)
 
         self._carbs_spin = QDoubleSpinBox()
         self._carbs_spin.setRange(0.1, 500.0)
@@ -71,8 +89,14 @@ class FoodInstantDialog(_InstantDialog):
 class ExerciseInstantDialog(_InstantDialog):
     """Prompts for a one-shot exercise bout: duration and intensity."""
 
-    def __init__(self, parent=None, slots: int = 1) -> None:
-        super().__init__("Insert Exercise Now", slots, parent)
+    def __init__(
+        self,
+        parent=None,
+        slots: int = 1,
+        *,
+        slot_choices: list[tuple[int | None, str]] | None = None,
+    ) -> None:
+        super().__init__("Insert Exercise Now", slots, parent, slot_choices=slot_choices)
 
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(1, 300)
@@ -101,8 +125,14 @@ class PisaInstantDialog(_InstantDialog):
     ``1 - depth * sin(pi * elapsed/duration)`` while active.
     """
 
-    def __init__(self, parent=None, slots: int = 1) -> None:
-        super().__init__("Insert PISA Now", slots, parent)
+    def __init__(
+        self,
+        parent=None,
+        slots: int = 1,
+        *,
+        slot_choices: list[tuple[int | None, str]] | None = None,
+    ) -> None:
+        super().__init__("Insert PISA Now", slots, parent, slot_choices=slot_choices)
 
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(1, 120)

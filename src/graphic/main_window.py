@@ -716,6 +716,18 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             else 1
         )
 
+    def _instant_slot_choices(self) -> list[tuple[int | None, str]]:
+        """(value, label) for the instant-event dialogs' Target combo — empty
+        (no combo) unless a multi-sensor board is connected, then "All sensors"
+        plus one entry per slot named from the board layout (issue 04)."""
+        if self._multi_slot_count() <= 1:
+            return []
+        out: list[tuple[int | None, str]] = [(None, "All sensors")]
+        for i in range(board_layout.MAX_SLOTS):
+            person = self._board_layout.slots[i].person
+            out.append((i, f"Sensor {i + 1} — {person}" if person else f"Sensor {i + 1}"))
+        return out
+
     def _send_instant(self, char_key: str, payload: bytes, slot: int | None) -> None:
         """Send a one-shot event over BLE: to one session with a sensor-select
         prefix when *slot* is given (multi-sensor), else broadcast to every
@@ -747,7 +759,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
                 self, "Insert Food Now", "Nothing running to insert into — start a run first."
             )
             return
-        dialog = FoodInstantDialog(self, slots=self._multi_slot_count())
+        dialog = FoodInstantDialog(self, slot_choices=self._instant_slot_choices())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         carbs_g, duration_min = dialog.values()
@@ -770,7 +782,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
                 self, "Insert Exercise Now", "Nothing running to insert into — start a run first."
             )
             return
-        dialog = ExerciseInstantDialog(self, slots=self._multi_slot_count())
+        dialog = ExerciseInstantDialog(self, slot_choices=self._instant_slot_choices())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         duration_min, intensity_pct = dialog.values()
@@ -789,7 +801,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
                 self, "Insert PISA Now", "Nothing running to insert into — start a run first."
             )
             return
-        dialog = PisaInstantDialog(self, slots=self._multi_slot_count())
+        dialog = PisaInstantDialog(self, slot_choices=self._instant_slot_choices())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.inject_fault("pisa", dialog.values(), slot=dialog.selected_slot())
