@@ -231,9 +231,9 @@ class BleSession(QThread):
             self._client = client
 
             notify_count = 0
-            subscribed_count = 0
             last_error = ""
             socp_characteristics = []
+            want_chars: list = []  # notify chars this session subscribes to
             instance_index = -1
             for service in client.services:
                 if service.uuid.lower() == CGM_SERVICE_UUID:
@@ -265,11 +265,7 @@ class BleSession(QThread):
                             )
                         )
                         if want:
-                            try:
-                                await client.start_notify(characteristic, self._handle_notification)
-                                subscribed_count += 1
-                            except Exception as exc:  # pylint: disable=broad-except
-                                last_error = str(exc)
+                            want_chars.append(characteristic)
                     if uuid == CGM_SOCP_UUID and "write" in characteristic.properties:
                         socp_characteristics.append((instance_index, characteristic))
                     config_key = CONFIG_CHAR_KEY_BY_UUID.get(uuid)
@@ -279,6 +275,29 @@ class BleSession(QThread):
                         # properties are present; queue_write()/request_read() are
                         # only ever called for the direction each key supports.
                         self._config_characteristics[config_key] = characteristic
+
+            # Subscribe with retries. With up to CONFIG_BT_MAX_CONN links open,
+            # the SoftDevice controller can starve the newest link of
+            # connection events during the central's tight discovery interval,
+            # so start_notify() on the 3rd/4th link times out or silently
+            # no-ops ("dropped mid-subscribe" — issue 07). The peripheral asks
+            # for a relaxed 30-50 ms interval on connect (firmware main.c); a
+            # couple of spaced retries give that update time to land and the
+            # radio time to free up.
+            subscribed: set = set()
+            for attempt in range(4):
+                pending = [c for c in want_chars if c not in subscribed]
+                if not pending:
+                    break
+                if attempt:
+                    await asyncio.sleep(0.9)
+                for ch in pending:
+                    try:
+                        await client.start_notify(ch, self._handle_notification)
+                        subscribed.add(ch)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        last_error = str(exc)
+            subscribed_count = len(subscribed)
 
             if subscribed_count == 0 and notify_count > 0 and pairing_error:
                 last_error = f"auto-pairing failed: {pairing_error}"

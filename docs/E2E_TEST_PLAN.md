@@ -403,12 +403,14 @@ all. Each fix now ships with a pin:
 | PISA "not working" (issue 02) | E2E **S7-07** (firmware stream, x1, ramp not blip) |
 | speed multiplier breaks the ODE (issue 03) | `tests/test_engine_step.py` — x1000 physiological for all 4 models; no-cap UVA/Padova → 0 |
 | user shows connected after disconnect (issue 06) | `tests/test_disconnect_row.py` (offscreen Qt) |
+| 4 concurrent identities starved off mid-subscribe (issue 07) | E2E **F16** (`e2e_4sensor.py`) — ≥3 of 4 connect + stream |
 | food graph misleads in CSV mode (issue 08) | `tests/test_fe_graph_title.py` (offscreen Qt) |
 | model param order vs firmware C struct (issue 05) | `tests/test_param_order.py` + `tests/param_order/*.golden` |
 | engine tick logic (issue 01) | `tests/test_engine_step.py` — raw-model equivalence |
 
-Issue 04 (one model per user / slot) and issue 07 (BLE timeslot) get their pins
-when those land.
+Issue 04's per-slot *expected-vs-received* case waits on a healthy 4-way BLE
+link; its per-slot *engine* side is pinned by `tests/test_engine_pool.py` +
+`tests/test_multi_slot_engines.py`.
 
 ### Standing gaps
 

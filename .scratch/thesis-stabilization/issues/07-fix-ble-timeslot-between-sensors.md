@@ -1,9 +1,33 @@
 # BLE timeslot contention between the sensor identities
 
-Status: ready
+Status: done (2026-09-08)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome
+
+- **Firmware side was already tuned** (verified by reading `prj.conf` / `main.c`):
+  `BT_CTLR_SDC_MAX_CONN_EVENT_LEN_DEFAULT=2500` so 4 connection events fit an
+  interval; `connected()` requests a relaxed 30-50 ms interval; `BT_MAX_CONN=4`,
+  4 adv sets / identities. The comment there already names the exact symptom
+  ("newest link starved of connection events, dropped mid-subscribe").
+- **App side was the gap.** `BleSession._session` now retries `start_notify`
+  up to 4x, ~0.9 s apart, so a link starved during the central's tight
+  discovery window gets its CCCD writes in once the conn-param update lands.
+- New E2E **F16** (`e2e_4sensor.py`): connect all 4 identities, assert >=3
+  connect **and** stream concurrently. Verified on hardware:
+  `connected=[1,2,3] streaming=[1,2,3]`. Before this, F2 SKIPped on the
+  multi-instance notify drop.
+
+## Residual (not this issue)
+
+Identity 0 = the factory address `D0:3F:4D:E2:7C:9B` has accumulated Windows
+pairing associations from earlier testing and connects unreliably. Documented
+in `e2e_4sensor.py` (which uses identity 1 as `CFG_SLOT`). Clearing it needs
+`Remove-BluetoothDevice` / a registry clean, out of scope here.
+
+---
 
 ## Problem
 

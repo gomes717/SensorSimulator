@@ -37,7 +37,18 @@
   x1000). **Pendente (sub-item, firmware):** uma escrita em Speed passa pelo
   `apply_config_locked` completo (reseta `sim_clock` e limpa eventos pontuais) —
   tornar a velocidade um escalar "a quente" é uma correção separada.
-- [ ] Arrumar o timeslot do BLE entre os "sensores" (multi-identidade).
+- [x] Arrumar o timeslot do BLE entre os "sensores" (multi-identidade). **Feito
+  (2026-09-08, issue 07):** o lado firmware já estava afinado (`prj.conf`:
+  `BT_CTLR_SDC_MAX_CONN_EVENT_LEN_DEFAULT=2500` para caber 4 eventos por
+  intervalo; `main.c` pede intervalo relaxado de 30-50 ms no `connected()`). O
+  que faltava era o lado app: `BleSession._session` agora reinscreve
+  (`start_notify`) com 4 tentativas espaçadas ~0.9 s, já que a nova ligação era
+  "starved" dos eventos de conexão durante o discovery apertado do central e a
+  inscrição da 3ª/4ª caía. Verificado: 3 de 4 identidades conectam **e**
+  transmitem em simultâneo (novo caso E2E **F16**); antes o F2 dava SKIP. A 4ª
+  (identidade de fábrica `D0:…`) tem uma flakiness de cache de pareamento do
+  Windows separada e já documentada — o harness usa a identidade 1 como cursor
+  de config por isso.
 - [ ] Quando a fonte for CSV, não mostrar o gráfico de comida. **Feito (2026-09-08,
   issue 08, commit 45a0892):** o gráfico é rotulado "Food log — report-only (CSV
   playback; does not drive glucose)" quando a fonte da pessoa ativa é CSV.

@@ -1105,9 +1105,53 @@ def f14_identity_shows_patient(ctx: FourCtx):
         ctx.drop_session(2)  # display test — don't hold the link for later cases
 
 
+def f16_four_way_streams(ctx: FourCtx):
+    """Issue 07: all four identities connected at once, each streaming.
+
+    Before the 2026-09 fix (BleSession subscribe-retry + the firmware's
+    relaxed conn interval + capped connection-event length) the newest links
+    were starved off mid-subscribe and F2 SKIPped. Now most links hold. Slot 0
+    (the factory D0: address) has a separate, documented Windows pairing-cache
+    flakiness, so the bar is >=3 of 4, not 4.
+    """
+    with Case(ctx, "F16-01", "four_way_concurrent_streams", "F16") as c:
+        ok_slots = []
+        for slot in range(4):
+            try:
+                ctx.slot_session(slot)  # blocks until connected -> connects are serialised
+                ok_slots.append(slot)
+            except _Skip as exc:
+                c.step(f"slot {slot} did not connect: {exc}")
+            QTest.qWait(1500)
+        c.measure("connected", ok_slots)
+        c.assert_(len(ok_slots) >= 3, "at least 3 of 4 identities connect", str(ok_slots))
+
+        base = len(ctx.w._ble_log.get_messages())
+        QTest.qWait(30000)
+        msgs = ctx.w._ble_log.get_messages()[base:]
+        streaming = [
+            s
+            for s in ok_slots
+            if sum(
+                1
+                for m in msgs
+                if m.get("glucose_value") is not None
+                and f"Sensor {s + 1}" in (m.get("user_id") or "")
+            )
+            >= 2
+        ]
+        c.measure("streaming", streaming)
+        c.assert_(
+            len(streaming) >= 3,
+            "at least 3 of 4 identities stream glucose concurrently",
+            f"streaming={streaming} of connected={ok_slots}",
+        )
+
+
 CASES = [
     f1_layout_models,
     f2_independent_streams,
+    f16_four_way_streams,
     f3_csv_slot,
     f4_fast_mode,
     f5_insert_food,

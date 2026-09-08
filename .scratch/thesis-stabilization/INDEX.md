@@ -12,7 +12,7 @@ See `spec.md` for framing and decisions.
 | 04 | One simulation model per user / slot (+ slot→name relabel) | **done** (1f06d1c + ec6c28e) |
 | 05 | Collapse the model param-order invariant to one source | **done** (27a200b) |
 | 06 | User still shows connected after disconnect | **done** (2438d17) |
-| 07 | BLE timeslot contention between sensor identities | ready |
+| 07 | BLE timeslot contention between sensor identities | **done** (see notes) |
 | 08 | Hide the food/exercise graph in CSV mode | **done** (45a0892) |
 | 09 | Dexcom protocol — honest baseline reframe | **done** (308ebeb) |
 | 10 | Stand up a pytest suite for the pure modules | **done** (e606880) |
