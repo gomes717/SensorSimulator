@@ -1,9 +1,22 @@
 # Dexcom protocol — honest baseline reframe
 
-Status: ready
+Status: done (2026-09-08, commit 308ebeb)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome
+
+The docs were already honest (PROTOCOL_SPEC has the byte table + "not a real
+Dexcom"; the .tex says "esboço mínimo"). Resolved the open `\guilherme{}`
+note: the subsection stays in the main body under a modest, verifiable claim
+(the firmware streams two distinct wire formats, the app decodes both,
+validated by E2E S16-01), and states plainly that a real Dexcom app will not
+read this stream. Both `docs/TODO.md` Dexcom items closed-as-baseline; real
+third-party interop (AES-G6 + real EGV layout) routed to issue 12. No code
+change.
+
+---
 
 ## Problem
 
