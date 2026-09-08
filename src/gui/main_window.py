@@ -37,6 +37,7 @@ from gui.avatar import avatar_icon
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_layout_window import BoardLayoutWindow
 from gui.board_link import BoardLink
+from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
 from gui.csv_analysis_window import CsvAnalysisWindow
 from gui.debug_window import DebugWindow
@@ -128,11 +129,29 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # Glucose range thresholds (mg/dL) for the graph bands + metrics panels;
         # edited in the Configuration window, persisted to data/settings.json.
         self._thresholds = app_settings.load()
-        # Built eagerly (hidden) so its Person/Sensor combos exist for the
-        # _refresh_*_combo() calls at the end of __init__ — the Configuration
-        # window hosts the widgets, MainWindow still owns the state.
-        self._configuration_window = ConfigurationWindow(self, self._on_thresholds_changed)
-        self._cfg = self._configuration_window
+        # The Configuration window hosts the selector / mode / threshold widgets;
+        # MainWindow owns the state. They talk only through this controller (a
+        # typed signal surface, issue 18) — neither reaches the other's privates.
+        # Built eagerly (hidden) so its combos exist for the notify_profiles_changed()
+        # at the end of __init__, once the graphs the first selection touches are up.
+        self._controller = ConfigController(
+            self._person_profiles,
+            self._sensor_profiles,
+            lambda: self._active_person,
+            lambda: self._active_sensor,
+            lambda: self._speed_mult,
+        )
+        c = self._controller
+        c.person_selected.connect(self._on_person_selected)
+        c.sensor_selected.connect(self._on_sensor_selected)
+        c.speed_change_requested.connect(self._on_speed_changed)
+        c.model_only_toggled.connect(self._on_model_only_toggled)
+        c.cgms_only_toggled.connect(self._on_cgms_only_toggled)
+        c.comm_profile_toggled.connect(self._on_comm_profile_toggled)
+        c.editor_requested.connect(self._open_editor)
+        c.thresholds_saved.connect(self._on_thresholds_changed)
+        c.data_source_edited.connect(self._on_profiles_changed)
+        self._configuration_window = ConfigurationWindow(c, self._ensure_bluetooth_window)
         # user_id -> stable small integer shown next to the avatar in the tree
         self._user_ids: dict[str, int] = {}
 
@@ -205,8 +224,9 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         self.setCentralWidget(splitter)
 
-        self._refresh_person_combo()
-        self._refresh_sensor_combo()
+        # Populate the Configuration window's combos now that the graphs exist
+        # (the first selection default restarts the engine, which draws to them).
+        self._controller.notify_profiles_changed()
 
     def _seed_default_profiles(self) -> None:
         """First run (no saved profiles yet): add one default person/sensor.
@@ -661,6 +681,32 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._apply_range_bands()
         self._redraw_graph()
 
+    def _open_editor(self, which: str) -> None:
+        """Route a ConfigController.editor_requested to the right config window."""
+        {
+            "person": self._open_person_config,
+            "food": self._open_food_config,
+            "exercise": self._open_exercise_config,
+            "sensor": self._open_sensor_config,
+            "board_layout": self._open_board_layout,
+        }[which]()
+
+    def _on_comm_profile_toggled(self, dexcom: bool) -> None:
+        """Write the chosen BLE comm profile to every connected board, then let each
+        board drop the link and re-advertise, and reconnect to it automatically.
+
+        Moved out of ConfigurationWindow with issue 18 — it needs the Bluetooth
+        window (sessions + reconnect), which is MainWindow's to hand out.
+        """
+        bt = self._ensure_bluetooth_window()
+        sessions = bt.sessions()
+        if not sessions:
+            return
+        payload = protocol.encode_comm_profile(dexcom)
+        for address, session in list(sessions.items()):
+            session.queue_write("comm_profile", payload)
+            bt.reconnect(address)
+
     def _open_person_config(self) -> None:
         """Open (or raise) the Person configuration window."""
         if self._person_config_window is None:
@@ -848,7 +894,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """
         if kind == "speed":
             mult = float(args.get("multiplier", 1))
-            self._cfg.speed_slider.setValue(self._cfg._speed_to_slider(mult))
+            self._on_speed_changed(mult)
             return f"speed → x{int(self._speed_mult)}"
 
         if kind == "run_state":
@@ -863,11 +909,10 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         if kind in ("person", "data_source"):
             name = args.get("person")
-            for i in range(self._cfg.person_combo.count()):
-                data = self._cfg.person_combo.itemData(i)
-                if data is not None and data.name == name:
-                    self._cfg.person_combo.setCurrentIndex(i)
-                    break
+            match = next((p for p in self._person_profiles if p.name == name), None)
+            if match is not None:
+                self._on_person_selected(match)
+                self._controller.notify_profiles_changed()
             self._broadcast_data_source()
             src = (
                 getattr(self._active_person, "data_source", "model") if self._active_person else "?"
@@ -876,7 +921,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         if kind == "comm_profile":
             dexcom = str(args.get("profile", "sig")).lower() == "dexcom"
-            self._cfg.comm_profile_combo.setCurrentIndex(1 if dexcom else 0)
+            self._controller.set_comm_profile_display(dexcom)
+            self._on_comm_profile_toggled(dexcom)
             return f"comm_profile → {'dexcom' if dexcom else 'sig'}"
 
         if kind == "insert_food":
@@ -914,25 +960,22 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """CSV Analysis assigned a 24 h window to *person* — make them the active
         person so the Configuration window's data-source group and the graph
         immediately reflect the new CSV source, then persist + refresh."""
-        combo = self._cfg.person_combo
-        for i in range(combo.count()):
-            data = combo.itemData(i)
-            if data is person or (data is not None and data.name == person.name):
-                combo.setCurrentIndex(i)  # fires _on_person_selected -> _load_data_source
-                break
+        match = next(
+            (p for p in self._person_profiles if p is person or p.name == person.name), None
+        )
+        if match is not None:
+            self._on_person_selected(match)
         self._on_profiles_changed()
 
     def _on_profiles_changed(self) -> None:
         """Persist profiles to disk and refresh everything that depends on them."""
         profile_store.save(self._person_profiles, self._sensor_profiles)
-        self._refresh_person_combo()
-        self._refresh_sensor_combo()
-        # _refresh_person_combo() re-selects the same person with signals
-        # blocked, so currentIndexChanged does NOT fire — the Configuration
-        # window's data-source group would otherwise stay stale after an
+        # Repopulates the Configuration window's combos, keeping the current
+        # selection (signals blocked, so no spurious engine restart) and
+        # re-syncs its data-source group — otherwise it stays stale after an
         # assignment made elsewhere (e.g. CSV Analysis → "Assign window to
-        # person…"). Sync it explicitly.
-        self._cfg.reload_data_source()
+        # person…").
+        self._controller.notify_profiles_changed()
         if self._board_layout_window is not None:
             self._board_layout_window.reload_profiles()
         # Keep the per-person editors' CSV locks in sync when the data source
@@ -944,61 +987,20 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
                 win.refresh()
         self._restart_engine()
 
-    def _refresh_person_combo(self) -> None:
-        """Repopulate the Person combo, keeping the current selection if it still exists.
+    def _on_person_selected(self, person: PersonProfile | None) -> None:
+        """Switch the active person and restart the parallel simulation for them.
 
-        If nothing has ever been explicitly selected (as opposed to the user
-        deliberately picking "(none)"), defaults to the first saved profile
-        so the graph shows data right away instead of sitting empty.
+        Fed by ConfigController.person_selected — the Configuration window's
+        Person combo, or a repopulate that had to move the selection.
         """
-        combo = self._cfg.person_combo
-        had_active = self._active_person is not None
-        current_name = self._active_person.name if self._active_person else None
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("(none)", None)
-        select_index = 0
-        for i, profile in enumerate(self._person_profiles):
-            combo.addItem(profile.name, profile)
-            if profile.name == current_name:
-                select_index = i + 1
-        if select_index == 0 and not had_active and self._person_profiles:
-            select_index = 1
-        combo.setCurrentIndex(select_index)
-        combo.blockSignals(False)
-        self._active_person = combo.currentData()
-
-    def _refresh_sensor_combo(self) -> None:
-        """Repopulate the Sensor combo, keeping the current selection if it still exists.
-
-        Defaults to the first saved profile on first load, same reasoning as
-        _refresh_person_combo.
-        """
-        combo = self._cfg.sensor_combo
-        had_active = self._active_sensor is not None
-        current_name = self._active_sensor.name if self._active_sensor else None
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("(none)", None)
-        select_index = 0
-        for i, profile in enumerate(self._sensor_profiles):
-            combo.addItem(profile.name, profile)
-            if profile.name == current_name:
-                select_index = i + 1
-        if select_index == 0 and not had_active and self._sensor_profiles:
-            select_index = 1
-        combo.setCurrentIndex(select_index)
-        combo.blockSignals(False)
-        self._active_sensor = combo.currentData()
-
-    def _on_person_selected(self, _index: int) -> None:
-        """Switch the active person and restart the parallel simulation for them."""
-        self._active_person = self._cfg.person_combo.currentData()
+        if person is self._active_person:
+            return
+        self._active_person = person
         self._restart_engine()
 
-    def _on_sensor_selected(self, _index: int) -> None:
+    def _on_sensor_selected(self, sensor: SensorProfile | None) -> None:
         """Switch the active sensor (used only when explicitly sent to a board)."""
-        self._active_sensor = self._cfg.sensor_combo.currentData()
+        self._active_sensor = sensor
 
     # ------------------------------------------------------------------
     # Mode toggles
@@ -1017,6 +1019,9 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._restart_engine()
         self._board.broadcast("speed", protocol.encode_speed(self._speed_mult))
         self._board.restart_all()
+        # Keep the Configuration window's slider/spin in step when the change
+        # came from elsewhere (a scenario step); a no-op when it came from them.
+        self._controller.set_speed_display(self._speed_mult)
 
     def _on_model_only_toggled(self, checked: bool) -> None:
         """Switch between BLE-driven graphs and pure-model-only graphs."""
@@ -1035,15 +1040,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         mode/food/exercise/instant-event write (see PROTOCOL_SPEC.md), and
         the app runs no local model — so all of the "extra features" that
         would touch either are simply unavailable until it's turned off
-        again.
+        again. The Configuration window locks its own controls off this
+        signal; here we only lock the ones MainWindow owns.
         """
+        self._controller.set_controls_locked(locked)
         for widget in (
-            self._cfg.person_configure_btn,
-            self._cfg.food_btn,
-            self._cfg.exercise_btn,
-            self._cfg.sensor_configure_btn,
-            self._cfg.speed_slider,
-            self._cfg.model_only_check,
             self._start_pause_btn,
             self._stop_btn,
             self._insert_food_btn,
@@ -1069,13 +1070,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """
         self._cgms_only = checked
         if checked:
-            if self._cfg.model_only_check.isChecked():
+            if self._model_only:
                 # Mutually exclusive with CGMS Only — flip it off without
                 # letting _on_model_only_toggled transiently spin up an
-                # engine we're about to stop anyway.
-                self._cfg.model_only_check.blockSignals(True)
-                self._cfg.model_only_check.setChecked(False)
-                self._cfg.model_only_check.blockSignals(False)
+                # engine we're about to stop anyway (the window re-syncs its
+                # checkbox under its own _syncing guard, so no echo).
+                self._controller.set_model_only_display(False)
                 self._model_only = False
                 self.tree.setEnabled(True)
             self._stop_engine()

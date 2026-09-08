@@ -2,10 +2,11 @@
 mode toggles that used to sit in the main window's bottom bar, plus the glucose
 range thresholds editor and a per-person data-source (model vs CSV region) choice.
 
-State still lives on :class:`MainWindow`; this window only hosts the widgets and
-forwards every change back to the main window's existing handlers, so the
-simulation / BLE behavior is unchanged. The main window keeps Start/Pause/Stop
-and the Insert Food/Exercise Now buttons.
+Simulation / BLE state lives on :class:`MainWindow`; this window only hosts the
+widgets. It talks to the app through a :class:`ConfigController` (a typed signal
+surface, issue 18) and one injected ``bluetooth_provider`` callable for the CSV
+upload path — it no longer takes ``MainWindow`` or reaches its private members.
+The main window keeps Start/Pause/Stop and the Insert Food/Exercise Now buttons.
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ from PyQt6.QtWidgets import (
 )
 
 from api import protocol
+from gui.config_controller import ConfigController
+from gui.device_target import restart_board
 from models import app_settings, food_log_csv
 from models.engine import load_csv_window
 from models.types import PersonProfile
@@ -48,20 +51,41 @@ _THRESHOLD_ROWS = (
 class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Selectors, mode toggles, range thresholds and the per-person data source."""
 
-    def __init__(self, main, on_thresholds_changed: Callable[[], None], parent=None) -> None:
+    def __init__(
+        self,
+        controller: ConfigController,
+        bluetooth_provider: Callable[[], object],
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Configuration")
         self.resize(460, 520)
-        self._main = main
-        self._on_thresholds_changed = on_thresholds_changed
+        self._c = controller
+        self._bluetooth_provider = bluetooth_provider
+        # Set while the window is repopulating a combo / re-syncing a widget from
+        # a controller signal, so the widget's own change handler does not echo
+        # the change straight back to the app.
+        self._syncing = False
 
         layout = QVBoxLayout(self)
-
         layout.addWidget(self._build_selectors_group())
         layout.addWidget(self._build_modes_group())
         layout.addWidget(self._build_thresholds_group())
         layout.addWidget(self._build_data_source_group())
         layout.addStretch(1)
+
+        # The combos are left empty here on purpose: MainWindow builds this
+        # window before its graphs exist, then fires profiles_changed once the
+        # rest of __init__ is done (the first repopulate can emit person_selected,
+        # which restarts the engine and touches the graphs).
+
+        # app -> widget: re-sync widgets after a state change made outside this window.
+        controller.profiles_changed.connect(self._repopulate_combos)
+        controller.speed_display_changed.connect(self._show_speed)
+        controller.comm_profile_display_changed.connect(self._show_comm_profile)
+        controller.model_only_display_changed.connect(self._show_model_only)
+        controller.controls_locked.connect(self._set_controls_locked)
+        controller.data_source_display_changed.connect(self._load_data_source)
 
     # ------------------------------------------------------------------
     # Selectors + config buttons
@@ -75,20 +99,19 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         person_row.addWidget(QLabel("Person:"))
         self.person_combo = QComboBox()
         self.person_combo.setMinimumWidth(160)
-        self.person_combo.currentIndexChanged.connect(self._main._on_person_selected)
-        self.person_combo.currentIndexChanged.connect(self._load_data_source)
+        self.person_combo.currentIndexChanged.connect(self._on_person_combo_changed)
         person_row.addWidget(self.person_combo, 1)
         outer.addLayout(person_row)
 
         person_btns = QHBoxLayout()
         self.person_configure_btn = QPushButton("Configure…")
-        self.person_configure_btn.clicked.connect(self._main._open_person_config)
+        self.person_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("person"))
         person_btns.addWidget(self.person_configure_btn)
         self.food_btn = QPushButton("Food…")
-        self.food_btn.clicked.connect(self._main._open_food_config)
+        self.food_btn.clicked.connect(lambda: self._c.editor_requested.emit("food"))
         person_btns.addWidget(self.food_btn)
         self.exercise_btn = QPushButton("Exercise…")
-        self.exercise_btn.clicked.connect(self._main._open_exercise_config)
+        self.exercise_btn.clicked.connect(lambda: self._c.editor_requested.emit("exercise"))
         person_btns.addWidget(self.exercise_btn)
         outer.addLayout(person_btns)
 
@@ -96,16 +119,16 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         sensor_row.addWidget(QLabel("Sensor:"))
         self.sensor_combo = QComboBox()
         self.sensor_combo.setMinimumWidth(160)
-        self.sensor_combo.currentIndexChanged.connect(self._main._on_sensor_selected)
+        self.sensor_combo.currentIndexChanged.connect(self._on_sensor_combo_changed)
         sensor_row.addWidget(self.sensor_combo, 1)
         self.sensor_configure_btn = QPushButton("Configure…")
-        self.sensor_configure_btn.clicked.connect(self._main._open_sensor_config)
+        self.sensor_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("sensor"))
         sensor_row.addWidget(self.sensor_configure_btn)
         outer.addLayout(sensor_row)
 
         layout_row = QHBoxLayout()
         self.board_layout_btn = QPushButton("Board layout (4 sensors)…")
-        self.board_layout_btn.clicked.connect(self._main._open_board_layout)
+        self.board_layout_btn.clicked.connect(lambda: self._c.editor_requested.emit("board_layout"))
         layout_row.addWidget(self.board_layout_btn)
         layout_hint = QLabel("Assign a person + sensor to each independent slot")
         layout_hint.setEnabled(False)
@@ -113,6 +136,54 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         outer.addLayout(layout_row)
 
         return group
+
+    def _on_person_combo_changed(self, _index: int) -> None:
+        if self._syncing:
+            return
+        self._c.person_selected.emit(self.person_combo.currentData())
+        self._load_data_source()
+
+    def _on_sensor_combo_changed(self, _index: int) -> None:
+        if self._syncing:
+            return
+        self._c.sensor_selected.emit(self.sensor_combo.currentData())
+
+    # ------------------------------------------------------------------
+    # Combo population (moved here from MainWindow with issue 18 — the widgets
+    # live here, so the "keep the selection / default to the first profile"
+    # logic does too).
+    # ------------------------------------------------------------------
+
+    def _repopulate_combos(self) -> None:
+        self._repopulate_one(self.person_combo, self._c.person_profiles, self._c.active_person)
+        self._repopulate_one(self.sensor_combo, self._c.sensor_profiles, self._c.active_sensor)
+        self._load_data_source()
+
+    def _repopulate_one(self, combo: QComboBox, profiles: list, active) -> None:
+        """Rebuild *combo* from *profiles*, keeping the current selection if it
+        still exists; on first load (nothing ever selected) default to the first
+        profile so the graph shows data right away instead of sitting empty."""
+        current_name = active.name if active is not None else None
+        self._syncing = True
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(none)", None)
+        select_index = 0
+        for i, profile in enumerate(profiles):
+            combo.addItem(profile.name, profile)
+            if profile.name == current_name:
+                select_index = i + 1
+        if select_index == 0 and active is None and profiles:
+            select_index = 1
+        combo.setCurrentIndex(select_index)
+        combo.blockSignals(False)
+        self._syncing = False
+        # If the selection actually moved (profile deleted, or first-load
+        # default), tell the app once — signals were blocked above.
+        chosen = combo.currentData()
+        if chosen is not active:
+            sig = self._c.person_selected if combo is self.person_combo else self._c.sensor_selected
+            sig.emit(chosen)
 
     # ------------------------------------------------------------------
     # Mode toggles
@@ -126,7 +197,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         speed_row.addWidget(QLabel("Speed:"))
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(0, 1000)
-        self.speed_slider.setValue(self._speed_to_slider(self._main._speed_mult))
+        self.speed_slider.setValue(self._speed_to_slider(self._c.speed_mult))
         self.speed_slider.valueChanged.connect(self._on_speed_slider)
         speed_row.addWidget(self.speed_slider, 1)
         # Type an exact multiplier here — the log-scaled slider alone makes
@@ -136,7 +207,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         self.speed_spin.setRange(1, 1000)
         self.speed_spin.setPrefix("x")
         self.speed_spin.setKeyboardTracking(False)
-        self.speed_spin.setValue(int(self._main._speed_mult))
+        self.speed_spin.setValue(int(self._c.speed_mult))
         self.speed_spin.setMinimumWidth(72)
         self.speed_spin.valueChanged.connect(self._on_speed_spin)
         speed_row.addWidget(self.speed_spin)
@@ -161,10 +232,10 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         box.addWidget(comm_hint)
 
         self.model_only_check = QCheckBox("Model Only (no device)")
-        self.model_only_check.toggled.connect(self._main._on_model_only_toggled)
+        self.model_only_check.toggled.connect(self._on_model_only_toggled)
         box.addWidget(self.model_only_check)
         self.cgms_only_check = QCheckBox("CGMS Only (standard CGM stream only)")
-        self.cgms_only_check.toggled.connect(self._main._on_cgms_only_toggled)
+        self.cgms_only_check.toggled.connect(self._on_cgms_only_toggled)
         box.addWidget(self.cgms_only_check)
         return group
 
@@ -184,26 +255,59 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         self.speed_spin.blockSignals(True)
         self.speed_spin.setValue(mult)
         self.speed_spin.blockSignals(False)
-        self._main._on_speed_changed(float(mult))
+        if not self._syncing:
+            self._c.speed_change_requested.emit(float(mult))
 
     def _on_speed_spin(self, mult: int) -> None:
         self.speed_slider.blockSignals(True)
         self.speed_slider.setValue(self._speed_to_slider(mult))
         self.speed_slider.blockSignals(False)
-        self._main._on_speed_changed(float(mult))
+        if not self._syncing:
+            self._c.speed_change_requested.emit(float(mult))
+
+    def _show_speed(self, mult: float) -> None:
+        """Move the slider + spin to *mult* without emitting a change back."""
+        self._syncing = True
+        self.speed_slider.setValue(self._speed_to_slider(mult))
+        self.speed_spin.setValue(int(max(1.0, min(1000.0, mult))))
+        self._syncing = False
 
     def _on_comm_profile_changed(self, _index: int) -> None:
-        """Write the chosen BLE comm profile to every connected board, then let the
-        board drop the link and re-advertise, and reconnect to it automatically."""
-        dexcom = bool(self.comm_profile_combo.currentData())
-        bt = self._main._ensure_bluetooth_window()
-        sessions = bt.sessions()
-        if not sessions:
+        if self._syncing:
             return
-        payload = protocol.encode_comm_profile(dexcom)
-        for address, session in list(sessions.items()):
-            session.queue_write("comm_profile", payload)
-            bt.reconnect(address)
+        self._c.comm_profile_toggled.emit(bool(self.comm_profile_combo.currentData()))
+
+    def _show_comm_profile(self, dexcom: bool) -> None:
+        self._syncing = True
+        self.comm_profile_combo.setCurrentIndex(1 if dexcom else 0)
+        self._syncing = False
+
+    def _on_model_only_toggled(self, checked: bool) -> None:
+        if not self._syncing:
+            self._c.model_only_toggled.emit(checked)
+
+    def _show_model_only(self, on: bool) -> None:
+        self._syncing = True
+        self.model_only_check.setChecked(on)
+        self._syncing = False
+
+    def _on_cgms_only_toggled(self, checked: bool) -> None:
+        if not self._syncing:
+            self._c.cgms_only_toggled.emit(checked)
+
+    def _set_controls_locked(self, locked: bool) -> None:
+        """CGMS-only mode: disable every control here that would send a
+        now-rejected config write (see PROTOCOL_SPEC.md)."""
+        for widget in (
+            self.person_configure_btn,
+            self.food_btn,
+            self.exercise_btn,
+            self.sensor_configure_btn,
+            self.speed_slider,
+            self.speed_spin,
+            self.model_only_check,
+        ):
+            widget.setEnabled(not locked)
 
     # ------------------------------------------------------------------
     # Glucose range thresholds
@@ -228,10 +332,10 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
 
     def _save_thresholds(self) -> None:
         app_settings.save({key: spin.value() for key, spin in self._threshold_spins.items()})
-        self._on_thresholds_changed()
+        self._c.thresholds_saved.emit()
 
     # ------------------------------------------------------------------
-    # Per-person data source (model vs CSV region) — stored only, no playback yet
+    # Per-person data source (model vs CSV region)
     # ------------------------------------------------------------------
 
     def _build_data_source_group(self) -> QGroupBox:
@@ -261,19 +365,13 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         self._send_csv_status.setWordWrap(True)
         send_row.addWidget(self._send_csv_status, 1)
         box.addLayout(send_row)
-
-        self._load_data_source()
         return group
 
     def _current_person(self) -> PersonProfile | None:
         return self.person_combo.currentData()
 
     def reload_data_source(self) -> None:
-        """Re-sync the data-source group from the selected person's profile.
-
-        Public entry point for MainWindow to call after a profile change made
-        outside this window (the person combo keeps its selection, so
-        currentIndexChanged does not fire on its own)."""
+        """Back-compat alias kept for callers outside this window."""
         self._load_data_source()
 
     def _load_data_source(self) -> None:
@@ -305,10 +403,10 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
 
     def _save_data_source(self) -> None:
         person = self._current_person()
-        if person is None:
+        if person is None or self._syncing:
             return
         person.data_source = "csv" if self._src_csv_radio.isChecked() else "model"
-        self._main._on_profiles_changed()
+        self._c.data_source_edited.emit()
         self._load_data_source()
 
     def _send_csv_to_board(self) -> None:
@@ -328,7 +426,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             )
             return
 
-        bt_window = self._main._ensure_bluetooth_window()
+        bt_window = self._bluetooth_provider()
         sessions = bt_window.sessions()
         if not sessions:
             QMessageBox.warning(self, "Send CSV", "No connected board.")
@@ -373,8 +471,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             session = getattr(self, "_csv_upload_session", None)
             if session is not None:
                 session.queue_write("data_source", protocol.encode_data_source(True))
-                from gui.device_target import restart_board
-
                 restart_board(session)
             self._send_csv_status.setText(f"✓ {message} — board set to CSV playback")
         else:
