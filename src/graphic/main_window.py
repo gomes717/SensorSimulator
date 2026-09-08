@@ -312,9 +312,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # "Received" = faint continuous base + one colored overlay per range
         # category (red out of range, yellow borderline, green in target); see
         # _recolor_main_trace(). "Expected" stays a single dashed line.
-        (line,) = ax.plot([], [], lw=0.8, color=fg, alpha=0.35, label="Received")
+        (line,) = ax.plot([], [], lw=0.8, color=fg, alpha=0.35)  # faint base for the colored segs
+        _seg_labels = {"g": "In range", "y": "Borderline", "r": "Low / High"}
         self._seg_lines = {
-            cat: ax.plot([], [], lw=1.7, color=color, solid_capstyle="round")[0]
+            cat: ax.plot(
+                [], [], lw=1.7, color=color, solid_capstyle="round", label=_seg_labels[cat]
+            )[0]
             for cat, color in self._LINE_COLORS.items()
         }
         (expected_line,) = ax.plot(
@@ -358,7 +361,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         t = self._thresholds
         edges = [0.0, t["tbr2_below"], t["tbr1_below"], t["tar1_above"], t["tar2_above"], 600.0]
         self._range_bands = [
-            ax.axhspan(lo, hi, color=color, alpha=0.16, zorder=0)
+            ax.axhspan(lo, hi, color=color, alpha=0.09, zorder=0)
             for lo, hi, color in zip(edges, edges[1:], self._BAND_COLORS)
         ]
 
@@ -632,9 +635,19 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._right_splitter.setSizes(sizes)
 
         if self._model_only and self._active_person is not None:
-            self._ax.set_title(f"Model — {self._active_person.name}", color=self._graph_fg)
+            self._ax.set_title(
+                f"Model — {self._active_person.name}",
+                color=self._graph_fg,
+                fontweight="bold",
+                fontsize=11,
+            )
         elif not self._model_only and self._selected_user:
-            self._ax.set_title(f"Glucose — {self._selected_user}", color=self._graph_fg)
+            self._ax.set_title(
+                f"Glucose — {self._selected_user}",
+                color=self._graph_fg,
+                fontweight="bold",
+                fontsize=11,
+            )
         self._redraw_graph()
         self._redraw_food_ex_graph()
 
@@ -1216,12 +1229,22 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         if not slots:
             if self._model_only:
-                self._ax.set_title("Model Only — select a person", color=self._graph_fg)
+                self._ax.set_title(
+                    "Model Only — select a person",
+                    color=self._graph_fg,
+                    fontweight="bold",
+                    fontsize=11,
+                )
                 self._canvas.draw_idle()
             return
 
         if self._model_only and self._active_person is not None:
-            self._ax.set_title(f"Model — {self._active_person.name}", color=self._graph_fg)
+            self._ax.set_title(
+                f"Model — {self._active_person.name}",
+                color=self._graph_fg,
+                fontweight="bold",
+                fontsize=11,
+            )
             self._canvas.draw_idle()
 
         # A freshly rebuilt pool sits idle unless a run is already in progress,
@@ -1451,7 +1474,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._redraw_graph()
         self._redraw_food_ex_graph()
         if not self._model_only:
-            self._ax.set_title(f"Glucose — {self._selected_user}", color=self._graph_fg)
+            self._ax.set_title(
+                f"Glucose — {self._selected_user}",
+                color=self._graph_fg,
+                fontweight="bold",
+                fontsize=11,
+            )
             self._canvas.draw_idle()
 
     # ------------------------------------------------------------------
@@ -1491,7 +1519,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             except (ValueError, AttributeError):
                 pass
         self._pisa_patches = [
-            self._ax.axvspan(a, b, color="#8e44ad", alpha=0.15, zorder=0)
+            self._ax.axvspan(a, b, color="#8e44ad", alpha=0.10, zorder=0)
             for a, b in self._pisa_spans
         ]
 

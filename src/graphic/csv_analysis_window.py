@@ -167,7 +167,7 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         t = app_settings.load()
         edges = [0.0, t["tbr2_below"], t["tbr1_below"], t["tar1_above"], t["tar2_above"], 600.0]
         self._range_bands = [
-            ax.axhspan(lo, hi, color=color, alpha=0.16, zorder=0)
+            ax.axhspan(lo, hi, color=color, alpha=0.09, zorder=0)
             for lo, hi, color in zip(edges, edges[1:], self._BAND_COLORS)
         ]
 
@@ -298,7 +298,7 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
 
         if self._span is not None:
             self._span.remove()
-        self._span = self._ax.axvspan(lo, hi, color=self._accent, alpha=0.15)
+        self._span = self._ax.axvspan(lo, hi, color=self._accent, alpha=0.10)
         self._canvas.draw_idle()
 
         t0 = self._times[0]
