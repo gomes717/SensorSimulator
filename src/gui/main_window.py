@@ -34,6 +34,7 @@ from gui.glucose_graph import GlucoseGraph
 from gui.instant_events import InstantEvents
 from gui.person_config_window import PersonConfigWindow
 from gui.range_stats import RangeStatsPanel
+from gui.scenario_dispatch import ScenarioDispatch
 from gui.scenario_window import ScenarioWindow
 from gui.sensor_config_window import SensorConfigWindow
 from gui.user_tree import UserTree
@@ -148,6 +149,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._events = InstantEvents(
             self._engines, self._board, self._graph, self._board_layout, lambda: self._speed_mult
         )
+        # Scenario-step vocabulary (models.scenario.ScenarioRunner owns the timing).
+        self._scenario = ScenarioDispatch(self, self._events)
 
         self._bottom = self._build_bottom_bar()
 
@@ -540,70 +543,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # ------------------------------------------------------------------
 
     def _scenario_dispatch(self, kind: str, args: dict) -> str:
-        """Execute one scenario action on the GUI thread; return a log line.
-
-        Supported kinds: speed, run_state, person, data_source, comm_profile,
-        insert_food, insert_exercise, inject_fault.
-        """
-        if kind == "speed":
-            mult = float(args.get("multiplier", 1))
-            self._on_speed_changed(mult)
-            return f"speed → x{int(self._speed_mult)}"
-
-        if kind == "run_state":
-            state = str(args.get("state", "")).lower()
-            if state == "start" and self._run_state == "stopped":
-                self._start_run()
-            elif state == "stop":
-                self._on_stop_clicked()
-            elif state in ("pause", "resume"):
-                self._on_start_pause_clicked()
-            return f"run_state → {state}"
-
-        if kind in ("person", "data_source"):
-            name = args.get("person")
-            match = next((p for p in self._person_profiles if p.name == name), None)
-            if match is not None:
-                self._on_person_selected(match)
-                self._controller.notify_profiles_changed()
-            self._broadcast_data_source()
-            src = (
-                getattr(self._active_person, "data_source", "model") if self._active_person else "?"
-            )
-            return f"person → {name} ({src})"
-
-        if kind == "comm_profile":
-            dexcom = str(args.get("profile", "sig")).lower() == "dexcom"
-            self._controller.set_comm_profile_display(dexcom)
-            self._on_comm_profile_toggled(dexcom)
-            return f"comm_profile → {'dexcom' if dexcom else 'sig'}"
-
-        if kind == "insert_food":
-            carbs_g = float(args.get("carbs_g", 50))
-            duration_min = int(args.get("duration_min", 15))
-            slot = args.get("slot")
-            self._events.inject_food(slot, duration_min, carbs_g)
-            return f"insert_food {carbs_g:g} g / {duration_min} min" + (
-                f" @slot {slot}" if slot is not None else ""
-            )
-
-        if kind == "insert_exercise":
-            duration_min = int(args.get("duration_min", 30))
-            intensity_pct = float(args.get("intensity_pct", 50))
-            slot = args.get("slot")
-            self._events.inject_exercise(slot, duration_min, intensity_pct)
-            return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (
-                f" @slot {slot}" if slot is not None else ""
-            )
-
-        if kind == "inject_fault":
-            fault = str(args.get("fault", "pisa"))
-            duration_min = int(args.get("duration_min", 10))
-            depth_frac = float(args.get("depth_frac", 0.4))
-            self.inject_fault(fault, (duration_min, depth_frac), slot=args.get("slot"))
-            return f"inject_fault {fault} {int(depth_frac * 100)} % / {duration_min} min"
-
-        return f"(unknown action {kind!r})"
+        """Kept for scripts/e2e.py; the vocabulary lives in ScenarioDispatch (issue 18)."""
+        return self._scenario.dispatch(kind, args)
 
     # ------------------------------------------------------------------
     # Person/sensor selection and profile persistence

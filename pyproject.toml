@@ -51,9 +51,9 @@ max-statements = 60
 # Residual style debt in the MainWindow god object + its satellite windows —
 # see .scratch/thesis-stabilization/issues/18-arch-debt-mainwindow-god-object.md.
 # Clear these as those windows get deepened; do not add rules here for new code.
-# C901 / PLR0915: the Qt window __init__/_build_* methods and _scenario_dispatch
-# predate the size ceilings; carried until those windows are deepened (issue 18).
-"src/gui/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501", "C901", "PLR0915"]
+# PLR0915: two Qt __init__ builders (MainWindow, PersonConfigWindow) are ~65
+# statements of widget wiring — over the 60 ceiling, no C901 hits left in gui.
+"src/gui/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501", "PLR0915"]
 # ble_session's asyncio _session loop + decode_notification predate the size
 # ceilings and are tracked with the rest of the BLE-layer debt (issue 18).
 "src/services/ble_session.py" = ["C901", "PLR0915"]
