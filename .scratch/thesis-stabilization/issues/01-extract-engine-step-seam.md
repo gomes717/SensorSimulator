@@ -1,9 +1,28 @@
 # Extract the engine per-tick logic into a pure step
 
-Status: ready
+Status: done (2026-09-08, commit 64dd374)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome
+
+- `ModelStepper` — pure, no QThread/sleep/wall-clock. `tick(dt_min, now_iso)`
+  runs one loop-body iteration, advances `sim_clock_min`. Per-run state in
+  `_CsvReplay` / `_ModelRun` holders. `add_instant_*` + `_pisa_factor` moved here.
+- `SimulationEngine` reduced to a timing driver (`run()` = pace + `dt_min` +
+  timestamp + `tick()` + `emit`). Public API unchanged; `main_window.py` untouched.
+- `tests/test_engine_step.py` — 16 cases: raw-model equivalence (Cambridge +
+  RoyParker, both adapter paths), exact PISA envelope, sim-clock, determinism,
+  instant + scheduled food/exercise.
+- Behaviour change: `[engine]` print drops `x{speed}` (kept `t_sim=...min` for
+  `e2e.py`).
+- Hardware: `scripts/ui_smoke.py` 6/6 PASS.
+
+Unblocks 02 (PISA), 03 (speed/ODE), 04 (per-user model).
+
+---
+
 
 ## Problem
 
