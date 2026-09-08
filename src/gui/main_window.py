@@ -436,62 +436,50 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._bluetooth_window = BluetoothWindow(self._ble_log)
         return self._bluetooth_window
 
+    @staticmethod
+    def _raise(win) -> None:
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    def _lazy_window(self, attr: str, factory):
+        """Return self.<attr>, building it with *factory* on first access."""
+        win = getattr(self, attr)
+        if win is None:
+            win = factory()
+            setattr(self, attr, win)
+        return win
+
     def _open_debug(self) -> None:
-        """Open (or raise) the debug messages window."""
-        if self._debug_window is None:
-            self._debug_window = DebugWindow(self._ble_log)
-        self._debug_window.show()
-        self._debug_window.raise_()
-        self._debug_window.activateWindow()
+        self._raise(self._lazy_window("_debug_window", lambda: DebugWindow(self._ble_log)))
 
     def _open_bluetooth(self) -> None:
-        """Open (or raise) the Bluetooth devices window, starting a scan if new."""
-        window = self._ensure_bluetooth_window()
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        self._raise(self._ensure_bluetooth_window())
 
     def _open_configuration(self) -> None:
-        """Open (or raise) the Configuration window (selectors, modes, thresholds)."""
-        self._configuration_window.show()
-        self._configuration_window.raise_()
-        self._configuration_window.activateWindow()
+        self._raise(self._configuration_window)
 
     def _open_csv_analysis(self) -> None:
-        """Open (or raise) the CSV Analysis window."""
-        if self._csv_analysis_window is None:
-            self._csv_analysis_window = CsvAnalysisWindow(
-                self._person_profiles, self._on_csv_window_assigned
+        self._raise(
+            self._lazy_window(
+                "_csv_analysis_window",
+                lambda: CsvAnalysisWindow(self._person_profiles, self._on_csv_window_assigned),
             )
-        self._csv_analysis_window.show()
-        self._csv_analysis_window.raise_()
-        self._csv_analysis_window.activateWindow()
+        )
 
     def _open_faults(self) -> None:
-        """Open (or raise) the Fault-injection panel."""
-        if self._fault_panel is None:
-            self._fault_panel = FaultPanel(self)
-        self._fault_panel.show()
-        self._fault_panel.raise_()
-        self._fault_panel.activateWindow()
+        self._raise(self._lazy_window("_fault_panel", lambda: FaultPanel(self)))
 
     def _open_scenario(self) -> None:
-        """Open (or raise) the Scenario window."""
-        if self._scenario_window is None:
-            self._scenario_window = ScenarioWindow(self)
-        self._scenario_window.show()
-        self._scenario_window.raise_()
-        self._scenario_window.activateWindow()
+        self._raise(self._lazy_window("_scenario_window", lambda: ScenarioWindow(self)))
 
     def _open_view_config(self) -> None:
-        """Open (or raise) the View window (theme / appearance)."""
-        if self._view_config_window is None:
-            self._view_config_window = ViewConfigWindow(
-                self._on_theme_changed, self._on_view_window_changed
+        self._raise(
+            self._lazy_window(
+                "_view_config_window",
+                lambda: ViewConfigWindow(self._on_theme_changed, self._on_view_window_changed),
             )
-        self._view_config_window.show()
-        self._view_config_window.raise_()
-        self._view_config_window.activateWindow()
+        )
 
     def _on_theme_changed(self) -> None:
         """After a palette switch: rebuild the graph canvases so they repaint in
@@ -541,64 +529,65 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             bt.reconnect(address)
 
     def _open_person_config(self) -> None:
-        """Open (or raise) the Person configuration window."""
-        if self._person_config_window is None:
-            self._person_config_window = PersonConfigWindow(
-                self._person_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+        self._raise(
+            self._lazy_window(
+                "_person_config_window",
+                lambda: PersonConfigWindow(
+                    self._person_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+                ),
             )
-        self._person_config_window.show()
-        self._person_config_window.raise_()
-        self._person_config_window.activateWindow()
+        )
 
     def _open_sensor_config(self) -> None:
-        """Open (or raise) the Sensor configuration window."""
-        if self._sensor_config_window is None:
-            self._sensor_config_window = SensorConfigWindow(
-                self._sensor_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+        self._raise(
+            self._lazy_window(
+                "_sensor_config_window",
+                lambda: SensorConfigWindow(
+                    self._sensor_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+                ),
             )
-        self._sensor_config_window.show()
-        self._sensor_config_window.raise_()
-        self._sensor_config_window.activateWindow()
+        )
 
     def _open_food_config(self) -> None:
-        """Open (or raise) the Food configuration window for the active person."""
-        if self._food_config_window is None:
-            self._food_config_window = FoodConfigWindow(
-                lambda: self._active_person,
-                self._on_profiles_changed,
-                self._ensure_bluetooth_window,
+        self._raise(
+            self._lazy_window(
+                "_food_config_window",
+                lambda: FoodConfigWindow(
+                    lambda: self._active_person,
+                    self._on_profiles_changed,
+                    self._ensure_bluetooth_window,
+                ),
             )
-        self._food_config_window.show()
-        self._food_config_window.raise_()
-        self._food_config_window.activateWindow()
+        )
 
     def _open_exercise_config(self) -> None:
-        """Open (or raise) the Exercise configuration window for the active person."""
-        if self._exercise_config_window is None:
-            self._exercise_config_window = ExerciseConfigWindow(
-                lambda: self._active_person,
-                self._on_profiles_changed,
-                self._ensure_bluetooth_window,
+        self._raise(
+            self._lazy_window(
+                "_exercise_config_window",
+                lambda: ExerciseConfigWindow(
+                    lambda: self._active_person,
+                    self._on_profiles_changed,
+                    self._ensure_bluetooth_window,
+                ),
             )
-        self._exercise_config_window.show()
-        self._exercise_config_window.raise_()
-        self._exercise_config_window.activateWindow()
+        )
 
     def _open_board_layout(self) -> None:
-        """Open (or raise) the Board Layout window (per-slot person/sensor assignment)."""
-        if self._board_layout_window is None:
-            self._board_layout_window = BoardLayoutWindow(
+        """Open (or raise) the Board Layout window; refresh its profiles if it already exists."""
+        existed = self._board_layout_window is not None
+        win = self._lazy_window(
+            "_board_layout_window",
+            lambda: BoardLayoutWindow(
                 self._person_profiles,
                 self._sensor_profiles,
                 self._board_layout,
                 self._on_board_layout_changed,
                 self._ensure_bluetooth_window,
-            )
-        else:
-            self._board_layout_window.reload_profiles()
-        self._board_layout_window.show()
-        self._board_layout_window.raise_()
-        self._board_layout_window.activateWindow()
+            ),
+        )
+        if existed:
+            win.reload_profiles()
+        self._raise(win)
 
     def _on_board_layout_changed(self) -> None:
         """Persist the slot assignments after a Board Layout window edit, and
