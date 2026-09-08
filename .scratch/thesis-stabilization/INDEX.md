@@ -8,7 +8,7 @@ See `spec.md` for framing and decisions.
 |---|---|---|
 | 01 | Extract the engine per-tick logic into a pure step | **done** (64dd374) |
 | 02 | Fix PISA injection | **done** (c95e94a) — verified working; see notes |
-| 03 | Fix the speed multiplier breaking ODE integration | ready (01 done) |
+| 03 | Fix the speed multiplier breaking ODE integration | **done** (8873dfd) |
 | 04 | One simulation model per user / slot (+ slotâ†’name relabel) | ready (01 done) |
 | 05 | Collapse the model param-order invariant to one source | **done** (27a200b) |
 | 06 | User still shows connected after disconnect | **done** (2438d17) |

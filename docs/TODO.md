@@ -27,7 +27,7 @@
   `dev_id` limpa (reconexão). Verificado em hardware.
 - [ ] Arrumar legenda dos gráficos.
 - [x] Arrumar o multiplicador de tempo — em velocidades altas está quebrando a
-  integração da EDO. **Feito (2026-09-08, issue 03, commit __):** o firmware já
+  integração da EDO. **Feito (2026-09-08, issue 03, commit 8873dfd):** o firmware já
   fazia sub-step (`MODEL_SUBSTEP_MAX_MIN = 1.0` em `model_thread.c`); faltava
   espelhar no motor da aplicação. `ModelStepper._tick_model` agora roda o mesmo
   laço `nsub = ceil(dt_min / 1.0)` — os dois lados usam algoritmo e constante

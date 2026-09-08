@@ -1,9 +1,33 @@
 # Fix the speed multiplier breaking ODE integration at high speed
 
-Status: blocked (01)
+Status: done (2026-09-08, commit 8873dfd)
 Track: A
 Phase: 1
 Blocked by: 01
+
+## Outcome
+
+The firmware already sub-steps (`MODEL_SUBSTEP_MAX_MIN = 1.0` in
+`model_thread.c`). What was missing: the app's `ModelStepper` used the full
+`dt_min`, so at high speed the "expected" line diverged from "received"
+(UVA/Padova collapses to 0, Cambridge/Deichmann overshoot ~30-40 mg/dL).
+
+- `ModelStepper._tick_model` runs the identical loop: `nsub = ceil(dt_min /
+  MODEL_SUBSTEP_MAX_MIN)`, impulse carbs on sub-step 0 only, rate carbs +
+  exercise every sub-step. Same constant (1.0), pinned by a test.
+- `tests/test_engine_step.py` +6: x1000 physiological for all 4 models; x10-x300
+  track x1 to <5 mg/dL; no-cap UVA/Padova -> 0.
+- `docs/MODELS.md` documents it.
+- Hardware x300 + 80 g meal: board and app both peak ~405 mg/dL, same shape.
+
+## Deferred (firmware sub-item)
+
+A Speed write still goes through `apply_config_locked` (resets `sim_clock`,
+clears instant events). Making speed a live "hot" scalar needs a firmware
+change on both `config_service.c` and the app's `_on_speed_changed` (which
+calls `_restart_engine`). Not done — noted in `docs/TODO.md`.
+
+---
 
 ## Problem
 
