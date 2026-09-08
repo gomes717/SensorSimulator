@@ -50,7 +50,7 @@ from graphic.sensor_config_window import SensorConfigWindow
 from graphic.view_config_window import ViewConfigWindow
 from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
 from models import sensors as sensor_defaults
-from models.engine import SimulationEngine
+from models.engine import EnginePool
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
 
 
@@ -112,7 +112,13 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._pisa_patches: list = []
         self._model_only = False
         self._cgms_only = False
-        self._engine: SimulationEngine | None = None
+        # One SimulationEngine per occupied board slot (issue 04). A single
+        # slot 0 when there's no multi-sensor layout / in Model Only mode.
+        self._engines = EnginePool(self)
+        self._engines.expected_reading.connect(self._on_expected_reading)
+        # True while the pool is driving >1 slot: expected lines are then kept
+        # per user in self._history["ex_g*"], not in the single self._expected_*.
+        self._per_slot_expected = False
         self._run_state = "stopped"  # "stopped" | "running" | "paused"
 
         # Glucose range thresholds (mg/dL) for the graph bands + metrics panels;
@@ -695,6 +701,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         board_layout.save(self._board_layout)
         if self._bluetooth_window is not None:
             self._bluetooth_window.relabel()
+        # Slots -> profiles changed: rebuild the engine pool wholesale (issue 04).
+        self._restart_engine()
 
     def _multi_slot_count(self) -> int:
         """4 if a connected identity is one slot of a multi-sensor board (its
@@ -732,7 +740,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         applied on top of whatever's already running, no reset. See
         PROTOCOL_SPEC.md's "Instant food/exercise events" section.
         """
-        if self._engine is None and (
+        if self._engines.is_empty() and (
             self._bluetooth_window is None or not self._bluetooth_window.sessions()
         ):
             QMessageBox.information(
@@ -744,8 +752,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             return
         carbs_g, duration_min = dialog.values()
         slot = dialog.selected_slot()
-        if slot is None and self._engine is not None:
-            self._engine.add_instant_food(duration_min, carbs_g)
+        self._engines.add_instant_food(slot, duration_min, carbs_g)
         self._send_instant(
             "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
         )
@@ -756,7 +763,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         Same non-disruptive semantics as _open_insert_food, via the
         exercise_instant characteristic.
         """
-        if self._engine is None and (
+        if self._engines.is_empty() and (
             self._bluetooth_window is None or not self._bluetooth_window.sessions()
         ):
             QMessageBox.information(
@@ -768,15 +775,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             return
         duration_min, intensity_pct = dialog.values()
         slot = dialog.selected_slot()
-        if slot is None and self._engine is not None:
-            self._engine.add_instant_exercise(duration_min, intensity_pct)
+        self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
         self._send_instant(
             "exercise_instant", protocol.encode_exercise_instant(duration_min, intensity_pct), slot
         )
 
     def _open_insert_pisa(self) -> None:
         """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
-        if self._engine is None and (
+        if self._engines.is_empty() and (
             self._bluetooth_window is None or not self._bluetooth_window.sessions()
         ):
             QMessageBox.information(
@@ -800,8 +806,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if kind != "pisa":
             raise ValueError(f"unknown fault kind {kind!r}")
         duration_min, depth_frac = values
-        if slot is None and self._engine is not None:
-            self._engine.add_instant_pisa(duration_min, depth_frac)
+        self._engines.add_instant_pisa(slot, duration_min, depth_frac)
         self._send_instant(
             "pisa_instant", protocol.encode_pisa_instant(duration_min, depth_frac), slot
         )
@@ -858,8 +863,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             carbs_g = float(args.get("carbs_g", 50))
             duration_min = int(args.get("duration_min", 15))
             slot = args.get("slot")
-            if slot is None and self._engine is not None:
-                self._engine.add_instant_food(duration_min, carbs_g)
+            self._engines.add_instant_food(slot, duration_min, carbs_g)
             self._send_instant(
                 "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
             )
@@ -871,8 +875,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             duration_min = int(args.get("duration_min", 30))
             intensity_pct = float(args.get("intensity_pct", 50))
             slot = args.get("slot")
-            if slot is None and self._engine is not None:
-                self._engine.add_instant_exercise(duration_min, intensity_pct)
+            self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
             self._send_instant(
                 "exercise_instant",
                 protocol.encode_exercise_instant(duration_min, intensity_pct),
@@ -1119,10 +1122,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._redraw_food_ex_graph()
 
     def _hist(self, user_id: str) -> dict[str, list[float]]:
-        """Return (creating on first sight) the received-history buffers for *user_id*."""
+        """Return (creating on first sight) the history buffers for *user_id*.
+
+        ``gx``/``gy`` + ``fx``/``fc``/``fe`` are the received (board) stream;
+        ``ex_gx``/``ex_gy`` are that slot's local "expected" line (issue 04).
+        """
         h = self._history.get(user_id)
         if h is None:
-            h = {"gx": [], "gy": [], "fx": [], "fc": [], "fe": []}
+            h = {"gx": [], "gy": [], "fx": [], "fc": [], "fe": [], "ex_gx": [], "ex_gy": []}
             self._history[user_id] = h
         return h
 
@@ -1142,54 +1149,62 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._food_ex_x = h["fx"]
         self._food_ex_carbs_y = h["fc"]
         self._food_ex_exercise_y = h["fe"]
+        if self._per_slot_expected:
+            self._expected_x, self._expected_y = h["ex_gx"], h["ex_gy"]
 
     def _stop_engine(self) -> None:
-        """Disconnect, stop, and discard the current engine, if any.
+        """Stop and discard every engine in the pool.
 
-        Disconnecting expected_reading *before* stopping matters: a QThread
-        emits its signals on a queued connection, so if the engine emits its
-        last tick(s) right as it's being interrupted, that emission is
-        already queued for delivery to the main thread and arrives *after*
-        this whole restart sequence finishes — by which point a new engine
-        and a new self._graph_t0 already exist, so the stale tick would land
-        at the wrong x position (seen as a short, offset duplicate dashed
-        segment). Disconnecting first makes Qt drop any such pending queued
-        call instead of delivering it.
+        EnginePool.stop_all() disconnects each engine's expected_reading before
+        stopping it: a QThread emits on a queued connection, so a last tick fired
+        as the engine is interrupted would otherwise arrive after this restart
+        sequence finishes — landing at the wrong x against the new self._graph_t0.
         """
-        if self._engine is None:
-            return
-        try:
-            self._engine.expected_reading.disconnect(self._on_expected_reading)
-        except TypeError:
-            pass
-        self._engine.stop()
-        self._engine.wait(2000)
-        self._engine = None
+        self._engines.stop_all()
+
+    def _person_by_name(self, name: str | None) -> PersonProfile | None:
+        if not name:
+            return None
+        return next((p for p in self._person_profiles if p.name == name), None)
+
+    def _engine_slots(self) -> dict[int, PersonProfile]:
+        """slot -> profile for the engine pool. Per-slot when a multi-sensor
+        board layout has assignments (and not in Model Only); otherwise a single
+        slot 0 for the active person."""
+        if not self._model_only:
+            assigned = {
+                i: self._person_by_name(s.person)
+                for i, s in enumerate(self._board_layout.slots)
+                if s.person
+            }
+            assigned = {i: p for i, p in assigned.items() if p is not None}
+            if assigned:
+                return assigned
+        if self._active_person is not None:
+            return {0: self._active_person}
+        return {}
 
     def _restart_engine(self) -> None:
-        """Stop any running engine, reset both graphs, and start a fresh one."""
+        """Stop the pool, reset the graphs, and rebuild one engine per slot."""
         self._stop_engine()
-
         self._reset_graph_view()
 
-        if self._active_person is None:
+        slots = self._engine_slots()
+        self._per_slot_expected = len(slots) > 1
+
+        if not slots:
             if self._model_only:
                 self._ax.set_title("Model Only — select a person", color=self._graph_fg)
                 self._canvas.draw_idle()
             return
 
-        if self._model_only:
+        if self._model_only and self._active_person is not None:
             self._ax.set_title(f"Model — {self._active_person.name}", color=self._graph_fg)
             self._canvas.draw_idle()
 
-        self._engine = SimulationEngine(self._active_person, self._speed_mult, self)
-        self._engine.expected_reading.connect(self._on_expected_reading)
-        # A freshly (re)created engine sits idle unless a run is already in
-        # progress (e.g. the active person changed mid-run) — otherwise it
-        # only starts ticking once the user presses Start, so switching
-        # profiles/modes doesn't silently kick off a comparison run.
-        self._engine.set_paused(self._run_state != "running")
-        self._engine.start()
+        # A freshly rebuilt pool sits idle unless a run is already in progress,
+        # so switching profiles/modes/layout doesn't silently start a comparison.
+        self._engines.rebuild(slots, self._speed_mult, paused=self._run_state != "running")
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]
@@ -1228,13 +1243,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._start_run()
             return
         if self._run_state == "running":
-            if self._engine is not None:
-                self._engine.pause()
+            self._engines.pause_all()
             self._run_state = "paused"
             self._send_run_state(protocol.RUN_STATE_PAUSED)
         else:  # paused
-            if self._engine is not None:
-                self._engine.resume()
+            self._engines.resume_all()
             self._run_state = "running"
             self._send_run_state(protocol.RUN_STATE_RUNNING)
         self._set_start_pause_label()
@@ -1243,10 +1256,9 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """Start a fresh run: reset+resume the local engine and reset+start every
         connected board, both anchored to the moment this is called.
         """
-        self._restart_engine()  # preps graphs + a paused engine (run_state still "stopped" here)
+        self._restart_engine()  # preps graphs + a paused pool (run_state still "stopped" here)
         self._graph_t0 = datetime.now(UTC)
-        if self._engine is not None:
-            self._engine.resume()
+        self._engines.resume_all()
         self._run_state = "running"
         self._set_start_pause_label()
         self._broadcast_data_source()
@@ -1261,10 +1273,15 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._send_run_state(protocol.RUN_STATE_STOPPED)
         self._set_start_pause_label()
 
+    def _slot_user_id(self, slot: int) -> str:
+        """The tree-row id the received stream for *slot* uses, so the local
+        expected line lands in the same self._history bucket."""
+        return board_layout.device_label(board_layout.advert_name(slot), self._board_layout)
+
     def _on_expected_reading(
-        self, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
+        self, slot: int, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
     ) -> None:
-        """Consume one tick from the parallel SimulationEngine."""
+        """Consume one tick from slot *slot*'s engine in the pool."""
         t = self._elapsed_seconds(timestamp)
         if self._model_only:
             self._graph_x.append(t)
@@ -1274,6 +1291,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._food_ex_carbs_y.append(carbs_rate)
             self._food_ex_exercise_y.append(exercise_pct)
             self._redraw_food_ex_graph()
+        elif self._per_slot_expected:
+            h = self._hist(self._slot_user_id(slot))
+            h["ex_gx"].append(t)
+            h["ex_gy"].append(glucose)
+            if self._slot_user_id(slot) == self._selected_user:
+                self._redraw_graph()
         else:
             self._expected_x.append(t)
             self._expected_y.append(glucose)

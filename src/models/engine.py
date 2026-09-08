@@ -17,6 +17,7 @@ per real second, tests drive it step by step (see
 
 from __future__ import annotations
 
+import contextlib
 import math
 import threading
 import time
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from models import cambridge, deichmann, dexcom_csv, food_log_csv, royparker, uva_padova
 from models.types import ModelId, PersonProfile
@@ -526,3 +527,84 @@ class SimulationEngine(QThread):
 
             elapsed = time.monotonic() - tick_start
             self.msleep(max(0, int(1000 - elapsed * 1000)))
+
+
+class EnginePool(QObject):
+    """One :class:`SimulationEngine` per occupied sensor slot.
+
+    Re-emits each engine's ``expected_reading`` tagged with its slot. One shared
+    speed multiplier; ``pause_all`` / ``resume_all`` / ``stop_all`` fan out to
+    every engine. Rebuilt wholesale whenever the slot->profile mapping, the
+    speed, or the mode changes (see issue 04). A single-sensor / no-board setup
+    is just one entry, keyed ``0``.
+    """
+
+    # slot, then the SimulationEngine.expected_reading payload
+    expected_reading = pyqtSignal(int, str, float, float, float)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._engines: dict[int, SimulationEngine] = {}
+        self._speed_mult = 1.0
+        self._paused = True
+
+    @property
+    def slots(self) -> list[int]:
+        return sorted(self._engines)
+
+    def is_empty(self) -> bool:
+        return not self._engines
+
+    def rebuild(
+        self, profiles: dict[int, PersonProfile], speed_mult: float, *, paused: bool
+    ) -> None:
+        """Stop every engine and start a fresh one per slot in *profiles*."""
+        self.stop_all()
+        self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
+        self._paused = paused
+        for slot, profile in profiles.items():
+            eng = SimulationEngine(profile, self._speed_mult, self)
+            eng.expected_reading.connect(
+                lambda ts, g, c, e, s=slot: self.expected_reading.emit(s, ts, g, c, e)
+            )
+            eng.set_paused(paused)
+            eng.start()
+            self._engines[slot] = eng
+
+    def stop_all(self) -> None:
+        for eng in self._engines.values():
+            with contextlib.suppress(TypeError):
+                eng.expected_reading.disconnect()
+            eng.stop()
+            eng.wait(2000)
+        self._engines.clear()
+
+    def pause_all(self) -> None:
+        self._paused = True
+        for eng in self._engines.values():
+            eng.pause()
+
+    def resume_all(self) -> None:
+        self._paused = False
+        for eng in self._engines.values():
+            eng.resume()
+
+    def add_instant_food(self, slot: int | None, duration_min: float, carbs_g: float) -> None:
+        for eng in self._targets(slot):
+            eng.add_instant_food(duration_min, carbs_g)
+
+    def add_instant_exercise(
+        self, slot: int | None, duration_min: float, intensity_pct: float
+    ) -> None:
+        for eng in self._targets(slot):
+            eng.add_instant_exercise(duration_min, intensity_pct)
+
+    def add_instant_pisa(self, slot: int | None, duration_min: float, depth_frac: float) -> None:
+        for eng in self._targets(slot):
+            eng.add_instant_pisa(duration_min, depth_frac)
+
+    def _targets(self, slot: int | None) -> list[SimulationEngine]:
+        if slot is None:
+            return list(self._engines.values())
+        eng = self._engines.get(slot)
+        return [eng] if eng is not None else []

@@ -16,10 +16,20 @@ from pathlib import Path
 
 MAX_SLOTS = 4
 
+# The multi-sensor firmware advertises identity i (0-based slot) as
+# "Nordic Glucose Sensor {i+1}" — see firmware main.c / e2e_4sensor.py NAMES.
+_ADVERT_NAME_FMT = "Nordic Glucose Sensor {n}"
+
 # "Nordic Glucose Sensor 3" -> slot 2 (the firmware numbers identities from 1;
 # CGMS instances / slots are 0-based — same convention as
 # services/ble_session.py's _own_instance_index).
 _TRAILING_NUM = re.compile(r"(\d+)\s*$")
+
+
+def advert_name(slot: int) -> str:
+    """The BLE advertised name the multi-sensor firmware uses for *slot* (0-based)."""
+    return _ADVERT_NAME_FMT.format(n=slot + 1)
+
 
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 _LAYOUT_FILE = _DATA_DIR / "board_layout.json"
