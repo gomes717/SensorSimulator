@@ -1,5 +1,16 @@
 # Clinical metrics: switch % to time
 
+Status: done (2026-09-08)
+Track: B
+Phase: 3
+
+## Outcome
+
+done 298e7a0 — `cgm_metrics.compute(span_minutes=)` + `*_min` fields + `fmt_hm`; MainWindow panel -> "Time in range (h:mm)" over the visible span; CsvAnalysisWindow -> h:mm; +5 tests; docs.
+
+---
+
+(orig)
 Status: backlog
 Track: B
 Phase: 3

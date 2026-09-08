@@ -1,5 +1,16 @@
 # Minimal folder reorg
 
+Status: done (2026-09-08)
+Track: B
+Phase: 3
+
+## Outcome
+
+done fc6b51c — Phase 1 added classes to existing modules (no file moves needed for engine/param-order). Did the one TODO item: src/graphic/ -> src/gui/ (mechanical rename across src/scripts/tests/pyproject/docs). services/core/utils untouched.
+
+---
+
+(orig)
 Status: backlog
 Track: B
 Phase: 3

@@ -1,5 +1,23 @@
 # UX cluster (batched, pre-write-up)
 
+Status: partial (2026-09-08, commit 1d0749b)
+Track: B
+Phase: 3
+
+## Done
+
+- Main glucose legend labels the coloured trace (In range / Borderline / Low-High).
+- Range bands 0.16 -> 0.09 alpha, PISA span 0.15 -> 0.10, CSV bands + selection span likewise.
+- Glucose graph title bold 11 pt (which person/sensor is plotted).
+
+## Still open (need a design call from the user)
+
+- Configuration window layout declutter.
+- Avatar style ("Mudar o avatar").
+
+---
+
+(orig)
 Status: backlog
 Track: B
 Phase: 3

@@ -1,5 +1,16 @@
 # Results tables: cross-model × cross-noise metric comparison
 
+Status: done (2026-09-08)
+Track: B
+Phase: 3
+
+## Outcome
+
+done 7f162af — scripts/results_tables.py: deterministic offline 4-model table (docs/results/results_models.{md,csv}, checked in) + `--board` per-model x noise table with MARD (MARD IN, board pass not yet run). +4 tests.
+
+---
+
+(orig)
 Status: backlog
 Track: B
 Phase: 3

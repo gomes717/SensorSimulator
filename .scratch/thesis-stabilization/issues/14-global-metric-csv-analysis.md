@@ -1,5 +1,16 @@
 # Global metric panel in the CSV Analysis window
 
+Status: done (2026-09-08)
+Track: B
+Phase: 3
+
+## Outcome
+
+done cdf28f6 — second stats panel "Whole recording" beside "Selected 24 h window"; `_build_stats_group(title)` + `_fill_stats` + `_metrics` shared; offscreen test.
+
+---
+
+(orig)
 Status: backlog
 Track: B
 Phase: 3

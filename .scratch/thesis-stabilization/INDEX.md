@@ -29,11 +29,11 @@ See `spec.md` for framing and decisions.
 
 | # | Title | Status |
 |---|---|---|
-| 13 | Clinical metrics: % → time | backlog |
-| 14 | Global metric panel in CSV Analysis | backlog |
-| 15 | Results tables: cross-model × cross-noise | backlog |
-| 16 | UX cluster (legend, transparency, selection, config declutter, avatar) | backlog |
-| 17 | Minimal folder reorg | backlog |
+| 13 | Clinical metrics: % → time | **done** (298e7a0) |
+| 14 | Global metric panel in CSV Analysis | **done** (cdf28f6) |
+| 15 | Results tables: cross-model × cross-noise | **done** (7f162af) — offline table + MARD; board pass pending |
+| 16 | UX cluster | **partial** (1d0749b) — legend/transparency/title done; config-declutter + avatar need a design call |
+| 17 | Minimal folder reorg | **done** (fc6b51c) — src/graphic/ → src/gui/ |
 
 ## Backlog — architectural debt (documented, not scheduled)
 
