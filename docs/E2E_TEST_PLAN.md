@@ -407,6 +407,8 @@ all. Each fix now ships with a pin:
 | food graph misleads in CSV mode (issue 08) | `tests/test_fe_graph_title.py` (offscreen Qt) |
 | model param order vs firmware C struct (issue 05) | `tests/test_param_order.py` + `tests/param_order/*.golden` |
 | engine tick logic (issue 01) | `tests/test_engine_step.py` — raw-model equivalence |
+| ScenarioDispatch extraction (issue 18) | `tests/test_scenario_dispatch.py` — each step kind reaches its app action |
+| "connected but no data" — app Start must reach an idle board (2026-09-08 report) | E2E **F17** (`e2e_4sensor.py`) — STOPPED board streams no glucose; the app's own Start resumes it |
 
 Issue 04's per-slot *expected-vs-received* case waits on a healthy 4-way BLE
 link; its per-slot *engine* side is pinned by `tests/test_engine_pool.py` +
@@ -443,9 +445,9 @@ link; its per-slot *engine* side is pinned by `tests/test_engine_pool.py` +
 
 ## 9. 4-sensor build — `scripts/e2e_4sensor.py`
 
-**Status (2026-09): 14 cases, 13 PASS + 1 best-effort SKIP on hardware** (F2 —
-see below; F14's live-BLE step also SKIPs under multi-connection load, its label
-logic still asserts). Separate runner for the `CONFIG_APP_SENSOR_COUNT=4` firmware, which
+**Status (2026-09): 16 cases** (F2 is a best-effort SKIP on hardware — see below;
+F14's live-BLE step also SKIPs under multi-connection load, its label logic still
+asserts). Separate runner for the `CONFIG_APP_SENSOR_COUNT=4` firmware, which
 advertises 4 BLE identities (`Nordic Glucose Sensor 1..4`) streaming with no
 pairing (`CONFIG_APP_CGMS_NO_AUTH`, see `PROTOCOL_SPEC.md` §7). Reuses `e2e.py`'s
 `Stream`/`Tee`/`SerialTap`/`Case`/`Ctx`; `FourCtx` adds a worker-thread scan
@@ -472,9 +474,11 @@ through the real `BoardLayoutWindow` + `send_board_layout`.
 | **F12** `config_window_target_slot` | Drive the real `PersonConfigWindow` / `SensorConfigWindow`: pick "Slot 2", Send to Board → slot 2's model changes, slots 0/1 don't; pick "Slot 1", Read from Board → the form loads slot 1's config (proves the FIFO-ordered cursor+read). |
 | **F13** `instant_dialog_target_slot` | "Insert Food Now" dialog with Slot 1 picked → slot 1 `carbs>0`, slots 0/2/3 stay 0 — `_send_instant` writes once to one session, not a 4× broadcast. |
 | **F14** `identity_shows_patient_name` | Unassigned slot → the raw `"Nordic Glucose Sensor 3"` in the device list + session name; assign a patient in `board_layout.json` → `"<patient> — Sensor 3"` in the list, `"<patient>"` on the tree row, demux still bound to slot 2; `relabel()` updates the list live. |
+| **F16** `four_way_concurrent_streams` | All four identities connected at once; ≥3 of 4 stream glucose concurrently (issue 07 — newest links were starved off mid-subscribe before the retry + relaxed-conn-interval fix). |
+| **F17** `app_start_wakes_idle_board` | Connect to a board left in **STOPPED** run state: the link is up and the food/exercise-status heartbeat flows, but zero glucose (`model_thread.c:540` only ticks while RUNNING) — the "connected but no data" report. Pressing the app's **Start** (`_on_start_pause_clicked` → broadcast `RUN_STATE_RUNNING`) resumes glucose and a tree row appears. Every other case pre-arms RUNNING itself, so nothing else covers the app's own Start reaching the board. |
 
 ```
-python scripts\e2e_4sensor.py                 # all 14 cases (~35 min incl. the F11 reboot)
+python scripts\e2e_4sensor.py                 # all 16 cases (~35 min incl. the F11 reboot)
 python scripts\e2e_4sensor.py --only F5,F8    # selected (exact ids; "F" = all)
 python scripts\e2e_4sensor.py --no-board       # everything SKIPs
 python scripts\e2e_4sensor.py --loop 3         # 3 fresh processes back to back

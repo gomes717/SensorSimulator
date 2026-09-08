@@ -1148,10 +1148,72 @@ def f16_four_way_streams(ctx: FourCtx):
         )
 
 
+def f17_app_start_wakes_idle_board(ctx: FourCtx):
+    """Regression for a real "connected but no data" report (2026-09-08).
+
+    model_thread only ticks while run_state == RUNNING (model_thread.c:540); a
+    plain connect leaves whatever run state the board was last left in. Connect
+    to an idle (STOPPED) board and the link looks fine — the food/exercise-status
+    heartbeat still flows, "Streaming from N characteristic(s)" — but zero
+    glucose, so no tree row and an empty graph. Pressing the app's *Start* must
+    broadcast RUN_STATE_RUNNING and wake it.
+
+    Nothing else covers this: the suite's own preflight pre-arms RUNNING, and
+    every other case writes run_state itself instead of going through the app.
+    """
+    with Case(ctx, "F17-01", "app_start_wakes_idle_board", "F17") as c:
+        w = ctx.w
+        slot = 2  # "Nordic Glucose Sensor 3"
+        try:
+            sess = ctx.slot_session(slot)
+        except _Skip as exc:
+            raise _Skip(str(exc)) from exc
+        tag = f"Sensor {slot + 1}"
+
+        def glucose_since(n0: int) -> int:
+            return sum(
+                1
+                for m in w._ble_log.get_messages()[n0:]
+                if m.get("glucose_value") is not None and tag in (m.get("user_id") or "")
+            )
+
+        # 1. drive the board idle through the app, then confirm "connected, no data"
+        w._on_stop_clicked()  # broadcasts RUN_STATE_STOPPED to every session
+        QTest.qWait(4000)
+        base = len(w._ble_log.get_messages())
+        QTest.qWait(9000)
+        idle_glucose = glucose_since(base)
+        idle_total = len(w._ble_log.get_messages()) - base
+        c.measure("while_stopped", {"glucose": idle_glucose, "any_msg": idle_total})
+        c.assert_(
+            idle_glucose == 0,
+            "no glucose while the board is STOPPED (link up, no data)",
+            f"{idle_glucose} glucose of {idle_total} msg(s)",
+        )
+
+        # 2. press the app's Start — the real UI action — and expect data to flow
+        base = len(w._ble_log.get_messages())
+        w._on_start_pause_clicked()  # stopped -> _start_run -> broadcast RUNNING
+        c.wait_until(lambda: glucose_since(base) >= 2, 45, "glucose resumes after the app's Start")
+        pump(400)
+        c.measure("tree_rows", list(w._user_items))
+        c.assert_(
+            any(tag in uid for uid in w._user_items),
+            "a sensor row appears in the app tree once glucose flows",
+            str(list(w._user_items)),
+        )
+
+        # leave the board RUNNING (preflight's assumption) and the app stopped
+        w._on_stop_clicked()
+        sess.queue_write("run_state", protocol.encode_run_state(protocol.RUN_STATE_RUNNING))
+        pump(1500)
+
+
 CASES = [
     f1_layout_models,
     f2_independent_streams,
     f16_four_way_streams,
+    f17_app_start_wakes_idle_board,
     f3_csv_slot,
     f4_fast_mode,
     f5_insert_food,
