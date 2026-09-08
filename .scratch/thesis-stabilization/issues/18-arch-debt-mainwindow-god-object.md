@@ -58,6 +58,14 @@ this BLE identity" = 5 sites. "Run state" = 3 hand-synced representations
 (`_run_state` string, `engine._paused`, `protocol.RUN_STATE_*`).
 "Expected vs received timeline" = 6 `MainWindow` methods + engine emit.
 
+## Manual fan-out on profile edit
+
+`_on_profiles_changed` (`main_window.py:858-878`) is a ~20-line hand-written
+fan-out: persist → refresh 2 combos → `self._cfg.reload_data_source()` →
+`_board_layout_window.reload_profiles()` → `_person_config_window.reload()` →
+both food/exercise windows' `.refresh()` → `_restart_engine()`. Every new window
+that observes profiles has to be wired in here by hand.
+
 ## If it is ever picked up
 
 Introduce an interface between the config windows and app state (a small

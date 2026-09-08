@@ -28,6 +28,19 @@ Not scheduled for the defense. Source: architecture review, 2026-09-08.
 - **`models/app_settings.py`** — one JSON file, three serialization idioms:
   `load()/save()` for 4 threshold keys, generic `load_pref/save_pref`,
   `load_theme/save_theme`. Callers must know which pair applies to which key.
+- **`models/sensors.py` (25 lines)** — three functions each returning a dict
+  literal; default-data only (the noise math is firmware-side).
+
+## Locality smells
+
+- **`engine.load_csv_window` is mislocated** — a pure profile→samples resolver
+  parked in `engine.py:32` but imported across from `configuration_window.py:36`,
+  `board_layout_window.py:35`, and indirectly `person_config_window`. Belongs in
+  a CSV module, not the engine.
+- **`board_layout` links slots to profiles by string name** —
+  `SlotAssignment.person: str` (`board_layout.py:28-33`), re-resolved
+  independently in `BoardLayoutWindow._person_by_name` and
+  `board_layout.person_for`. A rename breaks the link silently.
 
 ## Split responsibilities
 

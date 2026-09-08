@@ -17,6 +17,7 @@ See `spec.md` for framing and decisions.
 | 09 | Dexcom protocol — honest baseline reframe | ready |
 | 10 | Stand up a pytest suite for the pure modules | ready |
 | 11 | Harden the E2E suite | ready |
+| 21 | Python tooling & coding standard (uv, ruff, pylint, pyright) | ready — do first |
 
 ## Phase 2 — stretch
 
