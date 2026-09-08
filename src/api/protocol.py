@@ -331,16 +331,45 @@ def decode_csv_control_notify(data: bytes) -> tuple[int, int] | None:
 
 
 def decode_food_exercise_status(data: bytes) -> dict[str, float] | None:
-    """Decode the board's Food/Exercise Status notification: f32 carbs_g_per_min + f32 exercise_pct.
+    """Decode the board's Food/Exercise Status notification.
+
+    Per-slot wire format (10 bytes): ``u8 slot; u8 _pad; f32 carbs_g_per_min;
+    f32 exercise_pct`` — one notification per active sensor slot per tick. The
+    legacy single-sensor format (8 bytes: ``f32 carbs; f32 ex``) is still
+    accepted and reported as ``slot`` 0.
 
     This is what the board is *actually* feeding its on-device model right
     now (after evaluating its own copy of the food/exercise schedule), so the
     app can plot ground truth from the MCU rather than just its own guess.
     """
-    if len(data) < 8:
+    if len(data) >= 10:
+        slot, _pad, carbs_g_per_min, exercise_pct = struct.unpack_from("<BBff", data)
+        return {
+            "slot": slot,
+            "carbs_g_per_min": carbs_g_per_min,
+            "exercise_pct": exercise_pct,
+        }
+    if len(data) >= 8:
+        carbs_g_per_min, exercise_pct = struct.unpack_from("<ff", data)
+        return {
+            "slot": 0,
+            "carbs_g_per_min": carbs_g_per_min,
+            "exercise_pct": exercise_pct,
+        }
+    return None
+
+
+def encode_sensor_select(slot: int) -> bytes:
+    """1 byte: the sensor slot index [0, sensor_count) that subsequent per-sensor
+    config writes/reads target on the board. Not persisted (a session cursor)."""
+    return struct.pack("<B", slot & 0xFF)
+
+
+def decode_sensor_select(data: bytes) -> int | None:
+    """Inverse of encode_sensor_select — the slot the board currently has selected."""
+    if len(data) < 1:
         return None
-    carbs_g_per_min, exercise_pct = struct.unpack_from("<ff", data)
-    return {"carbs_g_per_min": carbs_g_per_min, "exercise_pct": exercise_pct}
+    return data[0]
 
 
 # ------------------------------------------------------------------

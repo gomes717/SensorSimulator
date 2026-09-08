@@ -3,5 +3,6 @@
   "tbr1_below": 70.0,
   "tar1_above": 180.0,
   "tar2_above": 250.0,
-  "theme": "dark"
+  "theme": "dark",
+  "speed_mult": 60.0
 }

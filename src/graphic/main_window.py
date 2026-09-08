@@ -34,6 +34,7 @@ from api import protocol
 from core.ble_message_log import BleMessageLog
 from graphic.avatar import avatar_icon
 from graphic.bluetooth_window import BluetoothWindow
+from graphic.board_layout_window import BoardLayoutWindow
 from graphic.configuration_window import ConfigurationWindow
 from graphic.csv_analysis_window import CsvAnalysisWindow
 from graphic.debug_window import DebugWindow
@@ -46,7 +47,7 @@ from graphic.scenario_window import ScenarioWindow
 from graphic.person_config_window import PersonConfigWindow
 from graphic.sensor_config_window import SensorConfigWindow
 from graphic.view_config_window import ViewConfigWindow
-from models import app_settings, cambridge, cgm_metrics, profile_store
+from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
 from models import sensors as sensor_defaults
 from models.engine import SimulationEngine
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self._sensor_config_window: SensorConfigWindow | None = None
         self._food_config_window: FoodConfigWindow | None = None
         self._exercise_config_window: ExerciseConfigWindow | None = None
+        self._board_layout_window: BoardLayoutWindow | None = None
         self._csv_analysis_window: CsvAnalysisWindow | None = None
         self._view_config_window: ViewConfigWindow | None = None
         self._fault_panel: FaultPanel | None = None
@@ -90,6 +92,9 @@ class MainWindow(QMainWindow):
 
         self._person_profiles, self._sensor_profiles = profile_store.load()
         self._seed_default_profiles()
+        # slot -> (person name, sensor name) mapping for the multi-sensor board;
+        # persisted to data/board_layout.json, applied via the Board Layout window.
+        self._board_layout = board_layout.load()
         self._active_person: PersonProfile | None = None
         self._active_sensor: SensorProfile | None = None
         # Continuous simulation-speed multiplier (x1..x1000); replaces the old
@@ -140,6 +145,14 @@ class MainWindow(QMainWindow):
         self._food_ex_x: list[float] = []
         self._food_ex_carbs_y: list[float] = []
         self._food_ex_exercise_y: list[float] = []
+        # Per-user received history, all sharing the one self._graph_t0 that is
+        # (re)anchored at Start. On a multi-sensor board every slot streams from
+        # the same board clock and the same Start, so one shared origin is
+        # correct — switching the selected tree row just rebinds the live
+        # buffers below to that user's lists (see _bind_selected_history), it
+        # does not wipe or replay anything. Keys are user_id (tree row id).
+        # {user_id: {"gx","gy","fx","fc","fe": list[float]}}
+        self._history: dict[str, dict[str, list[float]]] = {}
         (
             self._fe_figure,
             self._fe_canvas,
@@ -631,6 +644,54 @@ class MainWindow(QMainWindow):
         self._exercise_config_window.raise_()
         self._exercise_config_window.activateWindow()
 
+    def _open_board_layout(self) -> None:
+        """Open (or raise) the Board Layout window (per-slot person/sensor assignment)."""
+        if self._board_layout_window is None:
+            self._board_layout_window = BoardLayoutWindow(
+                self._person_profiles,
+                self._sensor_profiles,
+                self._board_layout,
+                self._on_board_layout_changed,
+                self._ensure_bluetooth_window,
+            )
+        else:
+            self._board_layout_window.reload_profiles()
+        self._board_layout_window.show()
+        self._board_layout_window.raise_()
+        self._board_layout_window.activateWindow()
+
+    def _on_board_layout_changed(self) -> None:
+        """Persist the slot assignments after a Board Layout window edit, and
+        refresh the Bluetooth device list so a newly-assigned patient name shows
+        there (and in the config windows' target combo)."""
+        board_layout.save(self._board_layout)
+        if self._bluetooth_window is not None:
+            self._bluetooth_window.relabel()
+
+    def _multi_slot_count(self) -> int:
+        """4 if a connected identity is one slot of a multi-sensor board (its
+        advertised name is numbered), else 1 — passed to the instant-event
+        dialogs so they show a Slot picker only when it means something."""
+        if self._bluetooth_window is None:
+            return 1
+        return 4 if any(s.slot_index is not None
+                        for s in self._bluetooth_window.sessions().values()) else 1
+
+    def _send_instant(self, char_key: str, payload: bytes, slot: int | None) -> None:
+        """Send a one-shot event over BLE: to one session with a sensor-select
+        prefix when *slot* is given (multi-sensor), else broadcast to every
+        connected session (single-sensor / "all slots")."""
+        if self._bluetooth_window is None:
+            return
+        sessions = list(self._bluetooth_window.sessions().values())
+        if slot is not None and sessions:
+            target = next((s for s in sessions if s.slot_index is not None), sessions[0])
+            target.queue_write("sensor_select", protocol.encode_sensor_select(slot))
+            target.queue_write(char_key, payload)
+        else:
+            for session in sessions:
+                session.queue_write(char_key, payload)
+
     def _open_insert_food(self) -> None:
         """Prompt for a one-shot carb bolus and inject it into the running simulation now.
 
@@ -643,16 +704,15 @@ class MainWindow(QMainWindow):
         if self._engine is None and (self._bluetooth_window is None or not self._bluetooth_window.sessions()):
             QMessageBox.information(self, "Insert Food Now", "Nothing running to insert into — start a run first.")
             return
-        dialog = FoodInstantDialog(self)
+        dialog = FoodInstantDialog(self, slots=self._multi_slot_count())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         carbs_g, duration_min = dialog.values()
-        if self._engine is not None:
+        slot = dialog.selected_slot()
+        if slot is None and self._engine is not None:
             self._engine.add_instant_food(duration_min, carbs_g)
-        if self._bluetooth_window is not None:
-            payload = protocol.encode_food_instant(duration_min, carbs_g)
-            for session in self._bluetooth_window.sessions().values():
-                session.queue_write("food_instant", payload)
+        self._send_instant("food_instant",
+                           protocol.encode_food_instant(duration_min, carbs_g), slot)
 
     def _open_insert_exercise(self) -> None:
         """Prompt for a one-shot exercise bout and inject it into the running simulation now.
@@ -665,16 +725,15 @@ class MainWindow(QMainWindow):
                 self, "Insert Exercise Now", "Nothing running to insert into — start a run first."
             )
             return
-        dialog = ExerciseInstantDialog(self)
+        dialog = ExerciseInstantDialog(self, slots=self._multi_slot_count())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         duration_min, intensity_pct = dialog.values()
-        if self._engine is not None:
+        slot = dialog.selected_slot()
+        if slot is None and self._engine is not None:
             self._engine.add_instant_exercise(duration_min, intensity_pct)
-        if self._bluetooth_window is not None:
-            payload = protocol.encode_exercise_instant(duration_min, intensity_pct)
-            for session in self._bluetooth_window.sessions().values():
-                session.queue_write("exercise_instant", payload)
+        self._send_instant("exercise_instant",
+                           protocol.encode_exercise_instant(duration_min, intensity_pct), slot)
 
     def _open_insert_pisa(self) -> None:
         """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
@@ -683,12 +742,12 @@ class MainWindow(QMainWindow):
                 self, "Insert PISA Now", "Nothing running to insert into — start a run first."
             )
             return
-        dialog = PisaInstantDialog(self)
+        dialog = PisaInstantDialog(self, slots=self._multi_slot_count())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.inject_fault("pisa", dialog.values())
+        self.inject_fault("pisa", dialog.values(), slot=dialog.selected_slot())
 
-    def inject_fault(self, kind: str, values: tuple) -> None:
+    def inject_fault(self, kind: str, values: tuple, slot: int | None = None) -> None:
         """Inject a sensor fault into the running simulation without resetting it.
 
         The extensible entry point behind both the "Insert PISA Now…" button and
@@ -700,12 +759,10 @@ class MainWindow(QMainWindow):
         if kind != "pisa":
             raise ValueError(f"unknown fault kind {kind!r}")
         duration_min, depth_frac = values
-        if self._engine is not None:
+        if slot is None and self._engine is not None:
             self._engine.add_instant_pisa(duration_min, depth_frac)
-        if self._bluetooth_window is not None:
-            payload = protocol.encode_pisa_instant(duration_min, depth_frac)
-            for session in self._bluetooth_window.sessions().values():
-                session.queue_write("pisa_instant", payload)
+        self._send_instant("pisa_instant",
+                           protocol.encode_pisa_instant(duration_min, depth_frac), slot)
         # Shade the affected interval: duration is simulated minutes; the graph
         # x-axis is wall-clock seconds, so scale by the current speed multiplier.
         t0 = self._elapsed_seconds(datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -756,30 +813,28 @@ class MainWindow(QMainWindow):
         if kind == "insert_food":
             carbs_g = float(args.get("carbs_g", 50))
             duration_min = int(args.get("duration_min", 15))
-            if self._engine is not None:
+            slot = args.get("slot")
+            if slot is None and self._engine is not None:
                 self._engine.add_instant_food(duration_min, carbs_g)
-            if self._bluetooth_window is not None:
-                payload = protocol.encode_food_instant(duration_min, carbs_g)
-                for s in self._bluetooth_window.sessions().values():
-                    s.queue_write("food_instant", payload)
-            return f"insert_food {carbs_g:g} g / {duration_min} min"
+            self._send_instant("food_instant",
+                               protocol.encode_food_instant(duration_min, carbs_g), slot)
+            return f"insert_food {carbs_g:g} g / {duration_min} min" + (f" @slot {slot}" if slot is not None else "")
 
         if kind == "insert_exercise":
             duration_min = int(args.get("duration_min", 30))
             intensity_pct = float(args.get("intensity_pct", 50))
-            if self._engine is not None:
+            slot = args.get("slot")
+            if slot is None and self._engine is not None:
                 self._engine.add_instant_exercise(duration_min, intensity_pct)
-            if self._bluetooth_window is not None:
-                payload = protocol.encode_exercise_instant(duration_min, intensity_pct)
-                for s in self._bluetooth_window.sessions().values():
-                    s.queue_write("exercise_instant", payload)
-            return f"insert_exercise {duration_min} min / {intensity_pct:g} %"
+            self._send_instant("exercise_instant",
+                               protocol.encode_exercise_instant(duration_min, intensity_pct), slot)
+            return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (f" @slot {slot}" if slot is not None else "")
 
         if kind == "inject_fault":
             fault = str(args.get("fault", "pisa"))
             duration_min = int(args.get("duration_min", 10))
             depth_frac = float(args.get("depth_frac", 0.4))
-            self.inject_fault(fault, (duration_min, depth_frac))
+            self.inject_fault(fault, (duration_min, depth_frac), slot=args.get("slot"))
             return f"inject_fault {fault} {int(depth_frac * 100)} % / {duration_min} min"
 
         return f"(unknown action {kind!r})"
@@ -811,6 +866,15 @@ class MainWindow(QMainWindow):
         # assignment made elsewhere (e.g. CSV Analysis → "Assign window to
         # person…"). Sync it explicitly.
         self._cfg.reload_data_source()
+        if self._board_layout_window is not None:
+            self._board_layout_window.reload_profiles()
+        # Keep the per-person editors' CSV locks in sync when the data source
+        # changed here or in CSV Analysis.
+        if self._person_config_window is not None:
+            self._person_config_window.reload()
+        for win in (self._food_config_window, self._exercise_config_window):
+            if win is not None:
+                win.refresh()
         self._restart_engine()
 
     def _refresh_person_combo(self) -> None:
@@ -982,24 +1046,50 @@ class MainWindow(QMainWindow):
         self._food_ex_exercise_y = []
 
     def _reset_graph_view(self) -> None:
-        """Clear both graphs and re-anchor the shared timeline at t=0.
+        """Clear every graph and re-anchor the shared timeline at t=0.
 
-        Called by every "restart" action: Start, Stop, switching the active
-        person/sensor/mode, toggling Model Only, editing/saving a profile, or
-        picking a different device in the tree. A single shared reset point
-        is what keeps the received and expected lines aligned on the same
-        time origin instead of drifting onto different implicit timelines —
-        resetting only one of them (or replaying old history against a
-        freshly-reset origin) is exactly what caused points to land at
-        confusing offsets instead of starting back at 0.
+        Called by every genuine "restart" action: Start, Stop, switching the
+        active person/sensor/mode, toggling Model Only, or editing/saving a
+        profile. A single shared reset point is what keeps the received and
+        expected lines aligned on the same time origin. This also drops the
+        per-user history (self._history) — a restart begins a new run for
+        everyone. Switching the selected tree row does NOT come through here
+        (see _on_user_selected); it only rebinds to that user's kept history.
         """
         self._graph_t0 = datetime.now(timezone.utc)
+        self._history = {}
         self._graph_x, self._graph_y = [], []
         self._reset_expected()
         self._reset_food_ex()
         self._pisa_spans = []
+        self._bind_selected_history()
         self._redraw_graph()
         self._redraw_food_ex_graph()
+
+    def _hist(self, user_id: str) -> dict[str, list[float]]:
+        """Return (creating on first sight) the received-history buffers for *user_id*."""
+        h = self._history.get(user_id)
+        if h is None:
+            h = {"gx": [], "gy": [], "fx": [], "fc": [], "fe": []}
+            self._history[user_id] = h
+        return h
+
+    def _bind_selected_history(self) -> None:
+        """Point the live plot buffers at the selected user's history lists.
+
+        The redraw helpers read self._graph_x/_y and self._food_ex_* directly,
+        so aliasing them onto the selected user's history dict entry means
+        appends in _on_new_message and a row switch both "just work" without
+        copying. In Model Only mode there is no BLE user — the engine owns
+        these buffers instead — so leave them alone.
+        """
+        if self._model_only or not self._selected_user:
+            return
+        h = self._hist(self._selected_user)
+        self._graph_x, self._graph_y = h["gx"], h["gy"]
+        self._food_ex_x = h["fx"]
+        self._food_ex_carbs_y = h["fc"]
+        self._food_ex_exercise_y = h["fe"]
 
     def _stop_engine(self) -> None:
         """Disconnect, stop, and discard the current engine, if any.
@@ -1153,13 +1243,19 @@ class MainWindow(QMainWindow):
         the graphs are driven by the local engine there instead of BLE
         traffic. The treeview row itself still updates unconditionally —
         it's just a live status readout.
+
+        Every connected sensor's stream is recorded to self._history while
+        recording, not only the selected one's, so switching the tree row
+        shows that sensor's full history since Start instead of an empty
+        graph. Only the selected user's buffers get redrawn (they are the
+        lists _bind_selected_history aliased onto self._graph_x / etc.).
         """
         user_id = msg.get("user_id")
-        plotting = (
+        recording = (
             not self._model_only
             and (self._cgms_only or self._run_state == "running")
-            and user_id == self._selected_user
         )
+        selected = user_id is not None and user_id == self._selected_user
 
         if "glucose_value" in msg:
             glucose = msg["glucose_value"]
@@ -1167,16 +1263,20 @@ class MainWindow(QMainWindow):
             item.setText(1, f"{glucose:.2f}")
             self._update_user_alert(item, user_id, glucose)
 
-            if plotting:
-                self._graph_x.append(self._elapsed_seconds(msg["timestamp"]))
-                self._graph_y.append(glucose)
-                self._redraw_graph()
+            if recording and user_id is not None:
+                h = self._hist(user_id)
+                h["gx"].append(self._elapsed_seconds(msg["timestamp"]))
+                h["gy"].append(glucose)
+                if selected:
+                    self._redraw_graph()
 
-        if plotting and "carbs_g_per_min" in msg:
-            self._food_ex_x.append(self._elapsed_seconds(msg["timestamp"]))
-            self._food_ex_carbs_y.append(msg["carbs_g_per_min"])
-            self._food_ex_exercise_y.append(msg.get("exercise_pct", 0.0))
-            self._redraw_food_ex_graph()
+        if recording and user_id is not None and "carbs_g_per_min" in msg:
+            h = self._hist(user_id)
+            h["fx"].append(self._elapsed_seconds(msg["timestamp"]))
+            h["fc"].append(msg["carbs_g_per_min"])
+            h["fe"].append(msg.get("exercise_pct", 0.0))
+            if selected:
+                self._redraw_food_ex_graph()
 
     def _ensure_user_item(self, user_id: str) -> QTreeWidgetItem:
         """Return the tree row for *user_id*, creating it with an ID + avatar on first sight."""
@@ -1189,6 +1289,10 @@ class MainWindow(QMainWindow):
         item.setData(0, Qt.ItemDataRole.UserRole, user_id)
         self.tree.addTopLevelItem(item)
         self._user_items[user_id] = item
+        # Auto-select the first sensor to appear so its graph shows without an
+        # extra click; later rows don't steal the selection.
+        if self._selected_user is None:
+            self.tree.setCurrentItem(item)
         return item
 
     def _update_user_alert(self, item: QTreeWidgetItem, user_id: str, glucose: float) -> None:
@@ -1206,18 +1310,20 @@ class MainWindow(QMainWindow):
             item.setForeground(0, QBrush())
 
     def _on_user_selected(self, current: QTreeWidgetItem | None, _prev) -> None:
-        """Switch which device's live data is plotted, resetting both graphs to t=0.
+        """Switch which device's history is plotted, keeping every user's data.
 
-        Deliberately does not replay that device's prior BLE history — doing
-        so would require its own time origin (anchored to its first message)
-        distinct from whatever the expected line is using, which is exactly
-        the kind of per-line timeline drift _reset_graph_view() exists to
-        avoid. Only live data from here on is plotted.
+        Every connected sensor's received stream is recorded to self._history
+        from Start onward (see _on_new_message), all against the one shared
+        self._graph_t0. Selecting a row just rebinds the plot buffers to that
+        user's kept lists and redraws — no reset, no loss, no timeline drift,
+        since the origin never moves between Start actions.
         """
         if current is None:
             return
         self._selected_user = current.data(0, Qt.ItemDataRole.UserRole) or current.text(0)
-        self._reset_graph_view()
+        self._bind_selected_history()
+        self._redraw_graph()
+        self._redraw_food_ex_graph()
         if not self._model_only:
             self._ax.set_title(f"Glucose — {self._selected_user}", color=self._graph_fg)
             self._canvas.draw_idle()
@@ -1296,9 +1402,11 @@ class MainWindow(QMainWindow):
         self._sync_time_axis()  # sets self._visible_xlim, used by the helpers below
         self._draw_pisa_spans()
         self._fit_glucose_ylim()
-        series = self._in_view(self._graph_x, self._graph_y) or self._in_view(
-            self._expected_x, self._expected_y
-        )
+        # Mean of the *received* (board) series only — never the expected line.
+        # A freshly-selected sensor with an empty history would otherwise show
+        # the mean of the Python model, which reads as "the board is tracking
+        # the model".
+        series = self._in_view(self._graph_x, self._graph_y)
         if series:
             mean = sum(series) / len(series)
             self._mean_line.set_ydata([mean, mean])

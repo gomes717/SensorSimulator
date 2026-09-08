@@ -16,9 +16,11 @@
 void config_service_init(void);
 
 /* Notifies the Food/Exercise Status characteristic if anyone has subscribed.
- * *data must be the 8-byte {float carbs_g_per_min; float exercise_pct;}
- * wire payload. Returns 0 on success; a negative errno (commonly meaning
- * "nobody is subscribed yet") is expected and safe to ignore. */
+ * *data must be the 10-byte per-slot wire payload
+ * {uint8_t slot; uint8_t _pad; float carbs_g_per_min; float exercise_pct;} —
+ * one notification per active sensor slot per tick. Returns 0 on success; a
+ * negative errno (commonly meaning "nobody is subscribed yet") is expected
+ * and safe to ignore. */
 int config_service_notify_food_exercise_status(const void *data, uint16_t len);
 
 /* Notifies the Reset Sync characteristic the instant a config/state reset

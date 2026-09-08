@@ -80,41 +80,60 @@ class ExerciseConfigWindow(QWidget):
         self._intensity_spin.setValue(50.0)
         add_row.addWidget(QLabel("Intensity (%):"))
         add_row.addWidget(self._intensity_spin)
-        add_btn = QPushButton("Add")
-        add_btn.clicked.connect(self._add_event)
-        add_row.addWidget(add_btn)
+        self._add_btn = QPushButton("Add")
+        self._add_btn.clicked.connect(self._add_event)
+        add_row.addWidget(self._add_btn)
         layout.addLayout(add_row)
 
         buttons = QHBoxLayout()
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(self._remove_selected)
-        buttons.addWidget(remove_btn)
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._save)
-        buttons.addWidget(save_btn)
-        send_btn = QPushButton("Send to Board")
-        send_btn.clicked.connect(self._send_to_board)
-        buttons.addWidget(send_btn)
-        read_btn = QPushButton("Read from Board")
-        read_btn.clicked.connect(self._read_from_board)
-        buttons.addWidget(read_btn)
+        self._remove_btn = QPushButton("Remove Selected")
+        self._remove_btn.clicked.connect(self._remove_selected)
+        buttons.addWidget(self._remove_btn)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.clicked.connect(self._save)
+        buttons.addWidget(self._save_btn)
+        self._send_btn = QPushButton("Send to Board")
+        self._send_btn.clicked.connect(self._send_to_board)
+        buttons.addWidget(self._send_btn)
+        self._read_btn = QPushButton("Read from Board")
+        self._read_btn.clicked.connect(self._read_from_board)
+        buttons.addWidget(self._read_btn)
         layout.addLayout(buttons)
 
         self._send_status = QLabel("")
         layout.addWidget(self._send_status)
 
+        self._edit_widgets = [
+            self._time_edit, self._duration_spin, self._intensity_spin,
+            self._add_btn, self._remove_btn, self._save_btn, self._send_btn, self._read_btn,
+        ]
         self._events: list[ExerciseEvent] = []
         self.refresh()
 
     def refresh(self) -> None:
         """Reload the table from the currently active person's saved exercise events."""
         person = self._get_active_person()
+        is_csv = person is not None and getattr(person, "data_source", "model") == "csv"
         if person is None:
             self._active_label.setText("No active person selected — pick one in the main window.")
             self._events = []
+        elif is_csv:
+            self._active_label.setText(
+                f"{person.name} replays a recorded CSV — exercise schedule disabled."
+            )
+            self._events = list(person.exercise_events)
         else:
             self._active_label.setText(f"Editing exercise for: {person.name}")
             self._events = list(person.exercise_events)
+        tip = (
+            "Disabled: this patient replays a recorded CSV window. The recurring "
+            "exercise schedule is not used for a CSV-backed patient."
+            if is_csv else ""
+        )
+        for w in self._edit_widgets:
+            w.setEnabled(not is_csv)
+            w.setToolTip(tip)
+        self._table.setEnabled(not is_csv)
         self._redraw_table()
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -161,7 +180,7 @@ class ExerciseConfigWindow(QWidget):
     def _send_to_board(self) -> None:
         if not self._save():
             return
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Exercise Configuration", "No connected device selected.")
             return
@@ -176,7 +195,7 @@ class ExerciseConfigWindow(QWidget):
         if self._get_active_person() is None:
             QMessageBox.information(self, "Exercise Configuration", "No active person selected.")
             return
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Exercise Configuration", "No connected device selected.")
             return

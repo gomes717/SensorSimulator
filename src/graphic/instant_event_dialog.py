@@ -3,70 +3,95 @@ simulation — distinct from FoodConfigWindow/ExerciseConfigWindow, which edit t
 recurring-daily schedule and (like every other config write) reset the run when sent."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QSpinBox
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QSpinBox,
+)
 
 
-class FoodInstantDialog(QDialog):
+class _InstantDialog(QDialog):
+    """Base: a QFormLayout, an optional 'Slot:' row for a multi-sensor board, and
+    the standard OK/Cancel buttons. Subclasses add their own spin rows before
+    calling _finish()."""
+
+    def __init__(self, title: str, slots: int = 1, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._layout = QFormLayout(self)
+        self._slot_combo: QComboBox | None = None
+        if slots and slots > 1:
+            self._slot_combo = QComboBox()
+            for i in range(slots):
+                self._slot_combo.addItem(f"{i}", i)
+            self._layout.addRow("Slot:", self._slot_combo)
+
+    def _finish(self) -> None:
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self._layout.addRow(buttons)
+
+    def selected_slot(self) -> int | None:
+        """The chosen sensor slot on a multi-sensor board, else None (all slots /
+        single sensor — the caller broadcasts as before)."""
+        return self._slot_combo.currentData() if self._slot_combo is not None else None
+
+
+class FoodInstantDialog(_InstantDialog):
     """Prompts for a one-shot carb bolus: quantity and how long to spread it over."""
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Insert Food Now")
-        layout = QFormLayout(self)
+    def __init__(self, parent=None, slots: int = 1) -> None:
+        super().__init__("Insert Food Now", slots, parent)
 
         self._carbs_spin = QDoubleSpinBox()
         self._carbs_spin.setRange(0.1, 500.0)
         self._carbs_spin.setValue(50.0)
         self._carbs_spin.setSuffix(" g")
-        layout.addRow("Carbs:", self._carbs_spin)
+        self._layout.addRow("Carbs:", self._carbs_spin)
 
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(1, 240)
         self._duration_spin.setValue(15)
         self._duration_spin.setSuffix(" min")
-        layout.addRow("Spread over:", self._duration_spin)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        self._layout.addRow("Spread over:", self._duration_spin)
+        self._finish()
 
     def values(self) -> tuple[float, int]:
         """Returns (carbs_g, duration_min)."""
         return self._carbs_spin.value(), self._duration_spin.value()
 
 
-class ExerciseInstantDialog(QDialog):
+class ExerciseInstantDialog(_InstantDialog):
     """Prompts for a one-shot exercise bout: duration and intensity."""
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Insert Exercise Now")
-        layout = QFormLayout(self)
+    def __init__(self, parent=None, slots: int = 1) -> None:
+        super().__init__("Insert Exercise Now", slots, parent)
 
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(1, 300)
         self._duration_spin.setValue(30)
         self._duration_spin.setSuffix(" min")
-        layout.addRow("Duration:", self._duration_spin)
+        self._layout.addRow("Duration:", self._duration_spin)
 
         self._intensity_spin = QDoubleSpinBox()
         self._intensity_spin.setRange(0.0, 100.0)
         self._intensity_spin.setValue(50.0)
         self._intensity_spin.setSuffix(" %")
-        layout.addRow("Intensity:", self._intensity_spin)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        self._layout.addRow("Intensity:", self._intensity_spin)
+        self._finish()
 
     def values(self) -> tuple[int, float]:
         """Returns (duration_min, intensity_pct)."""
         return self._duration_spin.value(), self._intensity_spin.value()
 
 
-class PisaInstantDialog(QDialog):
+class PisaInstantDialog(_InstantDialog):
     """Prompts for a one-shot PISA event: duration and peak attenuation.
 
     PISA (Pressure-Induced Sensor Attenuation) is a transient downward
@@ -75,27 +100,21 @@ class PisaInstantDialog(QDialog):
     ``1 - depth * sin(pi * elapsed/duration)`` while active.
     """
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Insert PISA Now")
-        layout = QFormLayout(self)
+    def __init__(self, parent=None, slots: int = 1) -> None:
+        super().__init__("Insert PISA Now", slots, parent)
 
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(1, 120)
         self._duration_spin.setValue(10)
         self._duration_spin.setSuffix(" min")
-        layout.addRow("Duration:", self._duration_spin)
+        self._layout.addRow("Duration:", self._duration_spin)
 
         self._depth_spin = QDoubleSpinBox()
         self._depth_spin.setRange(5.0, 90.0)
         self._depth_spin.setValue(40.0)
         self._depth_spin.setSuffix(" %")
-        layout.addRow("Peak attenuation:", self._depth_spin)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        self._layout.addRow("Peak attenuation:", self._depth_spin)
+        self._finish()
 
     def values(self) -> tuple[int, float]:
         """Returns (duration_min, depth_frac) with depth_frac in [0, 1]."""

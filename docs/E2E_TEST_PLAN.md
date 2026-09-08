@@ -26,8 +26,11 @@ diagnosed after the fact without re-running.
 4. Be re-runnable on demand (before a commit, after any firmware change) in
    ~10 min for the smoke subset, ~30–40 min for the full matrix.
 
-Out of scope: multi-sensor / multi-identity (deferred, see `docs/TODO.md`),
-automated CI on hardware (no bench board in CI), Dexcom-proprietary BLE.
+Scope note: the **single-sensor** matrix (`scripts/e2e.py`, §4) assumes a
+`CONFIG_APP_SENSOR_COUNT=1` build advertising the bare name `Nordic Glucose
+Sensor`. The **4-sensor** build (default, §9) has its own harness,
+`scripts/e2e_4sensor.py`. Out of scope: automated CI on hardware (no bench
+board in CI), Dexcom-proprietary BLE auth handshake.
 
 ---
 
@@ -54,10 +57,19 @@ run is tagged `dirty`.
 
 **Status (2026-09): implemented.** `scripts/e2e.py` is the runner described
 below. It currently ships a *representative subset* of the §4 matrix — the case
-IDs marked ✅ in §4 — plus `--loop N` (run the whole thing N times back to
-back). Adding a case is a `with Case(...) as c:` function registered in
-`SUITES`. Latest hardware run: **11/11 PASS** (S1-02, S2-01, S3-03/04, S4-05,
-S5-02, S7-03, S8-02, S10-01, S16-01, S17-01).
+IDs marked ✅ in §4 — plus `--loop N` (run N times back to back, each a fresh
+subprocess). Adding a case is a `with Case(...) as c:` function registered in
+`SUITES`. **19 cases** across 13 suites: S1-02/04, S2-01, S3-01/03/04/05,
+S4-05, S5-02, S6-01, S7-01/03, S8-02/06, S9-01, S10-01, S12-01, S16-01, S17-01.
+Latest full hardware run: **19/19 PASS**.
+
+Run isolation: a **preflight** resets the board to a known state
+(`comm_profile=SIG`, `data_source=model`, `cgms_only=off`, `speed=x1`,
+`run_state=RUNNING`) before the first case, so a run never inherits STOPPED /
+CSV / x1000 / Dexcom from a previous one. The PowerShell serial reader is
+respawned by a watchdog if it goes silent > 15 s, and serial-dependent
+assertions **SKIP** (not FAIL) when the tap is stale (`ctx.serial_live()` /
+`ctx.wait_serial()`).
 
 Extends the `ui_smoke.py` driving style (`QTest` synthetic input, monkeypatched
 modal dialogs, `widget.grab()` screenshots) with a **capture + artifact layer**.
@@ -369,16 +381,78 @@ Keep the last ~10 run folders; older ones are safe to delete (add
 
 ---
 
-## 8. Known gaps
+## 8. Known gaps & harness notes
 
 - No hardware in CI — this plan is a **local** gate, run by hand.
-- Multi-sensor / multi-identity untested (deferred).
 - S11-02 / S12-06 need a deliberate corruption/power-cut path; treat as manual
-  until a debug hook exists.
+  until a debug hook exists. (Reboot-persistence *is* covered now — see §9 F11.)
 - Timing assertions (S2-03, S5, S8-02) allow ±1 sample of slack for the
   ~500 ms comm-thread poll + up-to-1 s model tick.
+- A **Speed** write (`5b2c0012`) goes through the firmware's full
+  `apply_config_locked()` — it resets `sim_clock_min` and clears the per-slot
+  instant-event arrays. `e2e_4sensor.py`'s `set_speed_settle()` waits for the
+  resulting `reset_sync` before firing an Insert-Food/Exercise/PISA write so the
+  event isn't wiped by the pending apply. If speed is ever made a live scalar,
+  drop that settle.
+- The 2026-09 per-slot firmware rewrite renamed the instant-food console log
+  (`"instant food added"` → `"model_thread: slot N instant food, …"`); `e2e.py`
+  S7-01 now greps the substring `"instant food"` so it matches either.
+- `send_board_layout` bursts ~24 config writes; `CFG_MSGQ_DEPTH` was raised
+  16 → 32 and the CGMS `measurement_add` retry sleep 200 ms → 40 ms so that
+  burst can't starve the config queue. `_do_board_layout` also retries each
+  write on `BT_ATT_ERR_INSUFFICIENT_RESOURCES`.
+- Regression check after a firmware change: `firmware/…/prj.conf`
+  `CONFIG_APP_SENSOR_COUNT=1`, build+flash, `python scripts\e2e.py` — last run
+  19/19 PASS — then restore `=4` and rebuild. `sim_config_load_from_flash()`
+  now force-overrides `sensor_count` to the build's `SIM_SENSOR_COUNT` (it is
+  not a runtime field), so a `sim_config` image left in flash by the `=1` build
+  no longer leaves `=4` advertising 4 identities while ticking only 1 model
+  slot — but a plain reflash between the two still benefits from a J-Link reset
+  to be sure the new image is running.
 
-## 9. Appendix — 5-minute manual smoke (no harness)
+## 9. 4-sensor build — `scripts/e2e_4sensor.py`
+
+**Status (2026-09): 14 cases, 13 PASS + 1 best-effort SKIP on hardware** (F2 —
+see below; F14's live-BLE step also SKIPs under multi-connection load, its label
+logic still asserts). Separate runner for the `CONFIG_APP_SENSOR_COUNT=4` firmware, which
+advertises 4 BLE identities (`Nordic Glucose Sensor 1..4`) streaming with no
+pairing (`CONFIG_APP_CGMS_NO_AUTH`, see `PROTOCOL_SPEC.md` §7). Reuses `e2e.py`'s
+`Stream`/`Tee`/`SerialTap`/`Case`/`Ctx`; `FourCtx` adds a worker-thread scan
+(bleak's WinRT scanner won't start on the Qt main thread), per-identity
+`BleSession` connect (the config session uses identity **1**, not the factory
+identity 0 which is flakier on Windows), a `model_tick[i]:` serial-line parser,
+`select_slot()` (writes the Sensor-select cursor and blocks on its readback so a
+per-slot GATT read never races a busy comm_thread), and a Board-Layout push
+through the real `BoardLayoutWindow` + `send_board_layout`.
+
+| Case | What it proves |
+|---|---|
+| **F1** `layout_4_models_1_csv` | Push Cambridge / UVA-Padova / Roy&Parker on slots 0–2 + a CSV person on slot 3, mixed Ideal/Breton noise. Serial `model_tick[0..3]` shows `model=0/1/2/0` and `ds=0/0/0/1`; per-slot GATT readback matches; all 4 slot lines share one `t_sim`. |
+| **F2** `per_identity_demux` | A `BleSession` on identity 3 parses `_own_instance_index=2`, sees all 4 CGMS instances, and only ever reports slot 2's glucose. Best-effort: SKIPs (never fails) when WinRT drops the notify subscription across 4 same-UUID service instances. |
+| **F3** `csv_slot_playback` | Slot 3 on CSV streams recorded rows (e.g. 59/63 mg/dL) verbatim, not the flat model line; slot 0 keeps running its model alongside. |
+| **F4** `fast_mode_shared_clock` | Speed x60 then x1000: every slot's `dt` scales together (`1.0000` → `~16.67`) — one shared clock. |
+| **F5** `insert_food_targeted` | `sensor_select=1` + `food_instant(60 g / 45 min)`: slot 1 `carbs>0` and glucose rises; slots 0 & 2 stay `carbs=0`. |
+| **F6** `insert_exercise_targeted` | `sensor_select=2` + `exercise_instant(60 % / 40 min)` on the Roy&Parker slot: slot 2 `ex=60`; slots 0 & 1 stay `ex=0`. |
+| **F7** `insert_pisa_targeted` | `sensor_select=0` + `pisa_instant(45 % / 12 min)`: slot 0 `pisa` dips (`~0.78`) and `reading` drops below true `glucose`, then recovers to `1.0`; slot 1 `pisa` unaffected. |
+| **F8** `range_alerts` | `_category()` maps mg/dL to r/y/g bands; raising the LOW threshold above the reading makes the tree row show the `▼ LOW` badge, and dropping it back clears the badge (`main_window._update_user_alert`). |
+| **F9** `sensor_select_isolates_writes` | Read all 4 slot configs, write a Deichmann person to slot 1 only, re-read: slot 1 changed, slots 0/2/3 byte-identical. Proves the Sensor-select cursor isolates per-slot writes. |
+| **F10** `disconnect_one_others_run` | Drop one identity's `BleSession`: the board logs the disconnect, keeps emitting fresh `model_tick` lines for the other slots, and stays RUNNING — it's autonomous. Reconnect is best-effort. |
+| **F11** `layout_survives_reboot` | Push a 4-model layout, hardware-reset the board via J-Link, wait for the sim clock to restart at 0, reconnect: all 4 slots' configs read back byte-identical — the v5 `sim_config` persisted to external flash. |
+| **F12** `config_window_target_slot` | Drive the real `PersonConfigWindow` / `SensorConfigWindow`: pick "Slot 2", Send to Board → slot 2's model changes, slots 0/1 don't; pick "Slot 1", Read from Board → the form loads slot 1's config (proves the FIFO-ordered cursor+read). |
+| **F13** `instant_dialog_target_slot` | "Insert Food Now" dialog with Slot 1 picked → slot 1 `carbs>0`, slots 0/2/3 stay 0 — `_send_instant` writes once to one session, not a 4× broadcast. |
+| **F14** `identity_shows_patient_name` | Unassigned slot → the raw `"Nordic Glucose Sensor 3"` in the device list + session name; assign a patient in `board_layout.json` → `"<patient> — Sensor 3"` in the list, `"<patient>"` on the tree row, demux still bound to slot 2; `relabel()` updates the list live. |
+
+```
+python scripts\e2e_4sensor.py                 # all 14 cases (~35 min incl. the F11 reboot)
+python scripts\e2e_4sensor.py --only F5,F8    # selected (exact ids; "F" = all)
+python scripts\e2e_4sensor.py --no-board       # everything SKIPs
+python scripts\e2e_4sensor.py --loop 3         # 3 fresh processes back to back
+```
+
+Artifacts land in `test-artifacts/4sensor-<run-id>/` with the same per-case
+`serial.slice.log` / `result.json` / `FAILURE.md` layout as `e2e.py`.
+
+## 10. Appendix — 5-minute manual smoke (no harness)
 
 1. `firmware\scripts\flash.ps1`; open COM10, see `model_tick:` at `dt=0.0167`.
 2. `python src\main.py` → Connect Bluetooth → connect the board → select its tree row.

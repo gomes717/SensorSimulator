@@ -185,14 +185,20 @@ last saved — the app is a remote control, not a required component.
 
 ### 4.1 Advertising & connection
 
-One BLE identity, one extended advertising set (`BT_LE_ADV_OPT_CONN`,
-`BT_GAP_ADV_FAST_INT_MIN_2`/`MAX_2`), advertising the standard CGMS (0x181F)
-and Device Information (0x180A) 16-bit service UUIDs plus the device name
-("Nordic Glucose Sensor") in the scan response. `CONFIG_BT_MAX_CONN=1` — the
-board serves one central at a time (the app, or any standard BLE central for
-testing). On disconnect, `main.c`'s `disconnected()` callback immediately
-restarts advertising, so a dropped connection is always reconnectable
-without a reboot.
+`N = CONFIG_APP_SENSOR_COUNT` (1–4, default 4) BLE identities, each with its
+own extended advertising set (`BT_LE_ADV_OPT_CONN`,
+`BT_GAP_ADV_FAST_INT_MIN_2`/`MAX_2`, `adv_param.id = i`), advertising the
+standard CGMS (0x181F) and Device Information (0x180A) 16-bit service UUIDs
+plus a per-identity name in the scan response: `"Nordic Glucose Sensor"` for
+`N == 1` (unchanged), `"Nordic Glucose Sensor {i+1}"` for `N > 1`. Identity 0
+is the factory default; 1..N-1 are created in `main.c`'s `create_identities()`
+with fixed static-random addresses (top bits `11`), stable across reboots so
+a host re-pairs predictably. `CONFIG_BT_MAX_CONN = N` — one central per
+identity. `main.c` tracks `g_conn[]` by `bt_conn_get_info().id`; on any
+identity's disconnect, `disconnected()` re-arms just that identity's adv set
+(via a work item + pending bitmask), so a dropped link is always
+reconnectable without a reboot. `N == 1` collapses to exactly the old
+single-identity behaviour.
 
 ### 4.2 Pairing
 
@@ -209,6 +215,21 @@ pairing if the peer can't do SC (Zephyr's default negotiation) — see
 this firmware was reverted (it broke encrypted GATT reads on the standard
 CGMS characteristics, which require `BT_GATT_PERM_READ_AUTHEN`).
 
+**Multi-identity pairing (2026-09).** Windows aborts the SC handshake against
+a peripheral's *non-default* identities. "Option B" was tried:
+`CONFIG_BT_PRIVACY=n` (identities 1..N-1 advertise stable static addresses),
+`CONFIG_BT_MAX_PAIRED=8` (a bond slot each), and peripheral-initiated security
+(`bt_conn_set_security()` in `connected()`). **It failed on hardware** —
+identity 0 pairs fine, but 1..N-1 log `Security failed … level 1 err 2`
+(`BT_SECURITY_ERR_AUTH_REQUIREMENT`) and Windows drops the link (reason
+`0x13`). "Option A" is therefore active: `CONFIG_APP_CGMS_NO_AUTH`, whose
+Kconfig is `default y if APP_SENSOR_COUNT > 1`, swaps the CGMS `*_AUTHEN`
+perms for plain `BT_GATT_PERM_READ/WRITE` so all N identities stream with no
+pairing at all. Single-sensor builds keep it off (identity 0 pairs fine) and
+the CGMS attribute table stays byte-identical to upstream. Verified on
+hardware: all four identities connect unpaired and stream their own slot's
+glucose. See `PROTOCOL_SPEC.md` §7.
+
 ### 4.3 CGMS — the standard Continuous Glucose Monitoring Service
 
 This is the Bluetooth SIG-standardized GATT profile real CGM sensors (Dexcom,
@@ -221,7 +242,9 @@ into the live NCS checkout at build time — see
 [`firmware/README.md`](../firmware/README.md)).
 
 Characteristics (`cgms.c`'s `CGMS_ATTRS`), all requiring an authenticated
-(paired+encrypted) link (`BT_GATT_PERM_*_AUTHEN`):
+(paired+encrypted) link (`BT_GATT_PERM_*_AUTHEN`) — unless
+`CONFIG_APP_CGMS_NO_AUTH=y`, which swaps those for plain
+`BT_GATT_PERM_READ/WRITE` (see §4.2, "Option A"):
 
 | Characteristic | Property | Purpose |
 |---|---|---|
@@ -256,11 +279,15 @@ documented inline in `cgms.c`:
    `BT_GATT_SERVICE_INSTANCE_DEFINE(cgms_svc_list, cgms_insts,
    CONFIG_BT_CGMS_INSTANCE_COUNT, CGMS_ATTRS)` — a macro that stamps out N
    independent copies of the whole characteristic table (`bt_cgms_init()`
-   claims the next free slot each call). This is what made the project's
-   earlier 4-virtual-sensor-per-board design possible (`CONFIG_BT_CGMS_INSTANCE_COUNT=4`,
-   one `bt_cgms_init()` call per simulated sensor); the current build trims
-   it back to `=1` (see `PROTOCOL_SPEC.md` §7) but the underlying service
-   code still supports more, unlike Nordic's stock single-instance version.
+   claims the next free slot each call). The current build uses this again:
+   `CONFIG_BT_CGMS_INSTANCE_COUNT=4`, one `bt_cgms_init()` call per simulated
+   sensor slot, `comm_thread` pushing per slot (`g_cgms[i]`). See
+   `PROTOCOL_SPEC.md` §7 and `CONFIG_APP_SENSOR_COUNT`.
+3. **Per-characteristic auth toggle.** `CGMS_ATTRS` reads its permission
+   flags from `CGMS_PERM_R/W/RW` macros that are the stock `*_AUTHEN` perms
+   normally and plain `BT_GATT_PERM_READ/WRITE` under
+   `CONFIG_APP_CGMS_NO_AUTH` (Kconfig, default n) — the "Option A" pairing
+   fallback for the multi-identity build (§4.2).
 
 ### 4.4 Custom configuration service
 
@@ -292,9 +319,11 @@ streams over:
 
 Both GATT services are registered unconditionally; `comm_thread`'s measurement
 push routes to one or the other by `comm_profile`, and `main.c` advertises only
-the active profile's UUID/name. A profile write re-advertises — deferred to the
-next disconnect when a client is connected, since a connectable adv set can't
-restart with the single connection slot occupied. The speed multiplier, CSV
+the active profile's UUID/name. A profile write must re-advertise, but a
+connectable adv set can't restart with the single connection slot occupied
+(`CONFIG_BT_MAX_CONN=1`) — so if a client is connected `main_apply_comm_profile()`
+**drops it** (`bt_conn_disconnect`); `disconnected()` then re-advertises under
+the new profile and the app auto-reconnects (`BluetoothWindow.reconnect()`). The speed multiplier, CSV
 data source and PISA all apply upstream (they shape `latest.glucose_mg_dl`), so
 they carry into either profile unchanged.
 

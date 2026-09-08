@@ -109,16 +109,25 @@ class PersonConfigWindow(QWidget):
         scroll.setWidget(self._params_group)
         right_layout.addWidget(scroll, 1)
 
+        self._csv_note = QLabel(
+            "This patient replays a recorded CSV window — the physiological "
+            "model and its parameters are not used. Change the data source in "
+            "the Configuration window to edit the model."
+        )
+        self._csv_note.setWordWrap(True)
+        self._csv_note.setVisible(False)
+        right_layout.addWidget(self._csv_note)
+
         buttons = QHBoxLayout()
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self._save_current)
         buttons.addWidget(save_btn)
-        send_btn = QPushButton("Send to Board")
-        send_btn.clicked.connect(self._send_to_board)
-        buttons.addWidget(send_btn)
-        read_btn = QPushButton("Read from Board")
-        read_btn.clicked.connect(self._read_from_board)
-        buttons.addWidget(read_btn)
+        self._send_btn = QPushButton("Send to Board")
+        self._send_btn.clicked.connect(self._send_to_board)
+        buttons.addWidget(self._send_btn)
+        self._read_btn = QPushButton("Read from Board")
+        self._read_btn.clicked.connect(self._read_from_board)
+        buttons.addWidget(self._read_btn)
         right_layout.addLayout(buttons)
 
         self._send_status = QLabel("")
@@ -184,6 +193,31 @@ class PersonConfigWindow(QWidget):
         self._model_combo.setCurrentIndex(list(ModelId).index(profile.model_id))
         self._model_combo.blockSignals(False)
         self._rebuild_param_form(profile.model_id, profile.params)
+        self._apply_data_source_lock(profile)
+
+    def reload(self) -> None:
+        """Re-read the current profile (e.g. after its data source changed in the
+        Configuration window) so the model form lock stays in sync. Public for
+        MainWindow to call."""
+        self._reload_list()
+        if self._current_index is not None:
+            self._apply_data_source_lock(self._profiles[self._current_index])
+
+    def _apply_data_source_lock(self, profile: PersonProfile | None) -> None:
+        """Grey out the physiological-model editor when *profile* is CSV-backed —
+        the CSV is played back verbatim, so its model parameters are unused."""
+        is_csv = profile is not None and getattr(profile, "data_source", "model") == "csv"
+        tip = (
+            "Disabled: this patient replays a recorded CSV window. The "
+            "physiological model and its parameters are not used for a "
+            "CSV-backed patient — set the data source back to the model in the "
+            "Configuration window to edit these."
+            if is_csv else ""
+        )
+        for w in (self._model_combo, self._params_group, self._send_btn, self._read_btn):
+            w.setEnabled(not is_csv)
+            w.setToolTip(tip)
+        self._csv_note.setVisible(is_csv)
 
     # ------------------------------------------------------------------
     # Parameter form
@@ -192,6 +226,7 @@ class PersonConfigWindow(QWidget):
     def _clear_form(self) -> None:
         self._name_edit.clear()
         self._rebuild_param_form(ModelId.CAMBRIDGE, {})
+        self._apply_data_source_lock(None)
 
     def _on_model_changed(self) -> None:
         """Rebuild the parameter form with the newly selected model's defaults."""
@@ -238,7 +273,7 @@ class PersonConfigWindow(QWidget):
             return
         self._save_current()
         profile = self._profiles[self._current_index]
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Person Configuration", "No connected device selected.")
             return
@@ -252,7 +287,7 @@ class PersonConfigWindow(QWidget):
         if self._current_index is None:
             QMessageBox.information(self, "Person Configuration", "Select or add a profile first.")
             return
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Person Configuration", "No connected device selected.")
             return

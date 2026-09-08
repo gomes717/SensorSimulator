@@ -17,9 +17,10 @@ void main_apply_comm_profile(uint8_t profile);
 
 #define COMM_THREAD_STACK_SIZE 4096
 #define COMM_THREAD_PRIORITY   5
-/* Deeper than the config path needs (8) because a CSV upload bursts a run of
- * CSV_DATA writes through here back to back. */
-#define CFG_MSGQ_DEPTH         16
+/* Deep enough for a CSV upload burst AND a full multi-slot Board Layout push
+ * (send_board_layout writes sensor_select + person/sensor/data_source/food/
+ * exercise per slot, ~24 messages back to back). */
+#define CFG_MSGQ_DEPTH         32
 #define MEASUREMENT_RETRY_COUNT 3
 
 /* Big enough for a CSV_DATA chunk (u32 offset + bytes) at ATT MTU 247, and
@@ -65,9 +66,22 @@ K_MSGQ_DEFINE(cfg_msgq, sizeof(struct cfg_msg), CFG_MSGQ_DEPTH, 4);
 static K_THREAD_STACK_DEFINE(comm_thread_stack, COMM_THREAD_STACK_SIZE);
 static struct k_thread comm_thread_data;
 
-static struct bt_cgms *g_cgms;
+static struct bt_cgms *g_cgms[MAX_SIM_SENSORS];
 static K_MUTEX_DEFINE(working_cfg_lock);
 static struct sim_config working_cfg;
+static uint8_t working_sel; /* sensor-select cursor for per-slot config writes/reads */
+
+uint8_t comm_thread_selected_slot(void)
+{
+	return working_sel;
+}
+
+/* The slot subsequent per-sensor writes target. Held under working_cfg_lock by
+ * callers below. */
+static struct sensor_slot *sel_slot(void)
+{
+	return &working_cfg.slots[working_sel];
+}
 
 int comm_thread_enqueue_config(enum cfg_msg_type type, const void *data, uint16_t len)
 {
@@ -90,6 +104,33 @@ void comm_thread_copy_config(struct sim_config *out)
 	k_mutex_unlock(&working_cfg_lock);
 }
 
+/* Read-path helpers for config_service.c: copy just the slice a GATT read
+ * needs, so the ~2.85 KB struct sim_config never lands on the BT RX stack. */
+void comm_thread_copy_selected_slot(struct sensor_slot *out)
+{
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	*out = working_cfg.slots[working_sel];
+	k_mutex_unlock(&working_cfg_lock);
+}
+
+uint8_t comm_thread_comm_profile(void)
+{
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	uint8_t p = working_cfg.comm_profile;
+	k_mutex_unlock(&working_cfg_lock);
+
+	return p;
+}
+
+float comm_thread_speed_mult(void)
+{
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	float m = working_cfg.speed_mult;
+	k_mutex_unlock(&working_cfg_lock);
+
+	return m;
+}
+
 static void apply_person_msg(const uint8_t *data, uint16_t len)
 {
 	struct person_config_wire wire;
@@ -100,8 +141,8 @@ static void apply_person_msg(const uint8_t *data, uint16_t len)
 	memcpy(&wire, data, sizeof(wire));
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
-	working_cfg.model_id = wire.model_id;
-	memcpy(working_cfg.model_params, wire.params, sizeof(wire.params));
+	sel_slot()->model_id = wire.model_id;
+	memcpy(sel_slot()->model_params, wire.params, sizeof(wire.params));
 	k_mutex_unlock(&working_cfg_lock);
 }
 
@@ -115,19 +156,22 @@ static void apply_sensor_msg(const uint8_t *data, uint16_t len)
 	memcpy(&wire, data, sizeof(wire));
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
-	working_cfg.sensor_id = wire.sensor_id;
-	memcpy(working_cfg.sensor_params, wire.params, sizeof(wire.params));
+	sel_slot()->sensor_id = wire.sensor_id;
+	memcpy(sel_slot()->sensor_params, wire.params, sizeof(wire.params));
 	k_mutex_unlock(&working_cfg_lock);
 }
 
-static void apply_mode_msg(const uint8_t *data, uint16_t len)
+static void apply_sensor_select_msg(const uint8_t *data, uint16_t len)
 {
 	if (len < 1) {
 		return;
 	}
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
-	working_cfg.mode = data[0];
+	uint8_t n = working_cfg.sensor_count ? working_cfg.sensor_count : 1;
+
+	working_sel = (data[0] < n) ? data[0] : 0;
 	k_mutex_unlock(&working_cfg_lock);
+	printk("comm_thread: sensor_select -> %u\n", working_sel);
 }
 
 static void apply_data_source_msg(const uint8_t *data, uint16_t len)
@@ -136,7 +180,7 @@ static void apply_data_source_msg(const uint8_t *data, uint16_t len)
 		return;
 	}
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
-	working_cfg.data_source = (data[0] == SIM_DATA_CSV) ? SIM_DATA_CSV : SIM_DATA_MODEL;
+	sel_slot()->data_source = (data[0] == SIM_DATA_CSV) ? SIM_DATA_CSV : SIM_DATA_MODEL;
 	k_mutex_unlock(&working_cfg_lock);
 }
 
@@ -195,7 +239,7 @@ static void process_csv_control(const uint8_t *data, uint16_t len)
 			.total_bytes = w.total_bytes,
 			.crc32 = w.crc32,
 		};
-		int err = csv_store_begin(&hdr);
+		int err = csv_store_begin(comm_thread_selected_slot(), &hdr);
 
 		config_service_notify_csv_control(
 			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, csv_store_received());
@@ -209,7 +253,7 @@ static void process_csv_control(const uint8_t *data, uint16_t len)
 			return;
 		}
 		memcpy(&w, data, sizeof(w));
-		int err = csv_store_commit(w.track, NULL);
+		int err = csv_store_commit(comm_thread_selected_slot(), w.track, NULL);
 
 		config_service_notify_csv_control(
 			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, csv_store_received());
@@ -227,7 +271,7 @@ static void process_csv_control(const uint8_t *data, uint16_t len)
 			return;
 		}
 		memcpy(&w, data, sizeof(w));
-		int err = csv_store_clear(w.track);
+		int err = csv_store_clear(comm_thread_selected_slot(), w.track);
 
 		config_service_notify_csv_control(
 			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, 0);
@@ -264,9 +308,9 @@ static void apply_food_event_msg(const uint8_t *data, uint16_t len)
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	if (ev.time_min == 0xFFFF) {
-		working_cfg.food_count = 0;
-	} else if (working_cfg.food_count < MAX_EVENTS) {
-		working_cfg.food[working_cfg.food_count++] = ev;
+		sel_slot()->food_count = 0;
+	} else if (sel_slot()->food_count < MAX_EVENTS) {
+		sel_slot()->food[sel_slot()->food_count++] = ev;
 	}
 	k_mutex_unlock(&working_cfg_lock);
 }
@@ -282,9 +326,9 @@ static void apply_exercise_event_msg(const uint8_t *data, uint16_t len)
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	if (ev.time_min == 0xFFFF) {
-		working_cfg.exercise_count = 0;
-	} else if (working_cfg.exercise_count < MAX_EVENTS) {
-		working_cfg.exercise[working_cfg.exercise_count++] = ev;
+		sel_slot()->exercise_count = 0;
+	} else if (sel_slot()->exercise_count < MAX_EVENTS) {
+		sel_slot()->exercise[sel_slot()->exercise_count++] = ev;
 	}
 	k_mutex_unlock(&working_cfg_lock);
 }
@@ -311,7 +355,8 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 
 		if (msg->len >= sizeof(wire)) {
 			memcpy(&wire, msg->data, sizeof(wire));
-			model_thread_add_instant_food(wire.duration_min, wire.carbs_g);
+			model_thread_add_instant_food(comm_thread_selected_slot(),
+						      wire.duration_min, wire.carbs_g);
 		}
 		return;
 	}
@@ -321,7 +366,8 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 
 		if (msg->len >= sizeof(wire)) {
 			memcpy(&wire, msg->data, sizeof(wire));
-			model_thread_add_instant_exercise(wire.duration_min, wire.intensity_pct);
+			model_thread_add_instant_exercise(comm_thread_selected_slot(),
+							  wire.duration_min, wire.intensity_pct);
 		}
 		return;
 	}
@@ -331,9 +377,15 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 
 		if (msg->len >= sizeof(wire)) {
 			memcpy(&wire, msg->data, sizeof(wire));
-			model_thread_add_instant_pisa(wire.duration_min, wire.depth_frac);
+			model_thread_add_instant_pisa(comm_thread_selected_slot(),
+						      wire.duration_min, wire.depth_frac);
 		}
 		return;
+	}
+
+	if (msg->type == CFG_MSG_SENSOR_SELECT) {
+		apply_sensor_select_msg(msg->data, msg->len);
+		return; /* cursor only — nothing to persist or re-apply */
 	}
 
 	if (msg->type == CFG_MSG_CGMS_ONLY) {
@@ -361,8 +413,7 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		apply_sensor_msg(msg->data, msg->len);
 		break;
 	case CFG_MSG_MODE:
-		apply_mode_msg(msg->data, msg->len);
-		break;
+		break; /* legacy on/off mode byte — removed from struct, ignored */
 	case CFG_MSG_DATA_SOURCE:
 		apply_data_source_msg(msg->data, msg->len);
 		break;
@@ -380,7 +431,9 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		break;
 	}
 
-	struct sim_config snapshot;
+	/* static: ~2.85 KB, too big for the comm_thread stack. process_cfg_msg()
+	 * only ever runs on the comm_thread, one message at a time. */
+	static struct sim_config snapshot;
 
 	comm_thread_copy_config(&snapshot);
 	sim_config_save_to_flash(&snapshot);
@@ -389,71 +442,62 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 
 static void push_measurement_and_status(void)
 {
-	struct model_measurement meas;
-
-	model_thread_take_measurement(&meas);
-
-	/* Deliberately NOT gated on session_active here: that flag mirrors the
-	 * CGMS library's own "collector formally started a session" concept,
-	 * which fires once (at bt_cgms_init, before any client ever connects)
-	 * and is never re-armed per reconnect — main.c's disconnected()
-	 * callback clears it on every disconnect, so after the very first
-	 * reconnect this would permanently block every future push, while the
-	 * library's own periodic report_meas() work item kept re-notifying
-	 * whatever stale record last got through. bt_cgms_measurement_add()
-	 * already does its own (correct, per-call) session-stopped check
-	 * internally, so gating on session_active here was redundant AND
-	 * broken — see PROTOCOL_SPEC.md for how this was diagnosed. */
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	uint8_t comm_profile = working_cfg.comm_profile;
+	uint8_t count = working_cfg.sensor_count ? working_cfg.sensor_count : 1;
 	k_mutex_unlock(&working_cfg_lock);
 
-	if (meas.valid) {
-		printk("comm_thread: fresh reading glucose=%.2f profile=%s\n",
-		       meas.glucose_mg_dl, comm_profile == SIM_COMM_DEXCOM ? "dexcom" : "sig");
+	if (count > MAX_SIM_SENSORS) {
+		count = MAX_SIM_SENSORS;
 	}
+	bool dexcom = (comm_profile == SIM_COMM_DEXCOM) && (count == 1);
+	bool cgms_only = model_thread_get_cgms_only();
 
-	if (meas.valid && comm_profile == SIM_COMM_DEXCOM) {
-		int err = dexcom_service_notify_glucose((uint16_t)(meas.glucose_mg_dl + 0.5f), 0);
+	for (int s = 0; s < count; s++) {
+		struct model_measurement meas;
 
-		if (err == 0) {
-			printk("comm_thread: pushed dexcom glucose=%.2f\n", meas.glucose_mg_dl);
-		}
-	} else if (meas.valid && g_cgms) {
-		struct bt_cgms_measurement result;
-		int err = -1;
+		model_thread_take_measurement(s, &meas);
 
-		result.glucose = sfloat_from_float(meas.glucose_mg_dl);
-
-		for (int i = 0; i < MEASUREMENT_RETRY_COUNT; i++) {
-			err = bt_cgms_measurement_add(g_cgms, result);
-			if (err == 0) {
-				printk("comm_thread: pushed measurement glucose=%.2f "
-				       "(sfloat raw=0x%04x)\n",
-				       meas.glucose_mg_dl, result.glucose.val);
-				break;
+		/* meas.valid gates only the glucose push; carbs/exercise in meas
+		 * are always current, so the per-slot status notify below fires
+		 * every tick regardless. */
+		if (meas.valid && dexcom) {
+			if (dexcom_service_notify_glucose(
+				    (uint16_t)(meas.glucose_mg_dl + 0.5f), 0) == 0) {
+				printk("comm_thread: pushed dexcom glucose=%.2f\n",
+				       meas.glucose_mg_dl);
 			}
-			printk("comm_thread: bt_cgms_measurement_add failed err=%d (attempt %d)\n",
-			       err, i);
-			k_sleep(K_SECONDS(1));
+		} else if (meas.valid && g_cgms[s]) {
+			struct bt_cgms_measurement result;
+
+			result.glucose = sfloat_from_float(meas.glucose_mg_dl);
+			for (int i = 0; i < MEASUREMENT_RETRY_COUNT; i++) {
+				int err = bt_cgms_measurement_add(g_cgms[s], result);
+
+				if (err == 0) {
+					printk("comm_thread: pushed slot %d glucose=%.2f\n",
+					       s, meas.glucose_mg_dl);
+					break;
+				}
+				/* Short retry: a dropped measurement is re-sent on the
+				 * next push anyway, and with N connections this loop must
+				 * not starve the config message queue (Board Layout push). */
+				k_sleep(K_MSEC(40));
+			}
 		}
-		if (err) {
-			printk("comm_thread: measurement submit failed, discarded\n");
+
+		if (cgms_only) {
+			continue;
 		}
+		/* Food/Exercise Status, per slot: {u8 slot; u8 _pad; f32 carbs; f32 ex} */
+		uint8_t payload[10];
+
+		payload[0] = (uint8_t)s;
+		payload[1] = 0;
+		memcpy(payload + 2, &meas.carbs_g_per_min, sizeof(float));
+		memcpy(payload + 6, &meas.exercise_pct, sizeof(float));
+		config_service_notify_food_exercise_status(payload, sizeof(payload));
 	}
-
-	/* CGMS-only mode: stream nothing but standard CGM Measurement
-	 * notifications (pushed above, unconditionally) — see
-	 * model_thread.h's model_thread_set_cgms_only() comment. */
-	if (model_thread_get_cgms_only()) {
-		return;
-	}
-
-	uint8_t payload[8];
-
-	memcpy(payload, &meas.carbs_g_per_min, sizeof(float));
-	memcpy(payload + sizeof(float), &meas.exercise_pct, sizeof(float));
-	config_service_notify_food_exercise_status(payload, sizeof(payload));
 }
 
 static void comm_thread_entry(void *p1, void *p2, void *p3)
@@ -474,9 +518,11 @@ static void comm_thread_entry(void *p1, void *p2, void *p3)
 	}
 }
 
-void comm_thread_start(struct bt_cgms *cgms, const struct sim_config *initial_cfg)
+void comm_thread_start(struct bt_cgms **cgms, const struct sim_config *initial_cfg)
 {
-	g_cgms = cgms;
+	for (int i = 0; i < MAX_SIM_SENSORS; i++) {
+		g_cgms[i] = cgms[i];
+	}
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	working_cfg = *initial_cfg;

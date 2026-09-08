@@ -220,7 +220,7 @@ class SensorConfigWindow(QWidget):
             return
         self._save_current()
         profile = self._profiles[self._current_index]
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Sensor Configuration", "No connected device selected.")
             return
@@ -234,7 +234,7 @@ class SensorConfigWindow(QWidget):
         if self._current_index is None:
             QMessageBox.information(self, "Sensor Configuration", "Select or add a profile first.")
             return
-        session = self._target_bar.selected_session()
+        session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Sensor Configuration", "No connected device selected.")
             return

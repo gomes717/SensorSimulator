@@ -11,13 +11,27 @@
 
 #include <stdint.h>
 #include <zephyr/toolchain.h>
+#include <zephyr/devicetree.h>
 
 #define SIM_CONFIG_MAGIC   0x53494D31u /* "SIM1" */
-#define SIM_CONFIG_VERSION 4           /* v2: data_source; v3: speed_mult; v4: comm_profile */
+#define SIM_CONFIG_VERSION 5 /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot */
 
 #define MAX_MODEL_PARAMS  34 /* >= UVA/Padova's 33 params */
 #define MAX_SENSOR_PARAMS 14 /* >= Facchinetti's 13 params */
 #define MAX_EVENTS        32
+
+/* One physical board simulates SIM_SENSOR_COUNT independent CGM sensors, each
+ * its own BLE identity / advertising set / CGMS instance and its own fully
+ * independent config slot (model + params + sensor + schedule, OR a CSV). The
+ * simulation clock and speed multiplier are shared. Build-time count via
+ * CONFIG_APP_SENSOR_COUNT (1..MAX_SIM_SENSORS); 1 == the old single-sensor
+ * build. */
+#define MAX_SIM_SENSORS 4
+#ifdef CONFIG_APP_SENSOR_COUNT
+#define SIM_SENSOR_COUNT CONFIG_APP_SENSOR_COUNT
+#else
+#define SIM_SENSOR_COUNT 1
+#endif
 
 /* Legacy on/off mode byte — superseded by speed_mult (continuous x1..x1000).
  * Kept in struct sim_config for wire compat; model_thread ignores it. */
@@ -73,10 +87,9 @@ struct exercise_event {
 	float intensity_pct;
 } __packed;
 
-struct sim_config {
-	uint32_t magic;
-	uint16_t version;
-	uint8_t mode;
+/* One sensor's independent pipeline. ~709 B. */
+struct sensor_slot {
+	uint8_t data_source; /* SIM_DATA_MODEL / SIM_DATA_CSV */
 	uint8_t model_id;
 	float model_params[MAX_MODEL_PARAMS];
 	uint8_t sensor_id;
@@ -85,10 +98,16 @@ struct sim_config {
 	struct food_event food[MAX_EVENTS];
 	uint8_t exercise_count;
 	struct exercise_event exercise[MAX_EVENTS];
-	uint8_t data_source; /* SIM_DATA_MODEL / SIM_DATA_CSV */
-	float speed_mult;    /* v3: SIM_SPEED_MIN..SIM_SPEED_MAX, default SIM_SPEED_DEFAULT */
-	uint8_t comm_profile; /* v4: SIM_COMM_SIG_CGMS / SIM_COMM_DEXCOM */
 } __packed;
+
+struct sim_config {
+	uint32_t magic;
+	uint16_t version;
+	uint8_t sensor_count;  /* 1..MAX_SIM_SENSORS; boot-init from CONFIG_APP_SENSOR_COUNT */
+	uint8_t comm_profile;  /* global; forced SIM_COMM_SIG_CGMS when sensor_count > 1 */
+	float speed_mult;      /* global: SIM_SPEED_MIN..SIM_SPEED_MAX */
+	struct sensor_slot slots[MAX_SIM_SENSORS];
+} __packed; /* ~2.85 KB — fits the 4 KB sim_storage_partition */
 
 /* BLE wire-format structs — byte-identical to what SensorSimulator's
  * src/protocol.py packs/unpacks (little-endian target, __packed here). */
@@ -125,6 +144,14 @@ struct speed_wire {
 /* Comm-profile characteristic wire format (1 byte, read + write). */
 struct comm_profile_wire {
 	uint8_t profile; /* SIM_COMM_SIG_CGMS / SIM_COMM_DEXCOM */
+} __packed;
+
+/* Sensor-select characteristic wire format (1 byte, read + write, NOT
+ * persisted). A session cursor: the app writes the slot index [0, sensor_count)
+ * it wants to configure, then the existing person/sensor/food/exercise/
+ * data-source/CSV writes and reads target that slot. */
+struct sensor_select_wire {
+	uint8_t slot;
 } __packed;
 
 /* Fills *cfg with Cambridge + Ideal CGM defaults, no events, normal mode. */

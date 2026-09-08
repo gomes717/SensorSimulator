@@ -326,47 +326,60 @@ static void cgms_socp_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t 
 			value == BT_GATT_CCC_INDICATE ? "enabled" : "disabled");
 }
 
+/* Project patch: when CONFIG_APP_CGMS_NO_AUTH is set (Kconfig, default n) the
+ * CGMS characteristics drop the authenticated-pairing requirement so the board
+ * can stream with no bonding at all. This is the "Option A" fallback for the
+ * multi-sensor build, where Windows will not complete LE Secure Connections
+ * pairing against the peripheral's non-default BLE identities. With the option
+ * unset these expand to the stock *_AUTHEN perms — byte-identical to upstream. */
+#if defined(CONFIG_APP_CGMS_NO_AUTH)
+#define CGMS_PERM_R  BT_GATT_PERM_READ
+#define CGMS_PERM_W  BT_GATT_PERM_WRITE
+#define CGMS_PERM_RW (BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
+#else
+#define CGMS_PERM_R  BT_GATT_PERM_READ_AUTHEN
+#define CGMS_PERM_W  BT_GATT_PERM_WRITE_AUTHEN
+#define CGMS_PERM_RW (BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN)
+#endif
+
 #define CGMS_ATTRS(_cgms) {						\
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_CGMS),				\
 	/*CGM Measurement*/						\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_MEASUREMENT, BT_GATT_CHRC_NOTIFY,\
-				BT_GATT_PERM_READ_AUTHEN, NULL, NULL, NULL),\
+				CGMS_PERM_R, NULL, NULL, NULL),		\
 	/* CGM Measurement CCCD */					\
-	BT_GATT_CCC(cgms_meas_ccc_cfg_changed,				\
-				BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),\
+	BT_GATT_CCC(cgms_meas_ccc_cfg_changed, CGMS_PERM_RW),		\
 	/* CGM Feature */						\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_FEATURE, BT_GATT_CHRC_READ,	\
-				BT_GATT_PERM_READ_AUTHEN,		\
+				CGMS_PERM_R,				\
 				read_feature, NULL, &_cgms),		\
 	/* CGM Status */						\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_STATUS, BT_GATT_CHRC_READ,	\
-				BT_GATT_PERM_READ_AUTHEN,		\
+				CGMS_PERM_R,				\
 				read_status, NULL, &_cgms),		\
 	/* CGM Session Start Time */					\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_SESSION_START_TIME,		\
 				BT_GATT_CHRC_READ  | BT_GATT_CHRC_WRITE,\
-				BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN,\
+				CGMS_PERM_RW,				\
 				read_session_start_time, write_session_start_time, &_cgms),\
 	/* CGM Session Run Time */					\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_SESSION_RUN_TIME, BT_GATT_CHRC_READ,\
-				BT_GATT_PERM_READ_AUTHEN,		\
+				CGMS_PERM_R,				\
 				read_session_run_time, NULL, &_cgms),	\
 	/* Record Access Control Point */				\
 	BT_GATT_CHARACTERISTIC(BT_UUID_RECORD_ACCESS_CONTROL_POINT,	\
 				BT_GATT_CHRC_WRITE | BT_GATT_CHRC_INDICATE,\
-				BT_GATT_PERM_WRITE_AUTHEN,		\
+				CGMS_PERM_W,				\
 				NULL, racp_on_receive, &_cgms),	\
 	/* Record Access Control Point CCCD */				\
-	BT_GATT_CCC(cgms_racp_ccc_cfg_changed,				\
-				BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),\
+	BT_GATT_CCC(cgms_racp_ccc_cfg_changed, CGMS_PERM_RW),		\
 	/* CGM Specific Ops Control Point */				\
 	BT_GATT_CHARACTERISTIC(BT_UUID_CGM_SPECIFIC_OPS_CONTROL_POINT,	\
 				BT_GATT_CHRC_WRITE | BT_GATT_CHRC_INDICATE,\
-				BT_GATT_PERM_WRITE_AUTHEN,		\
+				CGMS_PERM_W,				\
 				NULL, socp_on_receive, &_cgms),	\
 	/* CGM Specific Ops Control Point CCCD */			\
-	BT_GATT_CCC(cgms_socp_ccc_cfg_changed,				\
-				BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),\
+	BT_GATT_CCC(cgms_socp_ccc_cfg_changed, CGMS_PERM_RW),		\
 }
 
 BT_GATT_SERVICE_INSTANCE_DEFINE(cgms_svc_list, cgms_insts, CONFIG_BT_CGMS_INSTANCE_COUNT,

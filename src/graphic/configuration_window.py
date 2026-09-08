@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -101,6 +102,15 @@ class ConfigurationWindow(QWidget):
         sensor_row.addWidget(self.sensor_configure_btn)
         outer.addLayout(sensor_row)
 
+        layout_row = QHBoxLayout()
+        self.board_layout_btn = QPushButton("Board layout (4 sensors)…")
+        self.board_layout_btn.clicked.connect(self._main._open_board_layout)
+        layout_row.addWidget(self.board_layout_btn)
+        layout_hint = QLabel("Assign a person + sensor to each independent slot")
+        layout_hint.setEnabled(False)
+        layout_row.addWidget(layout_hint, 1)
+        outer.addLayout(layout_row)
+
         return group
 
     # ------------------------------------------------------------------
@@ -118,9 +128,17 @@ class ConfigurationWindow(QWidget):
         self.speed_slider.setValue(self._speed_to_slider(self._main._speed_mult))
         self.speed_slider.valueChanged.connect(self._on_speed_slider)
         speed_row.addWidget(self.speed_slider, 1)
-        self.speed_label = QLabel(f"x{int(self._main._speed_mult)}")
-        self.speed_label.setMinimumWidth(52)
-        speed_row.addWidget(self.speed_label)
+        # Type an exact multiplier here — the log-scaled slider alone makes
+        # precise values (e.g. x30) fiddly. keyboardTracking off: commit on
+        # Enter / focus-out, not on every digit.
+        self.speed_spin = QSpinBox()
+        self.speed_spin.setRange(1, 1000)
+        self.speed_spin.setPrefix("x")
+        self.speed_spin.setKeyboardTracking(False)
+        self.speed_spin.setValue(int(self._main._speed_mult))
+        self.speed_spin.setMinimumWidth(72)
+        self.speed_spin.valueChanged.connect(self._on_speed_spin)
+        speed_row.addWidget(self.speed_spin)
         box.addLayout(speed_row)
         hint = QLabel("x1 = real time · x60 = 1 s per sim-minute · up to x1000")
         hint.setEnabled(False)
@@ -134,8 +152,8 @@ class ConfigurationWindow(QWidget):
         self.comm_profile_combo.currentIndexChanged.connect(self._on_comm_profile_changed)
         comm_row.addWidget(self.comm_profile_combo, 1)
         box.addLayout(comm_row)
-        comm_hint = QLabel("Switching re-advertises the board — disconnect and reconnect "
-                           "to it afterwards.")
+        comm_hint = QLabel("Switching re-advertises the board; the app drops and "
+                           "reconnects automatically (~3 s).")
         comm_hint.setWordWrap(True)
         comm_hint.setEnabled(False)
         box.addWidget(comm_hint)
@@ -161,19 +179,29 @@ class ConfigurationWindow(QWidget):
 
     def _on_speed_slider(self, s: int) -> None:
         mult = self._slider_to_speed(s)
-        self.speed_label.setText(f"x{mult}")
+        self.speed_spin.blockSignals(True)
+        self.speed_spin.setValue(mult)
+        self.speed_spin.blockSignals(False)
+        self._main._on_speed_changed(float(mult))
+
+    def _on_speed_spin(self, mult: int) -> None:
+        self.speed_slider.blockSignals(True)
+        self.speed_slider.setValue(self._speed_to_slider(mult))
+        self.speed_slider.blockSignals(False)
         self._main._on_speed_changed(float(mult))
 
     def _on_comm_profile_changed(self, _index: int) -> None:
-        """Write the chosen BLE comm profile to every connected board."""
+        """Write the chosen BLE comm profile to every connected board, then let the
+        board drop the link and re-advertise, and reconnect to it automatically."""
         dexcom = bool(self.comm_profile_combo.currentData())
         bt = self._main._ensure_bluetooth_window()
         sessions = bt.sessions()
         if not sessions:
             return
         payload = protocol.encode_comm_profile(dexcom)
-        for session in sessions.values():
+        for address, session in list(sessions.items()):
             session.queue_write("comm_profile", payload)
+            bt.reconnect(address)
 
     # ------------------------------------------------------------------
     # Glucose range thresholds

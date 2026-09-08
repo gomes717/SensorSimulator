@@ -4,6 +4,39 @@
 # SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
+menu "Simulator options"
+
+config APP_SENSOR_COUNT
+	int "Simulated CGM sensors / BLE identities"
+	range 1 4
+	default 4
+	help
+	  One physical board simulates this many independent CGM sensors, each
+	  with its own BLE identity / advertising set / CGMS instance and its own
+	  fully independent config slot. 1 == the original single-sensor build.
+	  Keep CONFIG_BT_ID_MAX / BT_MAX_CONN / BT_EXT_ADV_MAX_ADV_SET /
+	  BT_CGMS_INSTANCE_COUNT in prj.conf equal to this.
+
+config APP_CGMS_NO_AUTH
+	bool "Drop the authenticated-link requirement on CGMS characteristics"
+	default y if APP_SENSOR_COUNT > 1
+	default n
+	help
+	  Fallback for the Windows LE Secure Connections pairing failure against
+	  the board's non-default BLE identities. When set, the standard CGM
+	  Service characteristics use BT_GATT_PERM_READ / WRITE instead of
+	  *_AUTHEN, so a client streams glucose with no pairing at all
+	  (acceptable for a simulator).
+
+	  Defaults on for multi-sensor builds (APP_SENSOR_COUNT > 1): "Option B"
+	  (privacy off + static addresses + peripheral-initiated security) was
+	  tested on hardware and still fails on identities 1..N-1 — the board
+	  logs "Security failed ... err 2" (AUTH_REQUIREMENT) and Windows drops
+	  the link. Single-sensor builds default off and keep the real security
+	  model (identity 0 pairs fine).
+
+endmenu
+
 source "Kconfig.zephyr"
 
 config SETTINGS

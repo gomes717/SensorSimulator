@@ -63,15 +63,21 @@ class Stream:
         self._fh = open(path, "w", encoding="utf-8", buffering=1)
         self._buf: deque[str] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
+        self.last_add = 0.0  # monotonic time of the most recent line
 
     def add(self, line: str, t: float) -> None:
         rec = f"{t:8.2f}  {line.rstrip()}"
         with self._lock:
             self._buf.append(rec)
+            self.last_add = time.monotonic()
             try:
                 self._fh.write(rec + "\n")
             except ValueError:
                 pass
+
+    def fresh(self, max_age: float = 20.0) -> bool:
+        """True if a line arrived within max_age seconds (serial tap alive)."""
+        return (time.monotonic() - self.last_add) < max_age
 
     def tail(self, n: int) -> list[str]:
         with self._lock:
@@ -115,43 +121,90 @@ _PS_SERIAL = (
 )
 
 
+def _kill_stray_serial_readers(port: str) -> None:
+    """Kill leftover PowerShell SerialPort readers (from a crashed prior run)
+    still holding *port* open, so a fresh SerialTap can attach."""
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
+             f"Where-Object {{ $_.CommandLine -like '*SerialPort*{port}*' }} | "
+             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+            capture_output=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 class SerialTap:
     """Reads the firmware console off COM10 via a PowerShell SerialPort subprocess
     (Git Bash / Python-on-Windows can't open COM ports reliably; PowerShell can)."""
 
     def __init__(self, port: str, stream: Stream, t0: float) -> None:
         self.available = False
+        self._port = port
         self._stream = stream
         self._t0 = t0
         self._proc = None
-        self._thread = None
+        self._stop = False
         if port not in _list_com_ports():
             return
-        try:
-            self._proc = subprocess.Popen(
-                ["powershell", "-NoProfile", "-Command", _PS_SERIAL.format(port=port)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
-            )
-        except OSError:
+        if not self._spawn():
             return
-        self._thread = threading.Thread(target=self._pump, daemon=True)
-        self._thread.start()
         # confirm it actually emits firmware lines
-        deadline = time.monotonic() + 6
+        deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if any("model_tick" in ln or "model_thread" in ln for ln in stream.tail(50)):
                 self.available = True
                 break
             time.sleep(0.2)
+        if self.available:
+            threading.Thread(target=self._watchdog, daemon=True).start()
 
-    def _pump(self) -> None:
-        assert self._proc and self._proc.stdout
-        for line in self._proc.stdout:
-            self._stream.add(line, time.monotonic() - self._t0)
+    def _spawn(self) -> bool:
+        _kill_stray_serial_readers(self._port)
+        time.sleep(0.5)
+        try:
+            self._proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", _PS_SERIAL.format(port=self._port)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            )
+        except OSError:
+            return False
+        threading.Thread(target=self._pump, args=(self._proc,), daemon=True).start()
+        return True
+
+    def _pump(self, proc) -> None:
+        try:
+            for line in proc.stdout:
+                self._stream.add(line, time.monotonic() - self._t0)
+        except ValueError:
+            pass
+
+    def _watchdog(self) -> None:
+        """The PowerShell SerialPort reader occasionally wedges on a long run;
+        respawn it if no line has arrived for 15 s."""
+        while not self._stop:
+            time.sleep(5)
+            if self._stop:
+                return
+            if time.monotonic() - self._stream.last_add > 15:
+                old = self._proc
+                if self._spawn():
+                    if old:
+                        try:
+                            old.terminate()
+                        except OSError:
+                            pass
+                    time.sleep(3)
 
     def stop(self) -> None:
+        self._stop = True
         if self._proc:
-            self._proc.terminate()
+            try:
+                self._proc.terminate()
+            except OSError:
+                pass
 
 
 def _list_com_ports() -> list[str]:
@@ -254,6 +307,24 @@ class Ctx:
 
     def serial_has(self, needle: str, n: int = 300) -> bool:
         return any(needle in ln for ln in self.serial.tail(n))
+
+    def serial_live(self, max_age: float = 20.0) -> bool:
+        """serial was available at startup AND a line arrived recently (the
+        PowerShell reader can wedge on long runs; a case should SKIP its serial
+        checks rather than FAIL them when the tap is stale)."""
+        return self.serial_ok and self.serial.fresh(max_age)
+
+    def wait_serial(self, pred, timeout_s: float, desc: str) -> None:
+        """Wait for a serial predicate; SKIP the case (not FAIL/TIMEOUT) if the
+        tap goes stale before it's satisfied."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if pred():
+                return
+            QTest.qWait(150)
+        if not self.serial_live(25.0):
+            raise _Skip(f"serial console went stale waiting for: {desc}")
+        raise _Timeout(desc)
 
     def close(self) -> None:
         self._run_jsonl.close()
@@ -412,8 +483,12 @@ def new_person(w, name: str, model=ModelId.CAMBRIDGE, params=None) -> PersonProf
 
 
 def set_speed(w, mult: int) -> None:
+    """Set the speed multiplier via the real slider. Calls _on_speed_changed
+    directly too, so it still restarts the board/engine even when the slider
+    value doesn't change (e.g. already at x1)."""
     cfg = w._configuration_window
     cfg.speed_slider.setValue(cfg._speed_to_slider(mult))
+    w._on_speed_changed(float(mult))
     pump(150)
 
 
@@ -432,16 +507,19 @@ def s1_connect(ctx: Ctx):
 
 def s2_stream_shape(ctx: Ctx):
     with Case(ctx, "S2-01", "cgm_stream_shape", "S2") as c:
-        ctx.require_board()
+        sess = ctx.require_board()
+        sess.queue_write("run_state", protocol.encode_run_state(1))
         set_speed(ctx.w, 1)
-        c.wait_until(lambda: len(cgm_stream(ctx)) >= 4, 40, ">=4 CGM notifications")
-        vals = [g for _, g in cgm_stream(ctx)]
+        pump(1500)
+        n0 = len(cgm_stream(ctx))
+        c.wait_until(lambda: len(cgm_stream(ctx)) >= n0 + 4, 40, ">=4 fresh CGM notifications")
+        vals = [g for _, g in cgm_stream(ctx)[n0:]]
         c.measure("n", len(vals))
         c.measure("range", f"{min(vals):.0f}-{max(vals):.0f}")
         c.assert_(all(20 <= v <= 500 for v in vals), "all plausible mg/dL",
                   f"{min(vals):.0f}..{max(vals):.0f}")
-        if ctx.serial_ok:
-            c.assert_(ctx.serial_has("model_tick"), "serial shows model_tick")
+        if ctx.serial_live():
+            c.assert_(ctx.serial_has("model_tick"), "serial shows model_tick (board is ticking)")
 
 
 def s3_roundtrips(ctx: Ctx):
@@ -479,15 +557,15 @@ def s4_run_state(ctx: Ctx):
 def s5_speed(ctx: Ctx):
     with Case(ctx, "S5-02", "speed_dt_on_serial", "S5") as c:
         sess = ctx.require_board()
-        if not ctx.serial_ok:
+        if not ctx.serial_live():
             raise _Skip("no serial console")
         sess.queue_write("speed", protocol.encode_speed(60.0))
         sess.queue_write("run_state", protocol.encode_run_state(1))
-        c.wait_until(lambda: ctx.serial_has("dt=1.0000"), 12, "serial dt=1.0000 at x60")
+        ctx.wait_serial(lambda: ctx.serial_has("dt=1.0000"), 15, "serial dt=1.0000 at x60")
         c.assert_(True, "board dt scaled to x60")
         sess.queue_write("speed", protocol.encode_speed(1000.0))
-        c.wait_until(lambda: ctx.serial_has("dt=16.6") or ctx.serial_has("dt=16.7"),
-                     12, "serial dt~16.67 at x1000")
+        ctx.wait_serial(lambda: ctx.serial_has("dt=16.6") or ctx.serial_has("dt=16.7"),
+                        15, "serial dt~16.67 at x1000")
         c.assert_(True, "board dt scaled to x1000")
         sess.queue_write("speed", protocol.encode_speed(1.0))
 
@@ -583,7 +661,7 @@ def s16_comm_profile(ctx: Ctx):
         c.measure("dexcom_vals", dex[:5])
         c.assert_(all(20 <= g <= 500 for g in dex), "Dexcom stream decodes plausible", f"{dex[:5]}")
         c.assert_(len(dexcom_stream(ctx)) > 0, "app received Dexcom-format messages (with sequence)")
-        c.assert_((ctx.serial_has("pushed dexcom") if ctx.serial_ok else True),
+        c.assert_((ctx.serial_has("pushed dexcom") if ctx.serial_live() else True),
                   "firmware pushing dexcom messages")
 
         c.step("switch back to SIG CGMS")
@@ -667,6 +745,206 @@ def s17_scenario(ctx: Ctx):
         w._configuration_window.model_only_check.setChecked(False)
 
 
+def s1_reconnect(ctx: Ctx):
+    with Case(ctx, "S1-04", "reconnect", "S1") as c:
+        ctx.require_board()
+        c.wait_until(lambda: len(cgm_stream(ctx)) >= 2, 30, "stream before reconnect")
+        n0 = len(cgm_stream(ctx))
+        c.step("drop the session, reconnect")
+        ctx.stop_sessions()
+        pump(2500)
+        sess = ctx.connect_board()
+        c.assert_(sess is not None, "reconnect succeeded")
+        c.wait_until(lambda: len(cgm_stream(ctx)) > n0, 30, "CGM stream resumes")
+        c.assert_(len(cgm_stream(ctx)) > n0, "new notifications after reconnect")
+
+
+def s3_person(ctx: Ctx):
+    with Case(ctx, "S3-01", "person_roundtrip", "S3") as c:
+        sess = ctx.require_board()
+        from models import uva_padova
+        params = {**uva_padova.default_params(), "BW": 77.5, "VG": 1.61}
+        sess.queue_write("person", protocol.encode_person_config(ModelId.UVA_PADOVA, params))
+        pump(900)
+        mid, got = protocol.decode_person_config(_read_char(sess, "person", c))
+        c.measure("model_id", int(mid))
+        c.assert_(mid == ModelId.UVA_PADOVA, "model id round-trips", str(mid))
+        c.assert_(abs(got.get("BW", 0) - 77.5) < 0.05 and abs(got.get("VG", 0) - 1.61) < 0.05,
+                  "params round-trip", f"BW={got.get('BW')} VG={got.get('VG')}")
+        sess.queue_write("person", protocol.encode_person_config(
+            ModelId.CAMBRIDGE, cambridge.default_params()))
+        pump(700)
+
+
+def s3_food_events(ctx: Ctx):
+    with Case(ctx, "S3-05", "food_events_roundtrip", "S3") as c:
+        sess = ctx.require_board()
+        from models.types import FoodEvent
+        evs = [FoodEvent(time_of_day_min=420, duration_min=30, carbs_g=45.0),
+               FoodEvent(time_of_day_min=780, duration_min=45, carbs_g=70.0),
+               FoodEvent(time_of_day_min=1140, duration_min=30, carbs_g=55.0)]
+        sess.queue_write("food", protocol.encode_clear_food())
+        for e in evs:
+            sess.queue_write("food", protocol.encode_food_event(e))
+        pump(1200)
+        back = protocol.decode_food_events(_read_char(sess, "food_list", c))
+        c.measure("count", len(back))
+        c.assert_(len(back) == 3, "3 events stored", str(len(back)))
+        c.assert_(abs(back[1].carbs_g - 70.0) < 0.1 and back[1].time_of_day_min == 780,
+                  "event fields round-trip", f"{back[1]}")
+        sess.queue_write("food", protocol.encode_clear_food())
+        pump(600)
+
+
+def s6_steady_state(ctx: Ctx):
+    with Case(ctx, "S6-01", "cambridge_steady_state", "S6") as c:
+        sess = ctx.require_board()
+        sess.queue_write("person", protocol.encode_person_config(
+            ModelId.CAMBRIDGE, cambridge.default_params()))
+        sess.queue_write("data_source", protocol.encode_data_source(False))
+        sess.queue_write("speed", protocol.encode_speed(60.0))
+        sess.queue_write("run_state", protocol.encode_run_state(0))
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        n0 = len(cgm_stream(ctx))
+        c.wait_until(lambda: len(cgm_stream(ctx)) >= n0 + 6, 45, ">=6 samples")
+        vals = [g for _, g in cgm_stream(ctx)[n0 + 2:]]
+        c.measure("mean", round(sum(vals) / len(vals), 1))
+        c.assert_(all(80 <= v <= 120 for v in vals), "Cambridge sits near euglycaemia", f"{vals[:6]}")
+        sess.queue_write("speed", protocol.encode_speed(1.0))
+
+
+def s7_instant_food_no_reset(ctx: Ctx):
+    with Case(ctx, "S7-01", "instant_food_no_reset", "S7") as c:
+        sess = ctx.require_board()
+        if not ctx.serial_live():
+            raise _Skip("no serial console")
+        import re as _re
+
+        def latest_tsim():
+            for ln in reversed(ctx.serial.tail(25)):
+                m = _re.search(r"t_sim=([\d.]+)min", ln)
+                if m:
+                    return float(m.group(1))
+            return None
+
+        def read_moving(tries: int = 14):
+            """Return two t_sim reads ~2 s apart, the second clearly larger —
+            i.e. the clock is live and advancing (not reset, not stale)."""
+            prev = None
+            for _ in range(tries):
+                pump(2000)
+                v = latest_tsim()
+                if v is None:
+                    continue
+                if prev is not None and v > prev + 0.5:
+                    return prev, v
+                prev = v
+            return None, None
+
+        # fast enough that a few seconds is several sim-minutes, and running
+        sess.queue_write("speed", protocol.encode_speed(60.0))
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        pump(6000)  # drain run-state/speed resets queued by earlier cases
+        _, base = read_moving()
+        if base is None:
+            if not ctx.serial_live(25.0):
+                raise _Skip("serial console went stale mid-run")
+            c.assert_(False, "clock is live and advancing before the injection")
+        c.measure("baseline_tsim", base)
+
+        c.step("inject instant food mid-run — clock must keep climbing, not jump back")
+        sess.queue_write("food_instant", protocol.encode_food_instant(15, 40.0))
+        # firmware log wording: "instant food added" (pre-2026-09) /
+        # "model_thread: slot N instant food, ..." (per-slot rewrite)
+        c.wait_until(lambda: ctx.serial_has("instant food"), 10, "instant food logged")
+        after: list[float] = []
+        for _ in range(5):
+            pump(2000)
+            v = latest_tsim()
+            if v is not None:
+                after.append(v)
+        c.measure("after", after)
+        mono = all(b >= a - 0.1 for a, b in zip(after, after[1:]))
+        no_backjump = bool(after) and after[0] >= base - 1.0        # not reset to ~0
+        kept_climbing = bool(after) and after[-1] >= base + 2.0     # advanced ≥2 sim-min
+        c.assert_(mono and no_backjump and kept_climbing,
+                  "sim clock kept advancing across the injection (no reset)",
+                  f"baseline@{base} then {after}")
+        c.assert_(not any("applied config" in ln for ln in ctx.serial.tail(30)),
+                  "no config re-apply logged for the instant event")
+        sess.queue_write("speed", protocol.encode_speed(1.0))
+
+
+def s8_bad_crc(ctx: Ctx):
+    with Case(ctx, "S8-06", "csv_bad_crc_rejected", "S8") as c:
+        sess = ctx.require_board()
+        blob = protocol.build_glucose_track([100.0] * 20)
+        notes: list = []
+        sess.csv_upload_finished.connect(lambda _a, ok, m: notes.append((ok, m)))
+        # BEGIN with a deliberately wrong CRC, send data, COMMIT -> firmware must ERR
+        good = protocol.csv_crc32(blob)
+        begin = protocol.encode_csv_begin(protocol.CSV_TRACK_GLUCOSE, 20, 0, 2, len(blob),
+                                          good ^ 0xFFFF)
+        sess.queue_write("csv_control", begin)
+        pump(700)
+        for chunk in protocol.iter_csv_data_chunks(blob, 200):
+            sess.queue_write("csv_data", chunk)
+        pump(400)
+        sess.queue_write("csv_control", protocol.encode_csv_commit(protocol.CSV_TRACK_GLUCOSE))
+        pump(2000)
+        crc_logged = ((ctx.serial_has("CRC mismatch") or ctx.serial_has("commit CRC"))
+                      if ctx.serial_live() else True)
+        c.assert_(crc_logged, "firmware reported a CRC mismatch on commit")
+        # board must still be alive & streaming
+        n0 = len(cgm_stream(ctx))
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        c.wait_until(lambda: len(cgm_stream(ctx)) > n0, 20, "board still streaming after bad upload")
+        c.assert_(len(cgm_stream(ctx)) > n0, "board survived the bad upload")
+
+
+def s9_cgms_only(ctx: Ctx):
+    with Case(ctx, "S9-01", "cgms_only_rejects_writes", "S9") as c:
+        sess = ctx.require_board()
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        pump(500)
+        rejected: list = []
+        sess.write_failed.connect(lambda _a, k, e: rejected.append((k, e)))
+        c.step("enable CGMS Only, then attempt a person-config write")
+        sess.queue_write("cgms_only", protocol.encode_cgms_only(True))
+        pump(1500)
+        sess.queue_write("person", protocol.encode_person_config(
+            ModelId.CAMBRIDGE, cambridge.default_params()))
+        pump(1500)
+        c.measure("rejected", [k for k, _ in rejected])
+        c.assert_(any(k == "person" for k, _ in rejected),
+                  "person write rejected while CGMS-only", str(rejected))
+        c.step("disable CGMS Only")
+        sess.queue_write("cgms_only", protocol.encode_cgms_only(False))
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        pump(1500)
+        n0 = len(cgm_stream(ctx))
+        c.wait_until(lambda: len(cgm_stream(ctx)) > n0, 20, "stream resumes after disable")
+        c.assert_(len(cgm_stream(ctx)) > n0, "board streaming again after CGMS-only off")
+
+
+def s12_malformed(ctx: Ctx):
+    with Case(ctx, "S12-01", "malformed_writes_survived", "S12") as c:
+        sess = ctx.require_board()
+        n0 = len(cgm_stream(ctx))
+        c.step("send a 1-byte person config and a 3-byte speed (both too short)")
+        sess.queue_write("person", b"\x00")
+        sess.queue_write("speed", b"\x00\x00\x00")
+        pump(1500)
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        c.wait_until(lambda: len(cgm_stream(ctx)) > n0 + 1, 20, "board still streaming")
+        c.assert_(len(cgm_stream(ctx)) > n0 + 1, "board unaffected by malformed writes")
+        # a well-formed write still works afterwards
+        sess.queue_write("speed", protocol.encode_speed(1.0))
+        pump(600)
+        got = protocol.decode_speed(_read_char(sess, "speed", c))
+        c.assert_(abs(got - 1.0) < 0.5, "valid write still accepted after malformed ones", f"got {got}")
+
+
 def _read_char(sess: BleSession, key: str, c: Case) -> bytes:
     box = {}
     sess.config_read.connect(lambda _a, k, d: box.__setitem__(k, d))
@@ -680,18 +958,21 @@ def _read_char(sess: BleSession, key: str, c: Case) -> bytes:
 
 
 SUITES: dict[str, list] = {
-    "S1": [s1_connect],
+    "S1": [s1_connect, s1_reconnect],
     "S2": [s2_stream_shape],
-    "S3": [s3_roundtrips],
+    "S3": [s3_roundtrips, s3_person, s3_food_events],
     "S4": [s4_run_state],
     "S5": [s5_speed],
-    "S7": [s7_pisa],
-    "S8": [s8_csv],
+    "S6": [s6_steady_state],
+    "S7": [s7_instant_food_no_reset, s7_pisa],
+    "S8": [s8_csv, s8_bad_crc],
+    "S9": [s9_cgms_only],
     "S10": [s10_window],
+    "S12": [s12_malformed],
     "S16": [s16_comm_profile],
     "S17": [s17_scenario],
 }
-SMOKE = ["S1", "S2", "S5", "S7", "S16", "S17"]
+SMOKE = ["S1", "S2", "S5", "S6", "S7", "S16", "S17"]
 
 
 # ----------------------------------------------------------------------
@@ -757,6 +1038,23 @@ def run_once(args) -> int:
     only = ({s.strip().upper() for s in args.only.split(",")} if args.only
             else set(SMOKE) if args.smoke else set(SUITES))
     try:
+        # Preflight: put the board in a known state so cases don't inherit
+        # STOPPED / CSV / x1000 / Dexcom from a previous run.
+        if board:
+            try:
+                pf = ctx.connect_board()
+                for k, v in (("comm_profile", protocol.encode_comm_profile(False)),
+                             ("data_source", protocol.encode_data_source(False)),
+                             ("cgms_only", protocol.encode_cgms_only(False)),
+                             ("speed", protocol.encode_speed(1.0)),
+                             ("run_state", protocol.encode_run_state(1))):
+                    pf.queue_write(k, v)
+                pump(3000)
+                ctx.log_event({"kind": "preflight", "ok": True})
+                print("  preflight: board reset to model / x1 / running")
+            except _Skip as exc:
+                print(f"  preflight: board not reachable ({exc})")
+
         for suite, cases in SUITES.items():
             if suite not in only:
                 continue

@@ -1,0 +1,439 @@
+% =====================================================================
+%  Secao para a monografia do TCC -- fragmento para \input{} no documento
+%  principal (NAO tem \documentclass nem \begin{document}).
+%
+%  Depende apenas de comandos ja presentes no preambulo do documento
+%  principal:
+%    - listings + \lstdefinelanguage{mermaid} + \lstset (frame=single)
+%    - amsmath                (equacao do PISA)
+%    - todonotes + \fabio{}/\guilherme{}  (comentarios de revisao)
+%    - hyperref               (\url)
+%    - babel[brazil], booktabs
+%
+%  Observacao: o texto DENTRO dos blocos lstlisting[language=mermaid] e
+%  mantido em ASCII (sem acentos) porque o pacote listings, do jeito que
+%  esta configurado no preambulo, nao mapeia caracteres UTF-8 acentuados.
+%  Para usar acentos nos diagramas, adicione um "literate" ao \lstset.
+%  O texto corrido (fora dos diagramas) usa acentuacao normal.
+%
+%  Fonte tecnica: docs/ARCHITECTURE.md, PROTOCOL_SPEC.md, FIRMWARE.md e
+%  docs/BLE_PAYLOAD_VALIDATION.md do repositorio do simulador.
+% =====================================================================
+
+\section{Arquitetura e fluxos de interação do simulador}
+\label{sec:arquitetura-fluxos}
+
+O simulador é composto por duas metades que se comunicam exclusivamente por
+Bluetooth Low Energy. No computador, a aplicação de mesa (Python/PyQt6) é
+responsável pela interface gráfica, pelas sessões BLE, pelo contrato de
+formato de mensagens e por uma segunda cópia, independente, da matemática dos
+modelos fisiológicos, executada localmente para produzir uma curva de
+referência sem ruído. Na placa de desenvolvimento (C sobre o Zephyr RTOS, por
+meio do nRF Connect SDK), uma \textit{thread} avança o modelo fisiológico e o
+modelo de ruído do sensor uma vez por segundo de relógio real, enquanto uma
+segunda \textit{thread} é responsável pelo envio BLE e por drenar uma fila de
+escritas de configuração, persistindo cada uma em memória \textit{flash}
+SPI-NOR externa. A placa é autônoma: desconectada da aplicação, continua
+anunciando e transmitindo.
+
+Todo o tráfego que cruza o enlace BLE pertence a uma de três classes:
+(i)~leituras de glicose no perfil padrão da Bluetooth SIG (\textit{Continuous
+Glucose Monitoring Service}, UUID \texttt{0x181F}), da placa para a aplicação;
+(ii)~configuração do simulador sobre um serviço GATT proprietário (base
+\texttt{5b2c0001-\ldots}), nos dois sentidos; e (iii)~uma notificação de um
+\textit{byte}, chamada \textit{reset-sync}, da placa para a aplicação, cujo
+\emph{instante de chegada} sinaliza que uma escrita de configuração fez
+efeito. As duas simulações (placa e aplicação) rodam em relógios separados,
+re-ancorados em $t = 0$ apenas quando uma escrita de configuração reinicia
+ambas; o ruído do sensor, presente somente na placa, é a única diferença que
+deve separar visivelmente as linhas ``recebida'' e ``esperada'' no gráfico.
+
+\subsection{Fluxos de interação}
+\label{sec:fluxos}
+
+Cada fluxo a seguir é apresentado como um diagrama de sequência (na notação
+\textit{mermaid}) acompanhado da explicação do seu propósito. Os atores são:
+\textbf{Usuário}; \textbf{App}, as janelas PyQt; \textbf{BleSession}, uma
+conexão BLE persistente com laço \textit{asyncio} próprio; e as duas
+\textit{threads} do firmware, \texttt{comm\_thread} e \texttt{model\_thread}.
+
+\subsubsection{Fluxo de desenvolvimento: início do streaming}
+\label{sec:fluxo-dev}
+
+É o caminho de uso mais simples: placa e aplicação já estão configuradas (por
+valores padrão ou por um envio anterior) e o objetivo é apenas observar as
+duas curvas. Ao clicar em \emph{Start}, a aplicação ancora o seu motor de
+simulação local em $t = 0$ e escreve a característica de estado de execução;
+a partir daí cada lado avança de forma independente, no seu próprio
+temporizador. A placa envia, a cada \texttt{measurement\_interval} segundos
+(cinco, nesta versão), uma notificação de \textit{CGM Measurement} e uma de
+\textit{Food/Exercise Status}; a aplicação anexa a primeira à linha
+``recebida'' e a segunda ao gráfico de refeição e exercício, enquanto o motor
+local alimenta a linha ``esperada''.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo de desenvolvimento: do clique em Start ao streaming contínuo.},label={lst:fluxo-dev}]
+sequenceDiagram
+    participant U as Usuario
+    participant App as App (graphic/)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: Start
+    App->>App: ancora SimulationEngine local em t=0
+    App->>BLE: queue_write("run_state", RUNNING)
+    BLE->>FW: escrita GATT
+    FW->>Model: apply_config()
+    loop a cada 1 s (tick do MCU)
+        Model->>Model: passo do modelo + ruido do sensor
+    end
+    loop a cada 5 s (measurement_interval)
+        FW->>BLE: notify CGM Measurement (glicose)
+        FW->>BLE: notify Food/Exercise Status (taxa de carbo, % exercicio)
+        BLE-->>App: sinal new_message
+        App->>App: anexa a linha "recebida"
+    end
+    App->>App: engine local avanca a cada 1 s -> linha "esperada"
+\end{lstlisting}
+
+\subsubsection{Fluxo de envio de configuração}
+\label{sec:fluxo-envio}
+
+É acionado pelo botão \emph{Enviar para a placa} de cada janela de
+configuração (Pessoa, Sensor, Refeição, Exercício). A escrita sempre provoca
+um reinício completo na placa (a rotina \texttt{apply\_config\_locked()}
+re-inicializa todos os \textit{slots} e zera \texttt{sim\_clock\_min}), e é
+justamente assim que a aplicação confirma que a escrita chegou: ela aguarda a
+próxima notificação \textit{reset-sync} e exibe ``Aplicado na placa''. Em uma
+placa multi-sensor, a escrita atinge o \textit{slot} apontado pelo cursor
+\textit{Sensor select} (característica \texttt{5b2c0015}); por isso, quando um
+\textit{slot} específico é o alvo, a aplicação enfileira antes uma escrita
+nesse cursor.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo de envio de configuração, com o reinício e a confirmação por reset-sync.},label={lst:fluxo-envio}]
+sequenceDiagram
+    participant U as Usuario
+    participant App as App (*_config_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: edita e clica "Enviar para a placa"
+    opt alvo de um slot especifico (N > 1)
+        App->>BLE: queue_write("sensor_select", slot)
+        BLE->>FW: escrita GATT -- comm_thread ajusta working_sel
+    end
+    App->>BLE: queue_write(char_key, bytes)
+    BLE->>FW: escrita GATT (caracteristica de config)
+    FW->>FW: atualiza sim_config na RAM e grava na flash externa
+    FW->>Model: apply_config() -- reinicia todo slot, sim_clock_min = 0
+    Model-->>FW: notify reset_sync
+    FW-->>BLE: notificacao
+    BLE-->>App: sinal reset_sync
+    App-->>U: "Aplicado na placa"
+\end{lstlisting}
+
+Uma escrita na característica de \emph{Speed} (\texttt{5b2c0012}) hoje passa
+por esse mesmo caminho de reinício, zerando o relógio e limpando os vetores
+de eventos pontuais. Mudar a velocidade de reprodução não deveria perturbar
+uma simulação em andamento; tratar a velocidade como um escalar aplicado ``a
+quente'' é uma correção pendente.
+\guilherme{Decidir se essa limitação de Speed entra como ``trabalho futuro'' ou como nota de implementação.}
+
+\subsubsection{Fluxo de leitura de configuração}
+\label{sec:fluxo-leitura}
+
+É acionado pelo botão \emph{Ler da placa}: uma operação de leitura e resposta
+GATT simples, sem notificação e sem reinício. O pedido de leitura trafega na
+\emph{mesma fila} das escritas dentro da \texttt{BleSession}, de modo que a
+sequência ``ajustar o cursor \textit{Sensor select} e então ler aquele
+\textit{slot}'' permanece ordenada mesmo enquanto a \texttt{comm\_thread}
+está ocupada enviando medições.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo de leitura de configuração (leitura/resposta GATT, sem reinício).},label={lst:fluxo-leitura}]
+sequenceDiagram
+    participant U as Usuario
+    participant App as App (*_config_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+
+    U->>App: clica "Ler da placa"
+    opt alvo de um slot especifico (N > 1)
+        App->>BLE: queue_write("sensor_select", slot)
+        BLE->>FW: escrita GATT
+    end
+    App->>BLE: request_read(char_key)
+    BLE->>FW: leitura GATT (caracteristica de config)
+    FW-->>BLE: bytes crus (sim_config na RAM)
+    BLE-->>App: config_read(address, char_key, raw_bytes)
+    App->>App: protocol.decode_*(raw_bytes)
+    App->>App: carrega no formulario
+\end{lstlisting}
+
+\subsubsection{Fluxo de eventos pontuais (refeição, exercício e PISA)}
+\label{sec:fluxo-pontual}
+
+Os comandos ``Inserir Refeição/Exercício/PISA agora'' deliberadamente
+\emph{não} seguem o fluxo de reinício. O evento único é acrescentado a um
+pequeno conjunto fixo de posições de evento ativo dentro da
+\texttt{model\_thread} e decai sozinho ao longo da sua duração, podendo ser
+injetado no meio de uma simulação sem reiniciar o relógio nem o estado do
+modelo --- por isso não há troca de \textit{reset-sync}. Em uma placa
+multi-sensor, a aplicação escreve antes o cursor \textit{Sensor select} e
+envia o evento a \emph{uma} sessão (e não em \textit{broadcast} para as
+quatro, o que aplicaria o evento $N$ vezes). O motor local da aplicação
+espelha o mesmo evento, para que a linha ``esperada'' se mova de forma
+idêntica.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo de eventos pontuais: injeção sem reinício em uma simulação em andamento.},label={lst:fluxo-pontual}]
+sequenceDiagram
+    participant U as Usuario
+    participant App as App (graphic/)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: Inserir Refeicao/Exercicio/PISA agora
+    App->>App: SimulationEngine.add_instant_*() (linha "esperada" local)
+    opt multi-sensor: alvo de um slot
+        App->>BLE: queue_write("sensor_select", slot)
+    end
+    App->>BLE: queue_write("*_instant", bytes)
+    BLE->>FW: escrita GATT (one-shot)
+    FW->>Model: model_thread_add_instant_*()
+    Note over Model: decai ao longo de duration_min, somado/maximizado com a agenda a cada tick -- sem reinicio, sem reset_sync
+\end{lstlisting}
+
+Um reinício \emph{posterior}, vindo de qualquer outra escrita (inclusive
+\emph{Stop}), limpa esses eventos junto com todo o restante do estado.
+
+\subsubsection{Fluxo de envio de \textit{layout} da placa (multi-sensor)}
+\label{sec:fluxo-layout}
+
+A janela \textbf{Board Layout} associa um perfil salvo de Pessoa e de Sensor a
+cada um dos $N$ \textit{slots} e envia o conjunto em uma única ação. O método
+\texttt{BleSession.send\_board\_layout()} executa a operação como uma única
+co-rotina sobre \emph{uma} conexão (qualquer identidade alcança o serviço de
+configuração compartilhado), com ritmo controlado para a fila do firmware
+acompanhar, subindo uma trilha CSV por \textit{slot} quando a pessoa
+atribuída é baseada em CSV e terminando com uma escrita de estado de execução
+igual a RUNNING.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo de envio de layout multi-sensor: um slot por vez, sobre uma única conexão.},label={lst:fluxo-layout}]
+sequenceDiagram
+    participant U as Usuario
+    participant BLW as graphic/board_layout_window.py
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>BLW: atribui slots 0..N-1 -> pessoa / CSV, clica "Enviar layout para a placa"
+    BLW->>BLW: _build_slots() -- codifica person/sensor/data_source/food/exercise por slot
+    BLW->>BLE: send_board_layout(slots)
+    loop para cada slot atribuido i
+        BLE->>FW: escreve sensor_select = i
+        BLE->>FW: escreve person, sensor, data_source, food, exercise (com ritmo, re-tentativa em fila cheia)
+        opt pessoa baseada em CSV
+            BLE->>FW: CSV BEGIN / DATA x k / COMMIT (na trilha de flash do slot i)
+        end
+        BLE-->>BLW: board_layout_progress(i+1, N)
+    end
+    BLE->>FW: escreve run_state = RUNNING
+    FW->>Model: apply_config() por escrita -- cada slot reinicia, sim_clock_min = 0
+    BLE-->>BLW: board_layout_finished(ok)
+\end{lstlisting}
+
+O mapa \textit{slot}~$\rightarrow$~paciente é persistido no lado da aplicação
+em \texttt{data/board\_layout.json}. Uma vez atribuído um \textit{slot}, a
+lista de dispositivos Bluetooth, a linha da árvore e o título do gráfico
+passam a mostrar o nome do paciente no lugar de ``Nordic Glucose Sensor~$N$''.
+
+\subsubsection{Fluxo do modo CGMS Only}
+\label{sec:fluxo-cgms-only}
+
+É o oposto do modo ``Model Only''. Com \emph{CGMS Only} marcado, a placa se
+comporta como uma fonte de dados puramente CGM-padrão: transmite apenas
+notificações de \textit{CGM Measurement}, suprime as de \textit{Food/Exercise
+Status} e rejeita toda escrita de configuração, exceto o próprio estado de
+execução e a característica CGMS Only. Ativar o modo nunca reinicia (o que
+estiver rodando continua); desativá-lo executa o mesmo reinício completo de
+uma parada e então aguarda, exigindo um \emph{Start} explícito em seguida ---
+diferente do comportamento autônomo padrão da placa, que retoma sozinha.
+
+\begin{lstlisting}[language=mermaid,caption={Fluxo do modo CGMS Only: a placa como fonte CGM-padrão isolada.},label={lst:fluxo-cgms-only}]
+sequenceDiagram
+    participant U as Usuario
+    participant App as App (graphic/main_window.py)
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>App: marca "CGMS Only"
+    App->>App: trava controles de config e Start/Pause/Stop; descarta SimulationEngine local
+    App->>BLE: queue_write("cgms_only", 1)
+    BLE->>FW: escrita GATT
+    FW->>Model: set_run_state(RUNNING) se ocioso -- sem reinicio
+    FW->>FW: ativa rejeicao de escrita nas caracteristicas de config
+    loop a cada 5 s
+        Model->>Model: passo do modelo + ruido do sensor
+        FW->>BLE: apenas notify CGM Measurement (Food/Exercise Status suprimido)
+        BLE-->>App: sinal new_message
+        App->>App: anexa a linha "recebida" (sem linha "esperada")
+    end
+    U->>App: desmarca "CGMS Only"
+    App->>BLE: queue_write("cgms_only", 0)
+    BLE->>FW: escrita GATT
+    FW->>Model: set_run_state(STOPPED) -- reinicio completo, depois aguarda
+    FW->>FW: desativa rejeicao de escrita
+    App->>App: destrava controles
+    Note over U,App: placa aguarda Start explicito -- sem retomada automatica
+\end{lstlisting}
+
+\subsection{Perfil de comunicação no estilo Dexcom}
+\label{sec:perfil-dexcom}
+
+O perfil padrão e principal da placa é o \textit{Continuous Glucose
+Monitoring Service} da Bluetooth SIG (UUID \texttt{0x181F}), um padrão
+público que qualquer cliente CGM genérico consegue ler. Além dele, a placa
+oferece um perfil opcional que \emph{imita} um transmissor Dexcom de
+consumidor, selecionável em tempo de execução pela característica de perfil
+de comunicação (\texttt{5b2c0014}) e disponível apenas em \textit{builds} de
+sensor único. Esse perfil não resulta de engenharia reversa realizada neste
+trabalho --- atividade explicitamente fora do escopo ---, mas do uso de
+informação já publicada por projetos de código aberto da comunidade de
+diabetes (DiaBLE, xDrip+, LoopKit). Dessas fontes sabe-se que sensores Dexcom
+reais não implementam o serviço da SIG: eles expõem um serviço GATT
+proprietário (UUID curto \texttt{FEBC}), com uma etapa de
+autenticação por desafio e resposta (J-PAKE nos modelos G7, AES nos G6) antes
+de qualquer dado de glicose, e mensagens binárias marcadas por \textit{opcode}
+transmitidas em cadência fixa de 300\,s. Não existe especificação oficial
+pública da Dexcom, e por isso nenhuma é citada.
+
+O que o firmware efetivamente implementa é um esboço mínimo, e não um clone
+compatível byte a byte: o serviço \texttt{FEBC} com uma característica de
+controle cujas escritas são confirmadas e ignoradas (sem qualquer
+\textit{handshake} de autenticação) e uma característica de glicose que
+notifica uma mensagem de tempo real de 14~\textit{bytes}
+(\textit{opcode}, \textit{status}, número de sequência de 32~\textit{bits},
+\textit{timestamp} de 32~\textit{bits}, glicose de 12~\textit{bits}, um
+\textit{byte} de estado e um \textit{byte} de tendência), anunciando
+\texttt{FEBC} e o nome \texttt{DXCM01}. Não há J-PAKE, \textit{backfill} de
+24\,h nem fluxo de calibração. O multiplicador de velocidade, a reprodução de
+CSV e o modelo de falha PISA continuam todos valendo, pois moldam o valor de
+glicose antes de a \texttt{comm\_thread} escolher o perfil. A intenção é
+apenas oferecer um fluxo ``reconhecível como parecido com Dexcom'' para fins
+de demonstração, mantido atrás de uma opção e com o CGMS da SIG como padrão;
+compatibilidade completa com um transmissor real não é um objetivo deste
+trabalho.
+\guilherme{Se o perfil Dexcom não for demonstrado na banca, considerar mover esta subseção para um apêndice.}
+
+\subsection{Modelo de falha PISA}
+\label{sec:impl-pisa}
+
+O evento de atenuação do sensor induzida por pressão (\textit{Pressure-Induced
+Sensor Attenuation}, PISA), cuja origem clínica --- a queda transitória de
+perfusão no tecido em torno do eletrodo, que produz um falso valor baixo de
+glicose --- foi descrita na fundamentação teórica, é reproduzido no simulador
+como um evento pontual (característica \texttt{5b2c0013}, com carga útil
+\texttt{\{u16 duration\_min; f32 depth\_frac\}}), na mesma classe
+não-persistente e não-reiniciante dos eventos de refeição e exercício
+instantâneos.
+
+Enquanto um episódio de duração $T$ está ativo, a leitura final do sensor é
+multiplicada pelo fator de atenuação da Equação~\ref{eq:pisa}:
+
+\begin{equation}
+a(t_{el}) = 1 - d\,\operatorname{sen}\!\left(\pi\,\frac{t_{el}}{T}\right)
+\label{eq:pisa}
+\end{equation}
+
+Onde $T$ é a duração do episódio, em minutos; $t_{el} = T - t_{rem}$ é o
+tempo decorrido desde o início do episódio, sendo $t_{rem}$ o tempo restante;
+$d \in [0,1]$ é a profundidade de pico, recebida no campo \texttt{depth\_frac}
+da característica; e $a(t_{el})$ é o fator multiplicativo aplicado à leitura.
+O fator vale $1$ (nenhum efeito) no início e no fim do episódio e $1 - d$ no
+seu ponto médio, descrevendo uma queda suave e simétrica; episódios
+concorrentes se compõem multiplicativamente. Ele é aplicado \emph{depois} do
+modelo de ruído do sensor e \emph{também} sobre a fonte de dados CSV, porque
+o PISA é um artefato do transdutor e não uma mudança na glicose subjacente:
+o valor verdadeiro de glicose no registro interno do firmware permanece
+intacto, apenas a leitura reportada cai. O motor local da aplicação espelha o
+mesmo fator, e o intervalo de tempo afetado é sombreado no gráfico.
+
+Trata-se de uma aproximação fenomenológica, projetada para o simulador ---
+dois parâmetros (profundidade e duração), com início, vale e recuperação
+qualitativamente corretos ---, e não de um modelo publicado de atenuação por
+pressão: o conceito vem da literatura de CGM, a forma da curva é uma escolha
+de projeto.
+\guilherme{Adicionar citação para ``compression low'' / artefato por compressão (Facchinetti et al. ou revisão de acurácia de CGM) na descrição clínica do PISA.}
+
+\subsection{Arquitetura multi-sensor}
+\label{sec:multi-sensor}
+
+\subsubsection{$N$ \textit{slots} independentes sobre uma placa}
+\label{sec:multi-sensor-slots}
+
+Uma opção de tempo de compilação, \texttt{CONFIG\_APP\_SENSOR\_COUNT} (de 1 a
+4, padrão 4), define quantos sensores CGM totalmente independentes a mesma
+placa simula. Cada \textit{slot} tem a sua própria estrutura de configuração
+persistida: um modelo fisiológico com parâmetros, um modelo de ruído de
+sensor e uma agenda diária recorrente de refeição e exercício --- \emph{ou}
+uma trilha CSV enviada ---, e a combinação é livre (por exemplo, três
+\textit{slots} de CSV e um de modelo). Cada \textit{slot} recebe ainda a sua
+própria identidade BLE, o seu próprio conjunto de anúncio e a sua própria
+instância do serviço GATT CGMS; a identidade~0 usa o endereço de fábrica e as
+identidades $1$ a $N-1$ usam endereços aleatórios estáticos e estáveis, com
+nome anunciado ``Nordic Glucose Sensor'' seguido do índice.
+
+O que é \emph{compartilhado} entre todos os \textit{slots} é um único relógio
+de simulação, um único multiplicador de velocidade e um único estado de
+execução --- um só \emph{Start/Stop} comanda os quatro. Uma característica
+\textit{Sensor select} (\texttt{5b2c0015}) funciona como um cursor por
+conexão: seleciona qual \textit{slot} as leituras e escritas por sensor
+seguintes (pessoa, sensor, fonte de dados, eventos, envio de CSV) endereçam,
+o que permite ao serviço de configuração, de instância única, atender os $N$
+\textit{slots} sem acrescentar um \textit{byte} de índice a cada mensagem. A
+\texttt{comm\_thread} envia uma \textit{CGM Measurement} por \textit{slot} a
+cada ciclo, além de uma notificação de \textit{Food/Exercise Status} por
+\textit{slot}, esta última com um \textit{byte} de \textit{slot} no início.
+
+No lado da aplicação, o usuário conecta ao endereço de cada identidade; cada
+conexão é uma \texttt{BleSession} e cada sessão mostra apenas as medições do
+seu próprio \textit{slot}, demultiplexadas pelo dígito final do nome
+anunciado. Conectar às quatro identidades resulta em quatro linhas na árvore.
+O caso $N = 1$ é a versão original de sensor único e é idêntica a ela no
+enlace.
+
+\subsubsection{Limitação de pareamento no Windows}
+\label{sec:multi-sensor-windows}
+
+Durante a validação em hardware constatou-se que o Windows conclui o
+pareamento \textit{LE Secure Connections} contra a identidade BLE~0 (a de
+fábrica) e realiza GATT criptografado com ela normalmente, mas \emph{aborta}
+o mesmo \textit{handshake} contra as identidades não-padrão da placa. A placa
+registra a mensagem \texttt{Security failed \ldots\ level 1 err 2}
+(\texttt{BT\_SECURITY\_ERR\_AUTH\_REQUIREMENT}) e o Windows derruba o enlace
+imediatamente (razão HCI \texttt{0x13}). As mitigações testadas em hardware e
+que \emph{não} resolveram para as identidades $1$ a $N-1$ foram: desligar a
+privacidade BLE, para que essas identidades usem endereços estáticos em vez
+de endereços privados resolvíveis; reservar uma posição de vínculo por
+identidade; e fazer a placa iniciar a segurança logo após a conexão.
+\guilherme{Confirmar se essa limitação é do Windows testado (versão) ou geral; vale um teste rápido em Linux/Android para a monografia.}
+
+A solução adotada é uma opção de compilação
+(\texttt{CONFIG\_APP\_CGMS\_NO\_AUTH}, ativa por padrão quando
+\texttt{CONFIG\_APP\_SENSOR\_COUNT} $> 1$ e inativa no \textit{build} de
+sensor único): com ela, as características do serviço CGMS passam a exigir
+apenas leitura e escrita simples, sem enlace autenticado, e todas as $N$
+identidades transmitem sem qualquer pareamento. Isso é aceitável para um
+simulador de bancada --- dados sintéticos, uso em laboratório, sem informação
+pessoal ---, mas representa uma redução real de segurança: o enlace fica sem
+criptografia, sem autenticação (qualquer central próxima pode conectar e,
+pelo serviço de configuração, trocar modelos, subir um CSV ou parar a
+simulação), sem proteção contra um intermediário que altere valores em
+trânsito, e em desacordo com o perfil da SIG, que pressupõe enlace
+autenticado para essas características. O \textit{build} de sensor único
+mantém o pareamento e a criptografia normais. Caso um enlace multi-sensor
+pareado e criptografado venha a ser necessário, os caminhos práticos são usar
+uma pilha BLE de \textit{host} fora do Windows (por exemplo, um \textit{dongle}
+nRF52840 atuando como central) ou placas físicas separadas.

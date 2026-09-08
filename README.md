@@ -35,8 +35,11 @@ readings against the same model run locally as a cross-check.
 - Configure a simulated patient (physiological model + parameters), CGM
   sensor noise model, and a recurring daily food/exercise schedule; send it
   to the board or run it locally with no hardware ("Model Only" mode)
-- Insert one-shot food/exercise events into an already-running simulation
-  without resetting it
+- **Up to 4 fully independent sensors on one board** (`CONFIG_APP_SENSOR_COUNT`)
+  — each its own BLE identity, model-or-CSV, noise, and schedule; assigned
+  from the Board Layout window; one shared sim clock + speed
+- Insert one-shot food/exercise/PISA events into an already-running
+  simulation (any one slot) without resetting it
 - Replay a recorded 24 h CGM trace (Dexcom CSV) from the board instead of a
   model — uploaded over BLE, stored in the board's external flash
 - Continuous x1–x1000 simulation-speed multiplier; rolling "last 1 hour"
@@ -66,10 +69,11 @@ SensorSimulator/
 │   ├── graphic/      # All windows/dialogs (the UI)
 │   └── utils/        # Reserved for generic helpers
 ├── scenarios/        # JSON timed-action scripts for the Scenario window
-├── scripts/          # ui_smoke.py, e2e.py (app↔board test harness), validate_ble_stream.py
+├── scripts/          # e2e.py (single-sensor harness), e2e_4sensor.py (4-sensor harness),
+│                     #   ui_smoke.py, validate_ble_stream.py
 ├── firmware/         # peripheral_cgms firmware source (git-tracked, builds/flashes from here)
 ├── cgmsim/           # Standalone CLI simulator — source of truth for the model math
-├── data/             # Saved profiles.json
+├── data/             # Saved profiles.json, board_layout.json, settings.json
 ├── docs/             # Architecture & design docs (see above)
 ├── requirements.txt
 ├── pyproject.toml    # Pylint configuration

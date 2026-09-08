@@ -1,0 +1,20 @@
+{
+  "slots": [
+    {
+      "person": "test2",
+      "sensor": "Sample Sensor"
+    },
+    {
+      "person": "test3",
+      "sensor": "Sample Sensor"
+    },
+    {
+      "person": "test3",
+      "sensor": "Sample Sensor"
+    },
+    {
+      "person": "Sample Patient",
+      "sensor": "Sample Sensor"
+    }
+  ]
+}

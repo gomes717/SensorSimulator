@@ -82,7 +82,18 @@ without creating a dependency on the GUI or BLE stack.
   (see §1). Also home to `_sfloat_to_float()` (decoding the standard CGMS
   Measurement's IEEE-11073 SFLOAT glucose value) and the custom
   config-service characteristic discovery/dispatch table
-  (`CONFIG_CHAR_KEY_BY_UUID`).
+  (`CONFIG_CHAR_KEY_BY_UUID`, incl. `"sensor_select"`).
+  **Multi-sensor:** a numbered advertised name ("Nordic Glucose Sensor 3")
+  sets `_own_instance_index` / `slot_index` (0-based) so the session shows only
+  that slot's CGM Measurement + Food/Exercise Status, and `_require_pairing =
+  False` so it skips the Windows pairing step (Option-A firmware needs none, and
+  attempting it wedges the WinRT stack). An optional `display_name` (the
+  assigned patient — see `board_layout`) is what `_user_id()` shows on the tree
+  / graph, without disturbing any name parsing. `request_read()` rides the same
+  FIFO as `queue_write()`, so "set the sensor-select cursor, then read that
+  slot" stays ordered. `send_board_layout(slots)` runs the whole multi-slot push
+  as one coroutine (cursor + per-slot config + optional per-slot CSV upload,
+  paced and retried).
 - **`bluetooth_scanner.py`** — `BluetoothScanThread`, a short-lived BLE
   discovery scan (via `bleak.BleakScanner`), feeding `bluetooth_window.py`'s
   device list.
@@ -113,8 +124,16 @@ without creating a dependency on the GUI or BLE stack.
 - `profile_store.py` — JSON persistence of every saved `PersonProfile`/
   `SensorProfile` to `data/profiles.json` (`dataclasses.asdict` + `json`,
   no external serialization library).
+- `board_layout.py` — the slot → (person, sensor) map for a multi-sensor
+  board (`BoardLayout` / `SlotAssignment`), persisted to
+  `data/board_layout.json`; applied by `BleSession.send_board_layout()`.
 - `app_settings.py` — same style, for app-wide settings in
-  `data/settings.json` (currently the glucose range thresholds).
+  `data/settings.json` (glucose range thresholds, speed multiplier, rolling
+  view window, theme).
+- `food_log_csv.py` — reader for D1NAMO-style food-log CSVs, auto-paired to
+  a Dexcom export by file id (`Dexcom_001` ↔ `Food_Log_001`).
+- `scenario.py` — timed-action scenario files (`scenarios/*.json`) fired on
+  a wall-clock timeline by the Scenario window.
 - `cgm_metrics.py` — pure `compute()` of the clinical range metrics
   (TIR/TBR1/TBR2/TAR1/TAR2, mean, population variance, SD, CV) for a list
   of glucose values; shared by the CSV Analysis window and the main
@@ -131,13 +150,17 @@ re-opening one raises the same instance instead of creating a duplicate.
 
 | Window/dialog | Role |
 |---|---|
-| `main_window.py` — `MainWindow` | Toolbar (Configuration, CSV Analysis, Bluetooth, Debug); user treeview (one row per connected device — per-user `#id` + generated avatar disc, live glucose, LOW/HIGH badge beside the name when out of range); glucose graph (received solid + expected dashed, with TBR2/TBR1/TIR/TAR1/TAR2 range shading and a mean line); food/exercise graph (carb rate + exercise %); Start/Pause/Resume/Stop; Insert Food/Exercise Now buttons; live range-metrics panel (TIR/TBR/TAR, mean, variance for the current view) |
-| `configuration_window.py` — `ConfigurationWindow` | The Person/Sensor selectors, their Configure/Food/Exercise buttons and the Fast-mode/Model-Only/CGMS-Only toggles moved out of the main window; plus the editable glucose range thresholds (persisted via `models/app_settings.py` to `data/settings.json`) and a per-person data-source choice (physiological model vs CSV region — stored on the profile, playback not wired yet) |
+| `main_window.py` — `MainWindow` | Toolbar (Configuration, CSV Analysis, Bluetooth, Debug, View, Scenario, Faults); user treeview (one row per connected identity — per-user `#id` + generated avatar disc, live glucose, LOW/HIGH badge beside the name when out of range); glucose graph (received solid + expected dashed, TBR2/TBR1/TIR/TAR1/TAR2 range shading, mean line, PISA-shaded intervals, rolling view window); food/exercise graph (carb rate + exercise %); Start/Pause/Resume/Stop; Insert Food/Exercise/PISA Now buttons; live range-metrics panel |
+| `configuration_window.py` — `ConfigurationWindow` | The Person/Sensor selectors + their Configure/Food/Exercise buttons, a **"Board layout (4 sensors)…"** button, the Speed slider (x1–x1000) / Communication-type combo / Model-Only / CGMS-Only toggles, the editable glucose range thresholds, and the per-person data-source choice (physiological model vs CSV region — CSV playback **is** wired, incl. "Send CSV to Board") |
+| `board_layout_window.py` — `BoardLayoutWindow` | Multi-sensor: a Person + Sensor-noise combo per slot (persisted to `data/board_layout.json`), a target-board picker, and **"Send layout to Board"** → `BleSession.send_board_layout()` |
+| `view_config_window.py` — `ViewConfigWindow` | Rolling graph-window length and UI theme |
+| `scenario_window.py` — `ScenarioWindow` | Pick a `scenarios/*.json` file and run its timed action list against the board/engine |
+| `fault_panel.py` — `FaultPanel` | The `FAULTS` registry window; each row opens a dialog → `MainWindow.inject_fault()` (PISA wired) |
 | `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom CGM export (`models/dexcom_csv.py`), zoom/pan the full trace, slide a 24 h window over it, and read that window's range metrics (`models/cgm_metrics.py`: TIR/TBR/TAR, mean, variance, SD, CV). Analysis only — does not feed the live simulation |
-| `bluetooth_window.py` — `BluetoothWindow` | Device list, scan trigger, multi-device connect/disconnect; owns the `sessions()` dict every other window resolves a "target device" through |
+| `bluetooth_window.py` — `BluetoothWindow` | Device list, scan trigger, multi-device connect/disconnect; owns the `sessions()` dict every other window resolves a "target device" through. Shows `"<patient> — Sensor N"` for a slot assigned in `board_layout.json` (raw `"Nordic Glucose Sensor N"` otherwise); `relabel()` refreshes those live after a Board Layout edit |
+| `device_target.py` — `DeviceTargetBar` | "Target device: [combo] [Slot] [Refresh]" shared by the four config windows, plus the `restart_board()` / `await_send_confirmation()` helpers they all call after a write. The **Slot** combo shows only for a numbered multi-sensor identity; `.begin()` queues the `sensor_select` cursor before the window's own write/read |
 | `debug_window.py` — `DebugWindow` | Live scrolling list of every BLE message received (any device), sourced from `core/ble_message_log.py` |
 | `message_detail_window.py` — `MessageDetailWindow` | Full field dump of one selected message from Debug |
-| `device_target.py` — `DeviceTargetBar` | The "Target device: [combo] [Refresh]" row embedded in all four config windows, plus the shared `restart_board()`/`await_send_confirmation()` helpers they all call after a write |
 | `person_config_window.py` — `PersonConfigWindow` | Manage saved `PersonProfile`s (model choice + its parameters), Save/Send to Board/Read from Board |
 | `sensor_config_window.py` — `SensorConfigWindow` | Manage saved `SensorProfile`s (noise model + parameters), same Save/Send/Read pattern |
 | `food_config_window.py` — `FoodConfigWindow` | Recurring-daily meal schedule (table + add row) for the active person |
@@ -162,10 +185,22 @@ board's `reset_sync` notification to show "✓ Applied on board".
 
 **A CGM reading arrives:**
 firmware notify → `BleSession`'s notification handler (asyncio callback) →
+(multi-sensor: dropped unless it's this identity's own CGMS instance) →
 decodes the standard CGMS SFLOAT payload → emits on `core.BleMessageLog`'s
 `new_message` signal (queued onto the GUI thread) → `MainWindow._on_new_message()`
-updates the treeview row and, if that device is selected and a run is
-active, appends to the glucose graph.
+updates the treeview row (`_update_user_alert()` badges it LOW/HIGH vs the
+current thresholds) and, if that device is selected and a run is active,
+appends to the glucose graph.
+
+**A multi-sensor board layout is pushed:**
+`board_layout_window.py` (`BoardLayout` in memory, saved to
+`data/board_layout.json`) → `_build_slots()` encodes each slot's
+person/sensor/data-source/food/exercise (+ CSV tracks when the person is
+CSV-backed) → `BleSession.send_board_layout(slots)` runs one coroutine:
+per slot, write `sensor_select` then the per-slot writes (paced ~80 ms,
+retried on a full config queue) then any CSV upload, finally `run_state =
+RUNNING` → `board_layout_progress` / `board_layout_finished` signals drive
+the window's status label. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §4.5.
 
 **A run starts:** `MainWindow._start_run()` (re)creates a `SimulationEngine`
 for the active person, anchors the graph's t=0 to now, and writes

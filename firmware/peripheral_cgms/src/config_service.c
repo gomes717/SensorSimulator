@@ -5,6 +5,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/att.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
@@ -55,6 +56,8 @@ static struct bt_uuid_128 pisa_instant_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0013, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 static struct bt_uuid_128 comm_profile_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0014, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 sensor_select_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0015, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 
 /* Config writes are rejected while CGMS-only mode is active — see
  * model_thread.h's model_thread_set_cgms_only() comment. Deliberately does
@@ -70,12 +73,12 @@ static bool cfg_write_blocked(void)
 static ssize_t read_person_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				   void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	struct sensor_slot slot;
 	struct person_config_wire wire;
 
-	comm_thread_copy_config(&cfg);
-	wire.model_id = cfg.model_id;
-	memcpy(wire.params, cfg.model_params, sizeof(wire.params));
+	comm_thread_copy_selected_slot(&slot);
+	wire.model_id = slot.model_id;
+	memcpy(wire.params, slot.model_params, sizeof(wire.params));
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, &wire, sizeof(wire));
 }
@@ -103,12 +106,12 @@ static ssize_t write_person_config(struct bt_conn *conn, const struct bt_gatt_at
 static ssize_t read_sensor_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				   void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	struct sensor_slot slot;
 	struct sensor_config_wire wire;
 
-	comm_thread_copy_config(&cfg);
-	wire.sensor_id = cfg.sensor_id;
-	memcpy(wire.params, cfg.sensor_params, sizeof(wire.params));
+	comm_thread_copy_selected_slot(&slot);
+	wire.sensor_id = slot.sensor_id;
+	memcpy(wire.params, slot.sensor_params, sizeof(wire.params));
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, &wire, sizeof(wire));
 }
@@ -133,13 +136,17 @@ static ssize_t write_sensor_config(struct bt_conn *conn, const struct bt_gatt_at
 	return len;
 }
 
+/* Legacy on/off mode byte (5b2c0004) — superseded by the speed multiplier
+ * (5b2c0012). The byte is no longer part of struct sim_config; the
+ * characteristic is kept only so the GATT attribute layout / handle numbers
+ * stay stable for already-paired clients. Reads return a constant NORMAL,
+ * writes are accepted and dropped (comm_thread ignores CFG_MSG_MODE). */
 static ssize_t read_mode(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
 			  uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	uint8_t mode = SIM_MODE_NORMAL;
 
-	comm_thread_copy_config(&cfg);
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.mode, sizeof(cfg.mode));
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &mode, sizeof(mode));
 }
 
 static ssize_t write_mode(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -169,11 +176,11 @@ static ssize_t write_mode(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static ssize_t read_data_source(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				  void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	struct sensor_slot slot;
 
-	comm_thread_copy_config(&cfg);
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.data_source,
-				 sizeof(cfg.data_source));
+	comm_thread_copy_selected_slot(&slot);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &slot.data_source,
+				 sizeof(slot.data_source));
 }
 
 static ssize_t write_data_source(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -203,11 +210,10 @@ static ssize_t write_data_source(struct bt_conn *conn, const struct bt_gatt_attr
 static ssize_t read_speed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			    void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	float speed_mult = comm_thread_speed_mult();
 
-	comm_thread_copy_config(&cfg);
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.speed_mult,
-				 sizeof(cfg.speed_mult));
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &speed_mult,
+				 sizeof(speed_mult));
 }
 
 static ssize_t write_speed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -237,11 +243,10 @@ static ssize_t write_speed(struct bt_conn *conn, const struct bt_gatt_attr *attr
 static ssize_t read_comm_profile(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				   void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	uint8_t comm_profile = comm_thread_comm_profile();
 
-	comm_thread_copy_config(&cfg);
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.comm_profile,
-				 sizeof(cfg.comm_profile));
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &comm_profile,
+				 sizeof(comm_profile));
 }
 
 static ssize_t write_comm_profile(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -261,6 +266,38 @@ static ssize_t write_comm_profile(struct bt_conn *conn, const struct bt_gatt_att
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
 	if (comm_thread_enqueue_config(CFG_MSG_COMM_PROFILE, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── Sensor select: read + write (session cursor, NOT persisted) ──────────
+ * Sets which of the sensor_count slots subsequent per-sensor config reads
+ * (person/sensor/data-source/food/exercise readback) and writes target. See
+ * PROTOCOL_SPEC.md's "Sensor select" section. */
+
+static ssize_t read_sensor_select(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				    void *buf, uint16_t len, uint16_t offset)
+{
+	uint8_t sel = comm_thread_selected_slot();
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &sel, sizeof(sel));
+}
+
+static ssize_t write_sensor_select(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				     const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 1) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_SENSOR_SELECT, buf, len) != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
 	}
 	return len;
@@ -449,14 +486,14 @@ static ssize_t write_exercise_instant(struct bt_conn *conn, const struct bt_gatt
 static ssize_t read_food_events(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				  void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	struct sensor_slot slot;
 	struct food_list_wire wire;
 
-	comm_thread_copy_config(&cfg);
-	wire.count = cfg.food_count;
-	memcpy(wire.events, cfg.food, sizeof(wire.events));
+	comm_thread_copy_selected_slot(&slot);
+	wire.count = slot.food_count;
+	memcpy(wire.events, slot.food, sizeof(wire.events));
 
-	uint16_t actual_len = sizeof(wire.count) + cfg.food_count * sizeof(struct food_event);
+	uint16_t actual_len = sizeof(wire.count) + slot.food_count * sizeof(struct food_event);
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, &wire, actual_len);
 }
@@ -464,14 +501,14 @@ static ssize_t read_food_events(struct bt_conn *conn, const struct bt_gatt_attr 
 static ssize_t read_exercise_events(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				      void *buf, uint16_t len, uint16_t offset)
 {
-	struct sim_config cfg;
+	struct sensor_slot slot;
 	struct exercise_list_wire wire;
 
-	comm_thread_copy_config(&cfg);
-	wire.count = cfg.exercise_count;
-	memcpy(wire.events, cfg.exercise, sizeof(wire.events));
+	comm_thread_copy_selected_slot(&slot);
+	wire.count = slot.exercise_count;
+	memcpy(wire.events, slot.exercise, sizeof(wire.events));
 
-	uint16_t actual_len = sizeof(wire.count) + cfg.exercise_count * sizeof(struct exercise_event);
+	uint16_t actual_len = sizeof(wire.count) + slot.exercise_count * sizeof(struct exercise_event);
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, &wire, actual_len);
 }
@@ -649,6 +686,11 @@ BT_GATT_SERVICE_DEFINE(sim_config_svc,
 		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 		read_comm_profile, write_comm_profile, NULL),
 
+	BT_GATT_CHARACTERISTIC(&sensor_select_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_sensor_select, write_sensor_select, NULL),
+
 	BT_GATT_CHARACTERISTIC(&csv_control_uuid.uuid,
 		BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
 		BT_GATT_PERM_WRITE,
@@ -680,17 +722,53 @@ static const struct bt_gatt_attr *find_value_attr(const struct bt_uuid *uuid,
 	return *cache;
 }
 
+struct fex_notify_ctx {
+	const struct bt_gatt_attr *attr;
+	const void *data;
+	uint16_t len;
+	uint8_t slot;
+};
+
+static void fex_notify_one(struct bt_conn *conn, void *user_data)
+{
+	const struct fex_notify_ctx *ctx = user_data;
+	struct bt_conn_info info;
+
+	if (bt_conn_get_info(conn, &info) != 0) {
+		return;
+	}
+	/* Deliver slot s's Food/Exercise Status only over identity s's link.
+	 * Every other central would just discard it (it demuxes on the leading
+	 * slot byte), and broadcasting all N slots to all M links is an N*M
+	 * fan-out that saturates the peripheral's BLE TX buffers once a few
+	 * sessions are open — starving whichever connected last. Identity 0 (a
+	 * single-sensor build, or a generic client on the factory identity)
+	 * still sees slot 0, which is the only slot it has. */
+	if (info.id == ctx->slot) {
+		(void)bt_gatt_notify(conn, ctx->attr, ctx->data, ctx->len);
+	}
+}
+
 int config_service_notify_food_exercise_status(const void *data, uint16_t len)
 {
 	static const struct bt_gatt_attr *attr;
 	const struct bt_gatt_attr *found = find_value_attr(&food_exercise_status_uuid.uuid, &attr);
 
-	if (!found) {
+	if (!found || len < 1) {
 		return -ENOENT;
 	}
-	/* A negative return here (e.g. -ENOTCONN/-EACCES) commonly just means
-	 * nobody has subscribed yet — normal, not logged as an error. */
-	return bt_gatt_notify(NULL, found, data, len);
+	struct fex_notify_ctx ctx = {
+		.attr = found,
+		.data = data,
+		.len = len,
+		.slot = ((const uint8_t *)data)[0],
+	};
+
+	/* Per-connection, targeted by identity — see fex_notify_one(). A
+	 * negative bt_gatt_notify() there (e.g. -ENOTCONN) commonly just means
+	 * that central has not subscribed yet, so it is ignored. */
+	bt_conn_foreach(BT_CONN_TYPE_LE, fex_notify_one, &ctx);
+	return 0;
 }
 
 int config_service_notify_reset_sync(void)

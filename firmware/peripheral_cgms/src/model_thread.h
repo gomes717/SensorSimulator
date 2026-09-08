@@ -93,10 +93,10 @@ void model_thread_set_cgms_only(bool enabled);
  * config write. */
 bool model_thread_get_cgms_only(void);
 
-/* Copies out the latest measurement and, if it was unconsumed (valid == 1),
- * clears the valid flag so it is only reported once. carbs_g_per_min/
- * exercise_pct are always current regardless of the valid flag. Thread-safe. */
-void model_thread_take_measurement(struct model_measurement *out);
+/* Copies out sensor *slot*'s latest measurement and, if it was unconsumed
+ * (valid == 1), clears that slot's valid flag so it is only reported once.
+ * carbs_g_per_min/exercise_pct are always current. Thread-safe. */
+void model_thread_take_measurement(int slot, struct model_measurement *out);
 
 /* Starts an instant carb bolus right now, active for duration_min simulated
  * minutes, without resetting sim_clock_min or re-initializing model/sensor
@@ -105,13 +105,13 @@ void model_thread_take_measurement(struct model_measurement *out);
  * active (logged, not fatal). Rate-fed models (Cambridge, UVA/Padova) spread
  * carbs_g evenly over duration_min; impulse-fed models (Roy&Parker,
  * Deichmann) deliver the full amount once, on the next tick. */
-void model_thread_add_instant_food(uint16_t duration_min, float carbs_g);
+void model_thread_add_instant_food(int slot, uint16_t duration_min, float carbs_g);
 
 /* Starts an instant exercise bout right now, active for duration_min
  * simulated minutes at intensity_pct, same non-disruptive semantics as
  * model_thread_add_instant_food(). While active, contributes
  * max(intensity_pct, whatever the recurring schedule currently gives). */
-void model_thread_add_instant_exercise(uint16_t duration_min, float intensity_pct);
+void model_thread_add_instant_exercise(int slot, uint16_t duration_min, float intensity_pct);
 
 /* Starts an instant PISA attenuation right now, active for duration_min
  * simulated minutes, peak attenuation depth_frac at the midpoint. Multiplies
@@ -119,6 +119,6 @@ void model_thread_add_instant_exercise(uint16_t duration_min, float intensity_pc
  * smooth transient false low. Same non-disruptive semantics as the other
  * instant events; applies on the CSV data source too (PISA is a sensor
  * artefact, not a glucose change). */
-void model_thread_add_instant_pisa(uint16_t duration_min, float depth_frac);
+void model_thread_add_instant_pisa(int slot, uint16_t duration_min, float depth_frac);
 
 #endif /* MODEL_THREAD_H */

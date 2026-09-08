@@ -86,6 +86,13 @@ PISA_INSTANT_UUID = "5b2c0013-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # re-advertises the board — reconnect to rediscover. See PROTOCOL_SPEC.md's
 # "Comm profile" section.
 COMM_PROFILE_UUID = "5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Read + write, NOT persisted (a session cursor, like RUN_STATE_UUID). 1 byte:
+# the sensor slot index [0, sensor_count) that subsequent per-sensor config
+# writes and reads (person, sensor, data-source, food/exercise events + their
+# readbacks, CSV upload) target. The board runs CONFIG_APP_SENSOR_COUNT fully
+# independent sensor slots; this picks which one you're configuring over the
+# shared config service. See PROTOCOL_SPEC.md's "Sensor select" section.
+SENSOR_SELECT_UUID = "5b2c0015-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 
 # Basic Dexcom-style profile (see ble_session.py / PROTOCOL_SPEC.md). NOT a real
 # Dexcom implementation — no J-PAKE/AES auth, realtime glucose message only.

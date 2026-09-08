@@ -27,9 +27,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sim_config.h" /* MAX_SIM_SENSORS */
+
 #define CSV_TRACK_GLUCOSE 0
 #define CSV_TRACK_FOODLOG 1
 #define CSV_TRACK_COUNT   2
+
+/* Each of the MAX_SIM_SENSORS slots has its own independent glucose + foodlog
+ * track in sim_csv_partition — so a mixed board (e.g. 3 CSV + 1 model) works. */
 
 /* Parsed CSV control BEGIN payload (see PROTOCOL_SPEC.md). */
 struct csv_upload_header {
@@ -46,47 +51,42 @@ struct csv_food_hit {
 	float carbs_g;
 };
 
-/* Begin an upload: validates the header, erases just enough sectors of the
- * track's flash region for total_bytes, and arms the write cursor. Returns 0
- * on success, negative errno otherwise. */
-int csv_store_begin(const struct csv_upload_header *hdr);
+/* Begin an upload into *slot*'s track: validates the header, erases just enough
+ * sectors for total_bytes, arms the write cursor. Returns 0 on success. */
+int csv_store_begin(uint8_t slot, const struct csv_upload_header *hdr);
 
-/* Program len bytes at offset within the in-progress track's flash region.
- * offset is relative to the track, not the partition. Returns 0 on success. */
+/* Program len bytes at *offset* within the in-progress track (offset relative
+ * to the track, not the partition). Returns 0 on success. */
 int csv_store_write(uint32_t offset, const uint8_t *data, uint16_t len);
 
-/* Finish the in-progress upload for *track*: checks received byte count and
- * CRC32 against the header, and on success writes the manifest and refreshes
- * the in-RAM playback state. *crc_ok (may be NULL) reports the CRC result.
- * Returns 0 on success, negative errno on mismatch / flash error. */
-int csv_store_commit(uint8_t track, bool *crc_ok);
+/* Finish the in-progress upload for slot/*track*: checks received bytes + CRC32,
+ * on success writes the manifest and refreshes the in-RAM playback state.
+ * *crc_ok (may be NULL) reports the CRC result. */
+int csv_store_commit(uint8_t slot, uint8_t track, bool *crc_ok);
 
 /* Discard the in-progress upload without touching the committed manifest. */
 void csv_store_abort(void);
 
-/* Wipe *track*'s manifest entry (playback reverts to whatever remains).
- * Returns 0 on success. */
-int csv_store_clear(uint8_t track);
+/* Wipe slot/*track*'s manifest entry. Returns 0 on success. */
+int csv_store_clear(uint8_t slot, uint8_t track);
 
 /* Bytes received so far for the in-progress upload (for the STATUS opcode). */
 uint32_t csv_store_received(void);
 
-/* Load the manifest from flash and populate the in-RAM playback state. Call
- * once at boot, after sim_config_load_from_flash(). */
+/* Load the manifest from flash and populate the in-RAM playback state for all
+ * slots. Call once at boot, after sim_config_load_from_flash(). */
 void csv_store_load_manifest(void);
 
-/* True if a committed glucose track is available for playback. */
-bool csv_glucose_available(void);
+/* True if *slot* has a committed glucose track available for playback. */
+bool csv_glucose_available(uint8_t slot);
 
-/* Look up the glucose sample for simulated-minutes-since-start sim_clock_min,
- * looping at the end of the window. Returns false (and leaves *out_mg_dl
- * untouched) if no glucose track is committed. */
-bool csv_glucose_lookup(double sim_clock_min, float *out_mg_dl);
+/* Look up *slot*'s glucose sample for sim_clock_min, looping at the window end.
+ * Returns false (and leaves *out_mg_dl untouched) if no glucose track. */
+bool csv_glucose_lookup(uint8_t slot, double sim_clock_min, float *out_mg_dl);
 
-/* Fill up to max entries for meals whose offset falls in the simulated-seconds
- * half-open window [t0_s, t1_s), taken modulo the playback span so the food
- * log loops in lockstep with the glucose track. Returns the number written;
- * 0 if no foodlog track is committed. */
-int csv_foodlog_window(double t0_s, double t1_s, struct csv_food_hit *out, int max);
+/* Fill up to max entries for *slot*'s meals in the half-open simulated-seconds
+ * window [t0_s, t1_s) (mod the playback span). Returns the number written. */
+int csv_foodlog_window(uint8_t slot, double t0_s, double t1_s,
+		       struct csv_food_hit *out, int max);
 
 #endif /* CSV_STORE_H */

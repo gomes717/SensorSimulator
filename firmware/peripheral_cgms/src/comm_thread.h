@@ -50,6 +50,10 @@ enum cfg_msg_type {
 	 * not routed through model_thread_apply_config(). */
 	CFG_MSG_CSV_CONTROL,
 	CFG_MSG_CSV_DATA,
+	/* Sensor-select cursor — NOT persisted. Sets which of the sensor_count
+	 * slots subsequent person/sensor/food/exercise/data-source/CSV writes and
+	 * reads target. See PROTOCOL_SPEC.md's "Sensor select" section. */
+	CFG_MSG_SENSOR_SELECT,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking
@@ -57,14 +61,26 @@ enum cfg_msg_type {
  * negative errno if the queue is full or *data is too large. */
 int comm_thread_enqueue_config(enum cfg_msg_type type, const void *data, uint16_t len);
 
-/* Starts comm_thread. *cgms is the single CGMS service instance to push
- * measurements to; *initial_cfg seeds the in-RAM working copy comm_thread
- * serves GATT reads from. Call once at boot. */
-void comm_thread_start(struct bt_cgms *cgms, const struct sim_config *initial_cfg);
+/* Starts comm_thread. *cgms is an array of the CGMS service instances (one per
+ * sensor slot) to push measurements to; *initial_cfg seeds the in-RAM working
+ * copy comm_thread serves GATT reads from. Call once at boot. */
+void comm_thread_start(struct bt_cgms **cgms, const struct sim_config *initial_cfg);
 
 /* Thread-safe snapshot of the config comm_thread currently has applied —
  * used by config_service.c's read callbacks to serve GATT reads directly
  * from RAM (no flash access on the read path). */
 void comm_thread_copy_config(struct sim_config *out);
+
+/* Narrow read-path accessors for config_service.c — avoid copying the whole
+ * ~2.85 KB struct sim_config onto the BT RX stack just to serve one field.
+ * comm_thread_copy_selected_slot() returns the slot the sensor-select cursor
+ * currently points at (what every per-sensor GATT read serves). */
+void comm_thread_copy_selected_slot(struct sensor_slot *out);
+uint8_t comm_thread_comm_profile(void);
+float comm_thread_speed_mult(void);
+
+/* The slot index (0..sensor_count-1) that per-sensor config reads/writes
+ * currently target — set by the sensor-select characteristic. */
+uint8_t comm_thread_selected_slot(void);
 
 #endif /* COMM_THREAD_H */

@@ -19,8 +19,9 @@ void sim_config_set_defaults(struct sim_config *cfg)
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->magic = SIM_CONFIG_MAGIC;
 	cfg->version = SIM_CONFIG_VERSION;
-	cfg->mode = SIM_MODE_NORMAL;
-	cfg->model_id = SIM_MODEL_CAMBRIDGE;
+	cfg->sensor_count = SIM_SENSOR_COUNT;
+	cfg->comm_profile = SIM_COMM_SIG_CGMS;
+	cfg->speed_mult = SIM_SPEED_DEFAULT;
 
 	/* CambridgeParams is a plain struct-of-doubles whose field order
 	 * matches PARAM_NAMES in SensorSimulator/src/models/cambridge.py
@@ -29,17 +30,18 @@ void sim_config_set_defaults(struct sim_config *cfg)
 	const double *src = (const double *)&p;
 	size_t n = sizeof(CambridgeParams) / sizeof(double);
 
-	for (size_t i = 0; i < n && i < MAX_MODEL_PARAMS; i++) {
-		cfg->model_params[i] = (float)src[i];
+	for (int s = 0; s < MAX_SIM_SENSORS; s++) {
+		struct sensor_slot *slot = &cfg->slots[s];
+
+		slot->data_source = SIM_DATA_MODEL;
+		slot->model_id = SIM_MODEL_CAMBRIDGE;
+		slot->sensor_id = SIM_SENSOR_IDEAL; /* stateless, no params to default */
+		slot->food_count = 0;
+		slot->exercise_count = 0;
+		for (size_t i = 0; i < n && i < MAX_MODEL_PARAMS; i++) {
+			slot->model_params[i] = (float)src[i];
+		}
 	}
-
-	cfg->sensor_id = SIM_SENSOR_IDEAL; /* stateless, no params to default */
-
-	cfg->food_count = 0;
-	cfg->exercise_count = 0;
-	cfg->data_source = SIM_DATA_MODEL;
-	cfg->speed_mult = SIM_SPEED_DEFAULT;
-	cfg->comm_profile = SIM_COMM_SIG_CGMS;
 }
 
 int sim_config_load_from_flash(struct sim_config *cfg)
@@ -54,6 +56,16 @@ int sim_config_load_from_flash(struct sim_config *cfg)
 		return err;
 	}
 
+#if 0  /* one-shot factory reset: set to 1 + reflash to wipe the persisted
+	* sim_config (it lives in the external mx25r64, which a J-Link mass-
+	* erase does not touch), then set back to 0 + reflash. */
+	{
+		int erc = flash_area_erase(fa, 0, fa->fa_size);
+
+		printk("sim_config: FACTORY RESET - erased storage partition (%d)\n", erc);
+	}
+#endif
+
 	err = flash_area_read(fa, 0, cfg, sizeof(*cfg));
 	flash_area_close(fa);
 
@@ -63,9 +75,16 @@ int sim_config_load_from_flash(struct sim_config *cfg)
 		return err ? err : -ENOENT;
 	}
 
-	printk("sim_config: loaded from flash (model_id=%u, sensor_id=%u, mode=%u, "
-	       "food=%u, exercise=%u)\n",
-	       cfg->model_id, cfg->sensor_id, cfg->mode, cfg->food_count, cfg->exercise_count);
+	/* sensor_count is fixed by the build (CONFIG_APP_SENSOR_COUNT), not a
+	 * runtime-writable field — always force it to this firmware's value so a
+	 * flash image saved by a different build (e.g. the =1 regression build)
+	 * can't leave =4 running only one model slot while 4 identities advertise. */
+	cfg->sensor_count = SIM_SENSOR_COUNT;
+
+	printk("sim_config: loaded from flash (sensor_count=%u, comm_profile=%u, "
+	       "slot0 model_id=%u sensor_id=%u data_source=%u)\n",
+	       cfg->sensor_count, cfg->comm_profile, cfg->slots[0].model_id,
+	       cfg->slots[0].sensor_id, cfg->slots[0].data_source);
 	return 0;
 }
 

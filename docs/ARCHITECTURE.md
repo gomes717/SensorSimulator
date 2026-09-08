@@ -5,7 +5,10 @@ system are, how they talk to each other, and where to look for detail.
 For byte-level wire format, see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md).
 For firmware internals, see [`FIRMWARE.md`](FIRMWARE.md). For the app's
 internals, see [`APPLICATION.md`](APPLICATION.md). For the physiological
-models and sensor noise math, see [`MODELS.md`](MODELS.md).
+models and sensor noise math, see [`MODELS.md`](MODELS.md). For a
+thesis-ready LaTeX write-up of the flows below (§4) plus the Dexcom
+profile, the PISA fault model, and the multi-sensor architecture with the
+Windows pairing limitation, see [`architecture_flows.tex`](architecture_flows.tex).
 
 ## 1. What this project is
 
@@ -25,16 +28,24 @@ displays the incoming readings, and — as a correctness check — runs the
 ```
 ┌─────────────────────────────────────┐         ┌──────────────────────────────────────────┐
 │         PC — SensorSimulator app      │   BLE   │        nRF54L15 DK — peripheral_cgms       │
-│              (Python / PyQt6)         │◄───────►│           (C / Zephyr RTOS)                 │
-│                                        │         │                                              │
-│  graphic/  — windows & dialogs (UI)   │         │  comm_thread   — BLE, config, flash         │
-│  services/ — BLE session/scan/pairing │         │  model_thread  — physiological model,       │
-│  api/      — BLE wire-format contract │         │                  sensor noise, 1 s tick      │
-│  core/     — shared message log       │         │  external SPI-NOR — sim_config persistence  │
-│  models/   — same physiological math, │         │                                              │
-│              run locally for "expected"│         │                                              │
+│              (Python / PyQt6)         │◄═══════►│           (C / Zephyr RTOS)                 │
+│                                        │  N BLE  │                                              │
+│  graphic/  — windows & dialogs (UI)   │identity │  main.c        — N BLE identities + adv     │
+│  services/ — BLE session/scan/pairing │  links  │                  sets + CGMS instances       │
+│  api/      — BLE wire-format contract │         │  comm_thread   — BLE push (per slot),       │
+│  core/     — shared message log       │         │                  config queue, flash        │
+│  models/   — same physiological math, │         │  model_thread  — N independent slots,       │
+│              run locally for "expected"│         │                  1 shared clock, 1 s tick    │
+│  board_layout — slot → person/CSV map │         │  external SPI-NOR — sim_config (v5) + CSV   │
 └─────────────────────────────────────┘         └──────────────────────────────────────────┘
 ```
+
+The firmware runs **`CONFIG_APP_SENSOR_COUNT` (1–4, default 4) fully
+independent sensor slots** on the one board — each its own BLE identity,
+advertising set, CGMS service instance, and config (physiological model +
+params + noise + schedule, *or* a CSV, mixable). `N == 1` is the original
+single-sensor build and behaves exactly as the diagrams below describe with
+"the board" = slot 0. For `N > 1` see [§9](#9-multi-sensor-n-independent-slots).
 
 Both sides run **the same model math** (see [`MODELS.md`](MODELS.md)) —
 the Python `models/` package and the firmware's `src/models/cgmsim_*.c`
@@ -66,9 +77,11 @@ Everything that crosses the BLE link falls into one of three categories:
 
 | Category | Direction | Characteristic(s) | Detail |
 |---|---|---|---|
-| **Standard CGM readings** | board → app | Bluetooth SIG CGMS: CGM Measurement (notify), Feature/Status/Session (read), RACP/SOCP (control) | [`FIRMWARE.md`](FIRMWARE.md) §4 |
-| **Simulator configuration** | app ↔ board | Custom "sim config" service: person/sensor/mode/food/exercise/run-state/instant-events | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
-| **Confirmation/sync** | board → app | Reset Sync (notify) | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
+| **Standard CGM readings** | board → app | Bluetooth SIG CGMS: CGM Measurement (notify), Feature/Status/Session (read), RACP/SOCP (control) — **one instance per sensor slot** | [`FIRMWARE.md`](FIRMWARE.md) §4 |
+| **Simulator configuration** | app ↔ board | Custom "sim config" service (**one instance, shared**): person/sensor/data-source/food/exercise/run-state/speed/comm-profile/instant-events | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
+| **Slot targeting** | app → board | **Sensor select** (`5b2c0015`) — a session cursor: subsequent per-sensor reads/writes hit `slots[selected]` | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
+| **Per-slot ground truth** | board → app | Food/Exercise Status (notify) — 10 B, leading `u8 slot`; one per active slot per tick | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
+| **Confirmation/sync** | board → app | Reset Sync (notify) — global (any slot's config apply) | [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 |
 
 ### 4.1 Development flow (Start → streaming)
 
@@ -105,7 +118,8 @@ sequenceDiagram
 Every config window's "Send to Board" button (Person, Sensor, Food,
 Exercise) drives this — the write always triggers a full reset on the
 board side (`apply_config_locked()`), which is how the app knows the write
-landed:
+landed. On a multi-sensor board the write targets whichever slot the
+**Sensor select** cursor points at (default slot 0):
 
 ```mermaid
 sequenceDiagram
@@ -116,15 +130,25 @@ sequenceDiagram
     participant Model as Firmware (model_thread)
 
     U->>App: Edit Person/Sensor/Food/Exercise, click "Send to Board"
+    opt targeting a specific slot (N > 1)
+        App->>BLE: queue_write("sensor_select", slot)
+        BLE->>FW: GATT write — comm_thread sets working_sel
+    end
     App->>BLE: queue_write(char_key, bytes)
     BLE->>FW: GATT write (config characteristic)
-    FW->>FW: update in-RAM sim_config, save to external flash
-    FW->>Model: apply_config() — reinit model/sensor state, sim_clock_min = 0
+    FW->>FW: update in-RAM sim_config.slots[working_sel], save to external flash
+    FW->>Model: apply_config() — reinit every slot, sim_clock_min = 0
     Model-->>FW: reset_sync notify
     FW-->>BLE: notification
     BLE-->>App: reset_sync signal
     App-->>U: "✓ Applied on board" (device_target.py await_send_confirmation)
 ```
+
+> **Note.** A **Speed** write (`5b2c0012`) currently goes through this same
+> `apply_config_locked()` path (it resets the clock and clears instant
+> events). See `FEATURE_IDEAS.md` #21 — making speed a live scalar is a
+> pending fix; `e2e_4sensor.py` works around it by waiting for `reset_sync`
+> before firing an instant event after a speed change.
 
 ### 4.3 Read configuration flow
 
@@ -177,8 +201,49 @@ these events along with everything else `apply_config_locked()` resets —
 see `PROTOCOL_SPEC.md`'s "Instant food/exercise events" section for the
 byte format, decay/delivery rules, and a bug this reset used to have.
 
+On a multi-sensor board an instant event lands on whichever slot the
+**Sensor select** cursor points at — the app writes the cursor first, then
+the one-shot event.
+
 **CGMS Only mode** (§7 below) is the other exception — enabling it never
 resets either.
+
+### 4.5 Board layout push (multi-sensor)
+
+The **Board Layout** window (`graphic/board_layout_window.py`, opened from
+Configuration → "Board layout") assigns a saved Person + Sensor profile to
+each of the N slots and pushes the whole thing in one action.
+`BleSession.send_board_layout()` runs it as a single coroutine over **one**
+connection (any identity reaches the shared config service), paced so the
+firmware's config queue keeps up:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant BLW as graphic/board_layout_window.py
+    participant BLE as services/ble_session.py
+    participant FW as Firmware (comm_thread)
+    participant Model as Firmware (model_thread)
+
+    U->>BLW: assign slots 0..N-1 → person / CSV, click "Send layout to Board"
+    BLW->>BLW: _build_slots() — encode person/sensor/data_source/food/exercise per slot
+    BLW->>BLE: send_board_layout(slots)
+    loop for each assigned slot i
+        BLE->>FW: write sensor_select = i
+        BLE->>FW: write person, sensor, data_source, food(clear+N), exercise(clear+M)  (paced, retried on a full queue)
+        opt person is CSV-backed
+            BLE->>FW: CSV BEGIN / DATA×k / COMMIT  (into slots[i]'s flash track)
+        end
+        BLE-->>BLW: board_layout_progress(i+1, N)
+    end
+    BLE->>FW: write run_state = RUNNING
+    FW->>Model: apply_config() per write — every slot reinits, sim_clock_min = 0
+    BLE-->>BLW: board_layout_finished(ok)
+```
+
+Persisted app-side to `data/board_layout.json` (`models/board_layout.py`).
+Verified end to end by `scripts/e2e_4sensor.py` (see
+[`E2E_TEST_PLAN.md`](E2E_TEST_PLAN.md) §9).
 
 ## 5. Two independent clocks, deliberately
 
@@ -186,7 +251,9 @@ The board's `sim_clock_min` (in `model_thread.c`) and the app's
 `SimulationEngine`'s own internal simulated-minutes counter (in
 `models/engine.py`) are **two separate simulations of the same math**, not
 one clock shared over BLE — there's no "tell me your current glucose"
-round-trip in the hot path. Each side runs its own copy of the model
+round-trip in the hot path. On a multi-sensor board there is still exactly
+**one** `sim_clock_min` and one speed multiplier — all N slots tick from it
+together (see §9); the app's local engine runs for the one selected patient. Each side runs its own copy of the model
 independently, ticking on its own local timer, and only synchronizes at two
 discrete moments: when a config write resets both to t=0 (see
 `PROTOCOL_SPEC.md`'s "Run state"/"Reset sync" sections), and never again
@@ -261,6 +328,64 @@ sequenceDiagram
 | Physiological model math (ODEs) | `models/cgmsim_*.c` (firmware) and `models/*.py` (app) — same source, two ports |
 | Sensor noise math | firmware only (`models/cgmsim_sensors.c`) — never modeled in the app; the app's "expected" line is deliberately noiseless |
 | BLE wire format | `api/ble_uuids.py` + `api/protocol.py` (app) and `config_service.c` + `sim_config.h` (firmware) — both sides hand-kept in sync, see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) |
-| Config persistence | firmware only — `sim_config.c`, external SPI-NOR flash |
-| Profile persistence | app only — `models/profile_store.py`, `data/profiles.json` |
+| Config persistence (board) | firmware only — `sim_config.c` (v5, per-slot), external SPI-NOR flash; uploaded CSV tracks in `csv_store.c` (per slot) |
+| Sensor count | build-time only — `CONFIG_APP_SENSOR_COUNT`; `sim_config_load_from_flash()` force-overrides the flash value so it always matches the running build |
+| Profile persistence (app) | `models/profile_store.py` → `data/profiles.json`; slot→patient map in `models/board_layout.py` → `data/board_layout.json` |
+| Per-identity demux | `services/ble_session.py` — parses the advertised name's trailing digit to a 0-based `_own_instance_index`, filters CGM Measurement + Food/Exercise Status to that slot, and sets `_require_pairing = False` for numbered identities |
 | UI | `graphic/` (app only — firmware has no display beyond one status LED) |
+
+## 9. Multi-sensor: N independent slots
+
+`CONFIG_APP_SENSOR_COUNT` (1–4, default 4) sets how many fully independent
+sensor slots the one board runs. Each slot has its own `struct sensor_slot`
+in `sim_config` v5 — data source (model + params + noise + food/exercise
+schedule) **or** an uploaded CSV, mixable (e.g. 3 CSV + 1 model). What is
+**shared**: `sim_clock_min`, `speed_mult`, and the run state (one Start/Stop
+for all — per-slot run state is `FEATURE_IDEAS.md` #19).
+
+```
+                          nRF54L15 DK (CONFIG_APP_SENSOR_COUNT = 4)
+  ┌───────────────────────────────────────────────────────────────────────┐
+  │  main.c:  identity 0..3  ─ adv set 0..3 ─ bt_cgms instance g_cgms[0..3]│
+  │           "Nordic Glucose Sensor 1".."4"   (identity 0 = factory addr) │
+  │                                                                        │
+  │  model_thread:   rt[0]   rt[1]   rt[2]   rt[3]      ← per-slot model +  │
+  │                    │       │       │       │          noise + schedule │
+  │                    └───────┴───┬───┴───────┘                           │
+  │                          sim_clock_min  (one, shared)  ── speed_mult   │
+  │                                │                                       │
+  │  comm_thread:  push loop over slots → bt_cgms_measurement_add(g_cgms[i])│
+  │                + one Food/Exercise Status notify per slot (u8 slot)     │
+  │                config queue: per-sensor writes → sim_config.slots[sel]  │
+  │  config_service:  ONE sim-config service; "Sensor select" (5b2c0015)   │
+  │                   picks `sel` for per-sensor reads/writes              │
+  └───────────────────────────────────────────────────────────────────────┘
+        ▲ BLE identity i ── one connection per identity ── app: one BleSession each
+```
+
+**App.** Connect to each identity's address (Bluetooth window) → one
+`BleSession` per identity → one tree row per identity. Each session shows
+only its own slot's CGM Measurement + Food/Exercise Status (demux by the
+advertised-name digit); the graph plots the selected row. The **Board
+Layout** window assigns slot → person/CSV and pushes the whole layout
+(§4.5). Once a slot is assigned, the Bluetooth list, the tree row, and the
+config windows' "Target device" combo show that **patient's name** instead of
+"Nordic Glucose Sensor N" (`models/board_layout.device_label` /
+`session_name`; the advertised name still drives the demux + pairing). The
+config windows and the Insert-Now dialogs also gain a **"Slot"** picker
+(`DeviceTargetBar` / `_InstantDialog`) so one slot can be reconfigured or
+fed a one-shot event without re-pushing the whole layout.
+
+**Pairing.** Windows aborts LE Secure Connections against the board's
+non-default identities (confirmed on hardware — see
+[`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §7 and the `ble-pairing-issue`
+memory). So `N > 1` builds set `CONFIG_APP_CGMS_NO_AUTH` — the CGMS
+characteristics drop the authenticated-link requirement and all N identities
+stream **unpaired** (acceptable for a simulator; see the
+`cgms-no-auth-tradeoff` memory). `N == 1` keeps real pairing + encryption.
+
+**Verification.** `scripts/e2e_4sensor.py` — 11 hardware cases: layout push,
+per-slot readback, per-identity demux, CSV slot playback, shared fast-mode
+clock, slot-targeted Insert Food/Exercise/PISA, range alerts, per-slot
+config isolation, reconnect autonomy, reboot persistence. See
+[`E2E_TEST_PLAN.md`](E2E_TEST_PLAN.md) §9.

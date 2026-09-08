@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.ble_message_log import BleMessageLog
+from models import board_layout
 from services.ble_session import BleSession
 from services.bluetooth_scanner import BluetoothScanThread
 
@@ -41,7 +42,10 @@ class BluetoothWindow(QWidget):
         self._ble_log = ble_log
         self._scan_thread: BluetoothScanThread | None = None
         self._sessions: dict[str, BleSession] = {}  # address -> active session
-        self._names: dict[str, str] = {}  # address -> display name, kept for connected devices
+        # address -> UI label: the assigned patient (board_layout.json) when the
+        # advertised name maps to a configured slot, else the raw advertised name.
+        self._names: dict[str, str] = {}
+        self._advertised: dict[str, str] = {}  # address -> raw advertised BLE name
         self._statuses: dict[str, str] = {}  # address -> last known Status cell text
         self._addresses: list[str] = []
 
@@ -100,9 +104,8 @@ class BluetoothWindow(QWidget):
         """
         self._table.setRowCount(0)
         self._addresses = []
-        for address, name in self._names.items():
-            if address in self._sessions:
-                self._add_device(name, address, None)
+        for address in list(self._sessions):
+            self._add_device(self._advertised.get(address, address), address, None)
         self._status.setText("Scanning for nearby BLE devices…")
         self._rescan_btn.setEnabled(False)
 
@@ -121,10 +124,12 @@ class BluetoothWindow(QWidget):
         """
         if address in self._addresses:
             return
+        self._advertised[address] = name
+        label = board_layout.device_label(name)
         self._addresses.append(address)
         row = self._table.rowCount()
         self._table.insertRow(row)
-        self._table.setItem(row, 0, QTableWidgetItem(name))
+        self._table.setItem(row, 0, QTableWidgetItem(label))
         self._table.setItem(row, 1, QTableWidgetItem(address))
         self._table.setItem(row, 2, QTableWidgetItem(str(rssi) if rssi is not None else "–"))
         self._table.setItem(row, 3, QTableWidgetItem(self._statuses.get(address, "")))
@@ -156,12 +161,22 @@ class BluetoothWindow(QWidget):
             self._status.setText(f"Already connected to {address}.")
             return
 
-        name = self._table.item(row, 0).text()
-        self._names[address] = name
-        self._status.setText(f"Connecting to {name}…")
+        self._open_session(address, self._advertised.get(address, address))
+
+    def _open_session(self, address: str, advertised: str) -> None:
+        """Wire up and start a BleSession for *address*, tracked in self._sessions.
+
+        *advertised* is the raw BLE name (drives the per-slot demux + pairing
+        decision); the tree/graph show the assigned patient when one is
+        configured for this slot in board_layout.json (see models/board_layout)."""
+        label = board_layout.device_label(advertised)
+        self._names[address] = label
+        self._advertised[address] = advertised
+        self._status.setText(f"Connecting to {label}…")
         self._set_status_cell(address, "Connecting…")
 
-        session = BleSession(address, name, self)
+        session = BleSession(address, advertised, self,
+                             display_name=board_layout.device_label(advertised))
         session.connected.connect(self._on_connected)
         session.connect_failed.connect(self._on_connect_failed)
         session.disconnected.connect(self._on_disconnected)
@@ -170,6 +185,22 @@ class BluetoothWindow(QWidget):
         self._sessions[address] = session
         session.start()
         self._update_button_states()
+
+    def reconnect(self, address: str, delay_ms: int = 2500) -> None:
+        """Drop the session for *address* and reopen it after *delay_ms*.
+
+        Used after the board is told to change something that forces it to
+        re-advertise (e.g. the BLE comm profile) — the firmware drops the link
+        and this re-establishes it under the new advertising without the user
+        having to go through the device list again.
+        """
+        advertised = self._advertised.get(address)
+        if advertised is None:
+            return
+        self._stop_session(address)
+        from PyQt6.QtCore import QTimer
+
+        QTimer.singleShot(delay_ms, lambda: self._open_session(address, advertised))
 
     def _on_connected(self, address: str, subscribed: int, notify_total: int, last_error: str) -> None:
         """Report a successful connection and whether the device can push any data at all."""
@@ -195,9 +226,13 @@ class BluetoothWindow(QWidget):
                 f"but could not subscribe to any ({last_error})."
             )
         else:
+            # subscribed is intentionally a small subset of notify_total on a
+            # multi-sensor board — this session only subscribes to its own
+            # slot's stream plus the shared chars (see ble_session.py's
+            # _FUNCTIONAL_NOTIFY_UUIDS), not every sibling instance.
+            tail = f" ({last_error})" if last_error else ""
             self._status.setText(
-                f"Connected to {address}. Subscribed to {subscribed}/{notify_total} "
-                "notification characteristic(s) — waiting for data in Debug."
+                f"Connected to {address}. Streaming from {subscribed} characteristic(s){tail}."
             )
 
     def _on_connect_failed(self, address: str, error: str) -> None:
@@ -214,6 +249,7 @@ class BluetoothWindow(QWidget):
         """Drop the finished session and refresh button state once its thread has stopped."""
         self._sessions.pop(address, None)
         self._names.pop(address, None)
+        self._advertised.pop(address, None)
         self._statuses.pop(address, None)
         self._update_button_states()
 
@@ -265,6 +301,19 @@ class BluetoothWindow(QWidget):
     def display_name(self, address: str) -> str:
         """Return the display name for *address*, falling back to the address itself."""
         return self._names.get(address, address)
+
+    def relabel(self) -> None:
+        """Re-resolve every listed device's label against the current board
+        layout (call after the Board Layout window changes an assignment). The
+        already-connected sessions' tree rows keep their name until reconnect —
+        this only refreshes the device list and the config windows' target combo."""
+        for address, advertised in self._advertised.items():
+            label = board_layout.device_label(advertised)
+            if address in self._names:
+                self._names[address] = label
+            row = self._row_for_address(address)
+            if row >= 0 and self._table.item(row, 0) is not None:
+                self._table.item(row, 0).setText(label)
 
     def _row_for_address(self, address: str) -> int:
         """Return the table row index for *address*, or -1 if not present."""
