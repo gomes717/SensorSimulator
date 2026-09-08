@@ -33,8 +33,8 @@ Scope: `src/`, `scripts/`, `tests/`. Not `firmware/` or `cgmsim/` (C).
   (the `MainWindow` god object / BLE-layer debt); `engine._tick_model` carries
   an inline `# noqa: C901`. Don't add new ruff ignores elsewhere.
 - **Never silence a pylint finding** with `# pylint: disable=…` (inline or
-  file-level) — fix the code. `C0302` on `main_window.py` is currently a *real*
-  gate failure, on purpose, until issue 18 splits the file under 1000 lines.
+  file-level) — fix the code. (`C0302` on `main_window.py` was left red on
+  purpose until issue 18 split it under 1000 lines; that's now done.)
 
 ## Format — ruff format
 
@@ -52,8 +52,7 @@ Scope: `src/`, `scripts/`, `tests/`. Not `firmware/` or `cgmsim/` (C).
 - Net: a *new* oversized class/module fails the gate. The classes over the
   `R0902` limit today still carry an inline
   `# pylint: disable=too-many-instance-attributes  # see issue 18` (pre-dating
-  the "never silence pylint" rule); `main_window.py`'s `C0302` failure is left
-  unsilenced and red until issue 18 lands. No new disables.
+  the "never silence pylint" rule). No new disables.
 
 ## Types — pyright
 

@@ -54,25 +54,33 @@ BLE stack recovered (scanner sees 3/4 identities). Did the `ConfigurationWindow`
   unchanged. `test_fe_graph_title.py` moved to the new API.
 - Also collapsed the 12 `_open_*` window methods to `_lazy_window` + `_raise`.
 
-**`main_window.py`: 1583 → 1263 lines** (−320). Verified: full gate green
-*except the intentional `C0302`* (1263 > 1000); `ui_smoke --no-board C,D,E,F`
-4/4 PASS with identical numbers (PISA shading, range recolour, rolling window,
-stats panel all intact).
+## 2026-09-08 update 4 — MainWindow under 1000 lines, C0302 gate GREEN
 
-## Remaining to clear C0302 (≈263 lines over)
+Two more extractions + a prose trim:
 
-Line-driven, not design-driven — each is a mechanical "move a cohesive cluster
-out". Best done as a focused pass with a **single-sensor board flashed** so
-`ui_smoke A/B` can verify the BLE paths too:
+- `gui/user_tree.py` — `UserTree(QTreeWidget)` owns the sensor-list rows, the
+  four row dicts and the offline state; `note_message(msg)` /
+  `mark_device_offline(address)` / `set_thresholds()`, emits
+  `user_selected(user_id)`. `_user_items` / `_offline_users` kept as compat
+  properties for the issue-06 test + `e2e_4sensor.py`.
+- `gui/instant_events.py` — `InstantEvents` fans a one-shot food / exercise /
+  PISA event out to the engine pool, the board and the graph shading, and owns
+  the three prompt handlers + slot picker. MainWindow keeps thin
+  `_open_insert_*` / `inject_fault` wrappers.
+- `gui/range_stats.py` — `RangeStatsPanel(QGroupBox)` is the "Time in range"
+  grid; MainWindow feeds it the in-view series. `_stat_value_labels` compat prop.
+- Toolbar built from a `_TOOLBAR` table; the verbose `__init__` comment blocks
+  and a handful of over-long method docstrings condensed.
 
-1. `UserTree(QTreeWidget)` — `_build_tree` / `_ensure_user_item` /
-   `_update_user_alert` / `_set_row_offline` / `_on_device_disconnected` + the
-   `_user_items/_user_ids/_user_dev/_offline_users` dicts + the tree half of
-   `_on_new_message`. ≈ −80.
-2. `ScenarioRunner` — `_scenario_dispatch` (also clears its `C901`) +
-   `inject_fault` + `_inject_instant_*` + `_open_insert_*` +
-   `_instant_slot_choices` + `_multi_slot_count`. ≈ −140.
-3. Trim `__init__` / fold the stats panel into a small widget. ≈ −50.
+**`main_window.py`: 1583 → 998 lines** (−585, −37%). The full pre-commit hook
+(`ruff` / `pylint` 10.00 incl. `C0302` / `pyright` / 125 tests) **passes with no
+`--no-verify`**. `ui_smoke --no-board C,D,E,F` 4/4 PASS, identical numbers.
+
+Status: **substantially done.** The god object is now a coordinator wiring
+`UserTree` + `GlucoseGraph` + `RangeStatsPanel` + `ConfigController` + `BoardLink`
++ `EnginePool` + `InstantEvents`. Left for a future pass (not blocking): the
+`_scenario_dispatch` interpreter (carries the `src/gui/*` `C901` ignore) and the
+loosely-typed `new_message` dict still lack their own seam.
 
 ---
 
