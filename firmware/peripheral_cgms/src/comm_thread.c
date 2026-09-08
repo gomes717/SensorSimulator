@@ -9,17 +9,56 @@
 #include "model_thread.h"
 #include "config_service.h"
 #include "sim_config.h"
+#include "csv_store.h"
+#include "dexcom_service.h"
+
+/* Defined in main.c — re-advertise under the given SIM_COMM_* profile. */
+void main_apply_comm_profile(uint8_t profile);
 
 #define COMM_THREAD_STACK_SIZE 4096
 #define COMM_THREAD_PRIORITY   5
-#define CFG_MSGQ_DEPTH         8
+/* Deeper than the config path needs (8) because a CSV upload bursts a run of
+ * CSV_DATA writes through here back to back. */
+#define CFG_MSGQ_DEPTH         16
 #define MEASUREMENT_RETRY_COUNT 3
+
+/* Big enough for a CSV_DATA chunk (u32 offset + bytes) at ATT MTU 247, and
+ * still covers every config payload (person config, 137 B, is next largest). */
+#define CFG_MSG_MAX_DATA 244
 
 struct cfg_msg {
 	enum cfg_msg_type type;
 	uint16_t len;
-	uint8_t data[sizeof(struct person_config_wire)]; /* largest payload of any msg type */
+	uint8_t data[CFG_MSG_MAX_DATA];
 };
+
+/* CSV control opcodes — first byte of a CFG_MSG_CSV_CONTROL payload. Must match
+ * api/protocol.py's encode_csv_* helpers. */
+#define CSV_OP_BEGIN  0x01
+#define CSV_OP_COMMIT 0x02
+#define CSV_OP_ABORT  0x03
+#define CSV_OP_CLEAR  0x04
+#define CSV_OP_STATUS 0x05
+
+struct csv_begin_wire {
+	uint8_t op;
+	uint8_t track;
+	uint16_t row_count;
+	uint32_t base_epoch_s;
+	uint16_t interval_s;
+	uint32_t total_bytes;
+	uint32_t crc32;
+} __packed;
+
+struct csv_track_op_wire {
+	uint8_t op;
+	uint8_t track;
+} __packed;
+
+struct csv_data_wire {
+	uint32_t offset;
+	uint8_t data[]; /* remaining bytes of the message */
+} __packed;
 
 K_MSGQ_DEFINE(cfg_msgq, sizeof(struct cfg_msg), CFG_MSGQ_DEPTH, 4);
 
@@ -89,6 +128,129 @@ static void apply_mode_msg(const uint8_t *data, uint16_t len)
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	working_cfg.mode = data[0];
 	k_mutex_unlock(&working_cfg_lock);
+}
+
+static void apply_data_source_msg(const uint8_t *data, uint16_t len)
+{
+	if (len < 1) {
+		return;
+	}
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	working_cfg.data_source = (data[0] == SIM_DATA_CSV) ? SIM_DATA_CSV : SIM_DATA_MODEL;
+	k_mutex_unlock(&working_cfg_lock);
+}
+
+static void apply_speed_msg(const uint8_t *data, uint16_t len)
+{
+	struct speed_wire w;
+
+	if (len < sizeof(w)) {
+		return;
+	}
+	memcpy(&w, data, sizeof(w));
+	if (!(w.mult >= SIM_SPEED_MIN && w.mult <= SIM_SPEED_MAX)) {
+		w.mult = (w.mult < SIM_SPEED_MIN) ? SIM_SPEED_MIN : SIM_SPEED_MAX;
+	}
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	working_cfg.speed_mult = w.mult;
+	k_mutex_unlock(&working_cfg_lock);
+}
+
+static void apply_comm_profile_msg(const uint8_t *data, uint16_t len)
+{
+	if (len < 1) {
+		return;
+	}
+	uint8_t p = (data[0] == SIM_COMM_DEXCOM) ? SIM_COMM_DEXCOM : SIM_COMM_SIG_CGMS;
+
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	working_cfg.comm_profile = p;
+	k_mutex_unlock(&working_cfg_lock);
+	main_apply_comm_profile(p);
+}
+
+/* CFG_MSG_CSV_CONTROL — opcode-tagged, handled straight through csv_store_*
+ * (erase/commit run here, off the BT host context, like sim_config_save_to_flash).
+ * BEGIN/COMMIT/STATUS reply on the CSV control notify. */
+static void process_csv_control(const uint8_t *data, uint16_t len)
+{
+	if (len < 1) {
+		return;
+	}
+
+	switch (data[0]) {
+	case CSV_OP_BEGIN: {
+		struct csv_begin_wire w;
+
+		if (len < sizeof(w)) {
+			config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+			return;
+		}
+		memcpy(&w, data, sizeof(w));
+		struct csv_upload_header hdr = {
+			.track = w.track,
+			.row_count = w.row_count,
+			.base_epoch_s = w.base_epoch_s,
+			.interval_s = w.interval_s,
+			.total_bytes = w.total_bytes,
+			.crc32 = w.crc32,
+		};
+		int err = csv_store_begin(&hdr);
+
+		config_service_notify_csv_control(
+			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, csv_store_received());
+		break;
+	}
+	case CSV_OP_COMMIT: {
+		struct csv_track_op_wire w;
+
+		if (len < sizeof(w)) {
+			config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+			return;
+		}
+		memcpy(&w, data, sizeof(w));
+		int err = csv_store_commit(w.track, NULL);
+
+		config_service_notify_csv_control(
+			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, csv_store_received());
+		break;
+	}
+	case CSV_OP_ABORT:
+		csv_store_abort();
+		config_service_notify_csv_control(CSV_CTRL_STATUS_OK, 0);
+		break;
+	case CSV_OP_CLEAR: {
+		struct csv_track_op_wire w;
+
+		if (len < sizeof(w)) {
+			config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+			return;
+		}
+		memcpy(&w, data, sizeof(w));
+		int err = csv_store_clear(w.track);
+
+		config_service_notify_csv_control(
+			err ? CSV_CTRL_STATUS_ERR : CSV_CTRL_STATUS_OK, 0);
+		break;
+	}
+	case CSV_OP_STATUS:
+		config_service_notify_csv_control(CSV_CTRL_STATUS_OK, csv_store_received());
+		break;
+	default:
+		config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+		break;
+	}
+}
+
+static void process_csv_data(const uint8_t *data, uint16_t len)
+{
+	struct csv_data_wire hdr;
+
+	if (len <= sizeof(hdr)) {
+		return;
+	}
+	memcpy(&hdr, data, sizeof(hdr));
+	csv_store_write(hdr.offset, data + sizeof(hdr), len - sizeof(hdr));
 }
 
 static void apply_food_event_msg(const uint8_t *data, uint16_t len)
@@ -164,10 +326,30 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		return;
 	}
 
+	if (msg->type == CFG_MSG_PISA_INSTANT) {
+		struct pisa_instant_wire wire;
+
+		if (msg->len >= sizeof(wire)) {
+			memcpy(&wire, msg->data, sizeof(wire));
+			model_thread_add_instant_pisa(wire.duration_min, wire.depth_frac);
+		}
+		return;
+	}
+
 	if (msg->type == CFG_MSG_CGMS_ONLY) {
 		if (msg->len >= 1) {
 			model_thread_set_cgms_only(msg->data[0] != 0);
 		}
+		return;
+	}
+
+	if (msg->type == CFG_MSG_CSV_CONTROL) {
+		process_csv_control(msg->data, msg->len);
+		return;
+	}
+
+	if (msg->type == CFG_MSG_CSV_DATA) {
+		process_csv_data(msg->data, msg->len);
 		return;
 	}
 
@@ -180,6 +362,15 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		break;
 	case CFG_MSG_MODE:
 		apply_mode_msg(msg->data, msg->len);
+		break;
+	case CFG_MSG_DATA_SOURCE:
+		apply_data_source_msg(msg->data, msg->len);
+		break;
+	case CFG_MSG_SPEED:
+		apply_speed_msg(msg->data, msg->len);
+		break;
+	case CFG_MSG_COMM_PROFILE:
+		apply_comm_profile_msg(msg->data, msg->len);
 		break;
 	case CFG_MSG_FOOD_EVENT:
 		apply_food_event_msg(msg->data, msg->len);
@@ -213,12 +404,22 @@ static void push_measurement_and_status(void)
 	 * already does its own (correct, per-call) session-stopped check
 	 * internally, so gating on session_active here was redundant AND
 	 * broken — see PROTOCOL_SPEC.md for how this was diagnosed. */
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	uint8_t comm_profile = working_cfg.comm_profile;
+	k_mutex_unlock(&working_cfg_lock);
+
 	if (meas.valid) {
-		printk("comm_thread: fresh reading glucose=%.2f g_cgms=%p\n",
-		       meas.glucose_mg_dl, (void *)g_cgms);
+		printk("comm_thread: fresh reading glucose=%.2f profile=%s\n",
+		       meas.glucose_mg_dl, comm_profile == SIM_COMM_DEXCOM ? "dexcom" : "sig");
 	}
 
-	if (meas.valid && g_cgms) {
+	if (meas.valid && comm_profile == SIM_COMM_DEXCOM) {
+		int err = dexcom_service_notify_glucose((uint16_t)(meas.glucose_mg_dl + 0.5f), 0);
+
+		if (err == 0) {
+			printk("comm_thread: pushed dexcom glucose=%.2f\n", meas.glucose_mg_dl);
+		}
+	} else if (meas.valid && g_cgms) {
 		struct bt_cgms_measurement result;
 		int err = -1;
 

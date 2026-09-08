@@ -69,6 +69,9 @@ class PersonProfile:
     data_source: str = "model"
     csv_path: str | None = None
     csv_window_start_iso: str | None = None
+    # Optional matching Food Log CSV (D1NAMO-style) for the same 24 h window —
+    # replayed report-only alongside the glucose trace when data_source == "csv".
+    food_log_path: str | None = None
 
 
 @dataclass

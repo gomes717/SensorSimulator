@@ -40,5 +40,10 @@ desktop.ini
 
 # Distribution / packaging
 MANIFEST
+
+# UI smoke / validation script output (scripts/ui_smoke.py --out)
+scratchpad_ui/
+# E2E harness run artifacts (docs/E2E_TEST_PLAN.md)
+test-artifacts/
 # Added by code-review-graph
 .code-review-graph/

@@ -9,6 +9,10 @@
 
 #include <stdint.h>
 
+/* CSV control notify status byte (see config_service_notify_csv_control). */
+#define CSV_CTRL_STATUS_OK  0
+#define CSV_CTRL_STATUS_ERR 1
+
 void config_service_init(void);
 
 /* Notifies the Food/Exercise Status characteristic if anyone has subscribed.
@@ -28,5 +32,13 @@ int config_service_notify_food_exercise_status(const void *data, uint16_t len);
  * signal, the value itself is only for diagnostics. Return value: see
  * config_service_notify_food_exercise_status(). */
 int config_service_notify_reset_sync(void);
+
+/* Notifies the CSV Control characteristic with the outcome of a CSV control
+ * opcode (BEGIN/COMMIT/ABORT/CLEAR/STATUS): 2-byte {u8 status, ...} followed by
+ * u32 received_bytes, little-endian — 6 bytes total. *status is
+ * CSV_CTRL_STATUS_OK / CSV_CTRL_STATUS_ERR. The app waits on this between the
+ * BEGIN and the first data chunk, and again after COMMIT. Return value: see
+ * config_service_notify_food_exercise_status(). */
+int config_service_notify_csv_control(uint8_t status, uint32_t received_bytes);
 
 #endif /* CONFIG_SERVICE_H */

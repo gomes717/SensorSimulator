@@ -4,6 +4,12 @@
  * so the simulator config (struct sim_config, see src/sim_config.h) can be
  * persisted there across reboots, per the assignment's requirement to store
  * it in external flash rather than the internal MRAM used for BT bonding.
+ *
+ * sim_csv_partition holds an uploaded CGM trace + Food Log (see src/csv_store.h
+ * and PROTOCOL_SPEC.md's "CSV playback data source" section) — the board can
+ * stream a recorded 24 h window row-per-tick instead of running a physiological
+ * model. Sized generously (252 KB) so a long window and its food log fit with
+ * room to spare; erased one 4 KB sector at a time on each upload.
  */
 
 &mx25r64 {
@@ -15,6 +21,11 @@
 		sim_storage_partition: partition@0 {
 			label = "sim_config_storage";
 			reg = <0x00000000 0x00001000>; /* 4 KB, one erase sector */
+		};
+
+		sim_csv_partition: partition@1000 {
+			label = "sim_csv_storage";
+			reg = <0x00001000 0x0003F000>; /* 252 KB */
 		};
 	};
 };

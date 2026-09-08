@@ -40,7 +40,9 @@ from graphic.debug_window import DebugWindow
 from graphic.device_target import restart_board
 from graphic.exercise_config_window import ExerciseConfigWindow
 from graphic.food_config_window import FoodConfigWindow
-from graphic.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog
+from graphic.fault_panel import FaultPanel
+from graphic.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
+from graphic.scenario_window import ScenarioWindow
 from graphic.person_config_window import PersonConfigWindow
 from graphic.sensor_config_window import SensorConfigWindow
 from graphic.view_config_window import ViewConfigWindow
@@ -80,6 +82,8 @@ class MainWindow(QMainWindow):
         self._exercise_config_window: ExerciseConfigWindow | None = None
         self._csv_analysis_window: CsvAnalysisWindow | None = None
         self._view_config_window: ViewConfigWindow | None = None
+        self._fault_panel: FaultPanel | None = None
+        self._scenario_window: ScenarioWindow | None = None
 
         self._ble_log = BleMessageLog(self)
         self._ble_log.new_message.connect(self._on_new_message)
@@ -88,7 +92,17 @@ class MainWindow(QMainWindow):
         self._seed_default_profiles()
         self._active_person: PersonProfile | None = None
         self._active_sensor: SensorProfile | None = None
-        self._fast_mode = False
+        # Continuous simulation-speed multiplier (x1..x1000); replaces the old
+        # on/off Fast mode. Applied to the engine's dt_min and sent to the board.
+        self._speed_mult = float(app_settings.load_pref("speed_mult", 1.0))
+        # Rolling view: show only the last N wall-clock seconds of the graphs
+        # (0 = entire run). Chosen in the View window, persisted.
+        self._view_window_s = float(app_settings.load_pref("view_window_s", 3600.0))
+        self._visible_xlim: tuple[float, float] | None = None
+        # PISA-shaded intervals on the glucose graph: (t_start_s, t_end_s) in
+        # graph time; matching matplotlib patches so they can be cleared.
+        self._pisa_spans: list[tuple[float, float]] = []
+        self._pisa_patches: list = []
         self._model_only = False
         self._cgms_only = False
         self._engine: SimulationEngine | None = None
@@ -215,6 +229,12 @@ class MainWindow(QMainWindow):
         self.configuration_btn = QPushButton("Configuration")
         self.configuration_btn.clicked.connect(self._open_configuration)
         toolbar.addWidget(self.configuration_btn)
+        self.faults_btn = QPushButton("Faults")
+        self.faults_btn.clicked.connect(self._open_faults)
+        toolbar.addWidget(self.faults_btn)
+        self.scenario_btn = QPushButton("Scenario")
+        self.scenario_btn.clicked.connect(self._open_scenario)
+        toolbar.addWidget(self.scenario_btn)
         self.bluetooth_btn = QPushButton("Connect Bluetooth")
         self.bluetooth_btn.clicked.connect(self._open_bluetooth)
         toolbar.addWidget(self.bluetooth_btn)
@@ -410,6 +430,9 @@ class MainWindow(QMainWindow):
         self._insert_exercise_btn = QPushButton("Insert Exercise Now…")
         self._insert_exercise_btn.clicked.connect(self._open_insert_exercise)
         controls_row.addWidget(self._insert_exercise_btn)
+        self._insert_pisa_btn = QPushButton("Insert PISA Now…")
+        self._insert_pisa_btn.clicked.connect(self._open_insert_pisa)
+        controls_row.addWidget(self._insert_pisa_btn)
 
         controls_row.addStretch(1)
         outer.addLayout(controls_row)
@@ -441,8 +464,10 @@ class MainWindow(QMainWindow):
         return group
 
     def _update_stats_panel(self) -> None:
-        """Recompute the range-metrics panel from whichever glucose series is shown."""
-        series = self._graph_y or self._expected_y
+        """Recompute the range-metrics panel from the glucose series *currently in view*."""
+        series = self._in_view(self._graph_x, self._graph_y) or self._in_view(
+            self._expected_x, self._expected_y
+        )
         m = cgm_metrics.compute(
             series,
             tbr2_below=self._thresholds["tbr2_below"],
@@ -498,15 +523,35 @@ class MainWindow(QMainWindow):
     def _open_csv_analysis(self) -> None:
         """Open (or raise) the CSV Analysis window."""
         if self._csv_analysis_window is None:
-            self._csv_analysis_window = CsvAnalysisWindow()
+            self._csv_analysis_window = CsvAnalysisWindow(
+                self._person_profiles, self._on_csv_window_assigned
+            )
         self._csv_analysis_window.show()
         self._csv_analysis_window.raise_()
         self._csv_analysis_window.activateWindow()
 
+    def _open_faults(self) -> None:
+        """Open (or raise) the Fault-injection panel."""
+        if self._fault_panel is None:
+            self._fault_panel = FaultPanel(self)
+        self._fault_panel.show()
+        self._fault_panel.raise_()
+        self._fault_panel.activateWindow()
+
+    def _open_scenario(self) -> None:
+        """Open (or raise) the Scenario window."""
+        if self._scenario_window is None:
+            self._scenario_window = ScenarioWindow(self)
+        self._scenario_window.show()
+        self._scenario_window.raise_()
+        self._scenario_window.activateWindow()
+
     def _open_view_config(self) -> None:
         """Open (or raise) the View window (theme / appearance)."""
         if self._view_config_window is None:
-            self._view_config_window = ViewConfigWindow(self._on_theme_changed)
+            self._view_config_window = ViewConfigWindow(
+                self._on_theme_changed, self._on_view_window_changed
+            )
         self._view_config_window.show()
         self._view_config_window.raise_()
         self._view_config_window.activateWindow()
@@ -631,15 +676,141 @@ class MainWindow(QMainWindow):
             for session in self._bluetooth_window.sessions().values():
                 session.queue_write("exercise_instant", payload)
 
+    def _open_insert_pisa(self) -> None:
+        """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
+        if self._engine is None and (self._bluetooth_window is None or not self._bluetooth_window.sessions()):
+            QMessageBox.information(
+                self, "Insert PISA Now", "Nothing running to insert into — start a run first."
+            )
+            return
+        dialog = PisaInstantDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.inject_fault("pisa", dialog.values())
+
+    def inject_fault(self, kind: str, values: tuple) -> None:
+        """Inject a sensor fault into the running simulation without resetting it.
+
+        The extensible entry point behind both the "Insert PISA Now…" button and
+        the Faults panel (graphic/fault_panel.py). Only ``"pisa"`` is wired for
+        now — a transient false low: the board/engine multiply the sensor
+        reading by ``1 - depth*sin(pi*elapsed/duration)`` while active, leaving
+        the underlying glucose untouched; the interval is shaded on the graph.
+        """
+        if kind != "pisa":
+            raise ValueError(f"unknown fault kind {kind!r}")
+        duration_min, depth_frac = values
+        if self._engine is not None:
+            self._engine.add_instant_pisa(duration_min, depth_frac)
+        if self._bluetooth_window is not None:
+            payload = protocol.encode_pisa_instant(duration_min, depth_frac)
+            for session in self._bluetooth_window.sessions().values():
+                session.queue_write("pisa_instant", payload)
+        # Shade the affected interval: duration is simulated minutes; the graph
+        # x-axis is wall-clock seconds, so scale by the current speed multiplier.
+        t0 = self._elapsed_seconds(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self._pisa_spans.append((t0, t0 + duration_min * 60.0 / self._speed_mult))
+        self._redraw_graph()
+
+    # ------------------------------------------------------------------
+    # Scenario runner dispatch (graphic/scenario_window.py)
+    # ------------------------------------------------------------------
+
+    def _scenario_dispatch(self, kind: str, args: dict) -> str:
+        """Execute one scenario action on the GUI thread; return a log line.
+
+        Supported kinds: speed, run_state, person, data_source, comm_profile,
+        insert_food, insert_exercise, inject_fault.
+        """
+        if kind == "speed":
+            mult = float(args.get("multiplier", 1))
+            self._cfg.speed_slider.setValue(self._cfg._speed_to_slider(mult))
+            return f"speed → x{int(self._speed_mult)}"
+
+        if kind == "run_state":
+            state = str(args.get("state", "")).lower()
+            if state == "start" and self._run_state == "stopped":
+                self._start_run()
+            elif state == "stop":
+                self._on_stop_clicked()
+            elif state in ("pause", "resume"):
+                self._on_start_pause_clicked()
+            return f"run_state → {state}"
+
+        if kind in ("person", "data_source"):
+            name = args.get("person")
+            for i in range(self._cfg.person_combo.count()):
+                data = self._cfg.person_combo.itemData(i)
+                if data is not None and data.name == name:
+                    self._cfg.person_combo.setCurrentIndex(i)
+                    break
+            self._broadcast_data_source()
+            src = getattr(self._active_person, "data_source", "model") if self._active_person else "?"
+            return f"person → {name} ({src})"
+
+        if kind == "comm_profile":
+            dexcom = str(args.get("profile", "sig")).lower() == "dexcom"
+            self._cfg.comm_profile_combo.setCurrentIndex(1 if dexcom else 0)
+            return f"comm_profile → {'dexcom' if dexcom else 'sig'}"
+
+        if kind == "insert_food":
+            carbs_g = float(args.get("carbs_g", 50))
+            duration_min = int(args.get("duration_min", 15))
+            if self._engine is not None:
+                self._engine.add_instant_food(duration_min, carbs_g)
+            if self._bluetooth_window is not None:
+                payload = protocol.encode_food_instant(duration_min, carbs_g)
+                for s in self._bluetooth_window.sessions().values():
+                    s.queue_write("food_instant", payload)
+            return f"insert_food {carbs_g:g} g / {duration_min} min"
+
+        if kind == "insert_exercise":
+            duration_min = int(args.get("duration_min", 30))
+            intensity_pct = float(args.get("intensity_pct", 50))
+            if self._engine is not None:
+                self._engine.add_instant_exercise(duration_min, intensity_pct)
+            if self._bluetooth_window is not None:
+                payload = protocol.encode_exercise_instant(duration_min, intensity_pct)
+                for s in self._bluetooth_window.sessions().values():
+                    s.queue_write("exercise_instant", payload)
+            return f"insert_exercise {duration_min} min / {intensity_pct:g} %"
+
+        if kind == "inject_fault":
+            fault = str(args.get("fault", "pisa"))
+            duration_min = int(args.get("duration_min", 10))
+            depth_frac = float(args.get("depth_frac", 0.4))
+            self.inject_fault(fault, (duration_min, depth_frac))
+            return f"inject_fault {fault} {int(depth_frac * 100)} % / {duration_min} min"
+
+        return f"(unknown action {kind!r})"
+
     # ------------------------------------------------------------------
     # Person/sensor selection and profile persistence
     # ------------------------------------------------------------------
+
+    def _on_csv_window_assigned(self, person: PersonProfile) -> None:
+        """CSV Analysis assigned a 24 h window to *person* — make them the active
+        person so the Configuration window's data-source group and the graph
+        immediately reflect the new CSV source, then persist + refresh."""
+        combo = self._cfg.person_combo
+        for i in range(combo.count()):
+            data = combo.itemData(i)
+            if data is person or (data is not None and data.name == person.name):
+                combo.setCurrentIndex(i)  # fires _on_person_selected -> _load_data_source
+                break
+        self._on_profiles_changed()
 
     def _on_profiles_changed(self) -> None:
         """Persist profiles to disk and refresh everything that depends on them."""
         profile_store.save(self._person_profiles, self._sensor_profiles)
         self._refresh_person_combo()
         self._refresh_sensor_combo()
+        # _refresh_person_combo() re-selects the same person with signals
+        # blocked, so currentIndexChanged does NOT fire — the Configuration
+        # window's data-source group would otherwise stay stale after an
+        # assignment made elsewhere (e.g. CSV Analysis → "Assign window to
+        # person…"). Sync it explicitly.
+        self._cfg.reload_data_source()
         self._restart_engine()
 
     def _refresh_person_combo(self) -> None:
@@ -702,20 +873,21 @@ class MainWindow(QMainWindow):
     # Mode toggles
     # ------------------------------------------------------------------
 
-    def _on_fast_mode_toggled(self, checked: bool) -> None:
-        """Switch the local engine's pacing and broadcast the new mode to connected boards.
+    def _on_speed_changed(self, multiplier: float) -> None:
+        """Set the simulation-speed multiplier and broadcast it to connected boards.
 
         Also nudges the board's run state to RUNNING (like restart_board()
-        does for the config windows' Send to Board) — the mode write alone
+        does for the config windows' Send to Board) — the speed write alone
         is applied and stored, but a board left paused/stopped won't
         visibly speed up/slow down until it's actually ticking again.
         """
-        self._fast_mode = checked
+        self._speed_mult = max(1.0, min(1000.0, float(multiplier)))
+        app_settings.save_pref("speed_mult", self._speed_mult)
         self._restart_engine()
         if self._bluetooth_window is not None:
-            payload = protocol.encode_mode(checked)
+            payload = protocol.encode_speed(self._speed_mult)
             for session in self._bluetooth_window.sessions().values():
-                session.queue_write("mode", payload)
+                session.queue_write("speed", payload)
                 restart_board(session)
 
     def _on_model_only_toggled(self, checked: bool) -> None:
@@ -746,12 +918,13 @@ class MainWindow(QMainWindow):
             self._cfg.food_btn,
             self._cfg.exercise_btn,
             self._cfg.sensor_configure_btn,
-            self._cfg.fast_mode_check,
+            self._cfg.speed_slider,
             self._cfg.model_only_check,
             self._start_pause_btn,
             self._stop_btn,
             self._insert_food_btn,
             self._insert_exercise_btn,
+            self._insert_pisa_btn,
         ):
             widget.setEnabled(not locked)
 
@@ -824,6 +997,7 @@ class MainWindow(QMainWindow):
         self._graph_x, self._graph_y = [], []
         self._reset_expected()
         self._reset_food_ex()
+        self._pisa_spans = []
         self._redraw_graph()
         self._redraw_food_ex_graph()
 
@@ -866,7 +1040,7 @@ class MainWindow(QMainWindow):
             self._ax.set_title(f"Model — {self._active_person.name}", color=self._graph_fg)
             self._canvas.draw_idle()
 
-        self._engine = SimulationEngine(self._active_person, self._fast_mode, self)
+        self._engine = SimulationEngine(self._active_person, self._speed_mult, self)
         self._engine.expected_reading.connect(self._on_expected_reading)
         # A freshly (re)created engine sits idle unless a run is already in
         # progress (e.g. the active person changed mid-run) — otherwise it
@@ -886,6 +1060,25 @@ class MainWindow(QMainWindow):
         payload = protocol.encode_run_state(value)
         for session in self._bluetooth_window.sessions().values():
             session.queue_write("run_state", payload)
+
+    def _broadcast_data_source(self) -> None:
+        """Tell every connected board whether the active person is model- or CSV-backed.
+
+        The CSV bytes themselves are uploaded separately (Configuration →
+        Send CSV to Board); this just flips the board's playback source so it
+        matches what the app's own engine is doing.
+        """
+        if self._bluetooth_window is None:
+            return
+        is_csv = (
+            self._active_person is not None
+            and getattr(self._active_person, "data_source", "model") == "csv"
+        )
+        ds_payload = protocol.encode_data_source(is_csv)
+        speed_payload = protocol.encode_speed(self._speed_mult)
+        for session in self._bluetooth_window.sessions().values():
+            session.queue_write("data_source", ds_payload)
+            session.queue_write("speed", speed_payload)
 
     def _on_start_pause_clicked(self) -> None:
         """Start (from stopped), pause (from running), or resume (from paused)."""
@@ -914,6 +1107,7 @@ class MainWindow(QMainWindow):
             self._engine.resume()
         self._run_state = "running"
         self._set_start_pause_label()
+        self._broadcast_data_source()
         self._send_run_state(protocol.RUN_STATE_STOPPED)
         self._send_run_state(protocol.RUN_STATE_RUNNING)
 
@@ -1033,15 +1227,47 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _sync_time_axis(self) -> None:
-        """Give both stacked graphs the same x-range so points at the same time line up."""
+        """Give both stacked graphs the same x-range so points at the same time line up.
+
+        Honours the rolling view window (self._view_window_s): when set, only the
+        last N seconds are shown, while the full data arrays are kept so
+        switching to "Entire run" reveals everything again.
+        """
         xs = self._graph_x + self._expected_x + self._food_ex_x
         if not xs:
+            self._visible_xlim = None
             return
         lo, hi = min(xs), max(xs)
         if hi <= lo:
             hi = lo + 1.0
+        if self._view_window_s and (hi - lo) > self._view_window_s:
+            lo = hi - self._view_window_s
+        self._visible_xlim = (lo, hi)
         self._ax.set_xlim(lo, hi)
         self._fe_ax.set_xlim(lo, hi)
+
+    def _in_view(self, xs: list[float], ys: list[float]) -> list[float]:
+        """Return the ys whose x is inside the currently visible window (NaNs dropped)."""
+        lo = self._visible_xlim[0] if self._visible_xlim else float("-inf")
+        return [y for x, y in zip(xs, ys) if x >= lo and y == y]
+
+    def _draw_pisa_spans(self) -> None:
+        """(Re)shade the PISA intervals on the glucose graph."""
+        for patch in self._pisa_patches:
+            try:
+                patch.remove()
+            except (ValueError, AttributeError):
+                pass
+        self._pisa_patches = [
+            self._ax.axvspan(a, b, color="#8e44ad", alpha=0.15, zorder=0)
+            for a, b in self._pisa_spans
+        ]
+
+    def _on_view_window_changed(self) -> None:
+        """Reload the graph time-window preference and redraw."""
+        self._view_window_s = float(app_settings.load_pref("view_window_s", 3600.0))
+        self._redraw_graph()
+        self._redraw_food_ex_graph()
 
     # y-axis when the glucose graph has no data yet (mg/dL)
     _EMPTY_YLIM = (40.0, 200.0)
@@ -1052,7 +1278,9 @@ class MainWindow(QMainWindow):
         Explicit instead of autoscale so the range bands (which extend well
         past any real reading) can't stretch the axis up to 600.
         """
-        ys = [v for v in (self._graph_y + self._expected_y) if v == v]
+        ys = self._in_view(self._graph_x, self._graph_y) + self._in_view(
+            self._expected_x, self._expected_y
+        )
         if not ys:
             self._ax.set_ylim(*self._EMPTY_YLIM)
             return
@@ -1065,15 +1293,18 @@ class MainWindow(QMainWindow):
         self._line.set_data(self._graph_x, self._graph_y)
         self._recolor_main_trace()
         self._expected_line.set_data(self._expected_x, self._expected_y)
+        self._sync_time_axis()  # sets self._visible_xlim, used by the helpers below
+        self._draw_pisa_spans()
         self._fit_glucose_ylim()
-        series = self._graph_y or self._expected_y
+        series = self._in_view(self._graph_x, self._graph_y) or self._in_view(
+            self._expected_x, self._expected_y
+        )
         if series:
             mean = sum(series) / len(series)
             self._mean_line.set_ydata([mean, mean])
             self._mean_line.set_alpha(0.6)
         else:
             self._mean_line.set_alpha(0.0)
-        self._sync_time_axis()
         self._update_stats_panel()
         self._canvas.draw_idle()
         self._fe_canvas.draw_idle()
@@ -1082,11 +1313,11 @@ class MainWindow(QMainWindow):
         """Push updated x/y data to the food/exercise line artists and request a canvas refresh."""
         self._carbs_line.set_data(self._food_ex_x, self._food_ex_carbs_y)
         self._exercise_line.set_data(self._food_ex_x, self._food_ex_exercise_y)
-        self._fe_ax.relim()
-        self._fe_ax.autoscale_view(scalex=False)
-        self._fe_ax2.relim()
-        self._fe_ax2.autoscale_view(scalex=False)
         self._sync_time_axis()
+        cvis = self._in_view(self._food_ex_x, self._food_ex_carbs_y)
+        evis = self._in_view(self._food_ex_x, self._food_ex_exercise_y)
+        self._fe_ax.set_ylim(0.0, max(1.0, (max(cvis) if cvis else 0.0) * 1.15))
+        self._fe_ax2.set_ylim(0.0, max(1.0, (max(evis) if evis else 0.0) * 1.15))
         self._fe_canvas.draw_idle()
         self._canvas.draw_idle()
 
@@ -1109,6 +1340,8 @@ class MainWindow(QMainWindow):
             self._configuration_window,
             self._csv_analysis_window,
             self._view_config_window,
+            self._fault_panel,
+            self._scenario_window,
         ):
             if window is not None:
                 window.close()

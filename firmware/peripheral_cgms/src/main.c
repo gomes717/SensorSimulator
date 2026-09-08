@@ -24,7 +24,9 @@
 #include <dk_buttons_and_leds.h>
 
 #include "sim_config.h"
+#include "csv_store.h"
 #include "config_service.h"
+#include "dexcom_service.h"
 #include "model_thread.h"
 #include "comm_thread.h"
 
@@ -61,32 +63,88 @@ static void led_blink_work_handler(struct k_work *work)
 	k_work_reschedule(&led_blink_work, K_MSEC(LED_BLINK_INTERVAL_MS));
 }
 
-static const struct bt_data ad[] = {
+/* Two advertising profiles, selected by sim_config.comm_profile (see
+ * PROTOCOL_SPEC.md's "Comm profile" section). SIG CGMS advertises the standard
+ * 0x181F service + the project name; the Dexcom imitation advertises 0xFEBC +
+ * a "DXCM01" name so a Dexcom-style client recognises it. */
+#define DEXCOM_ADV_NAME "DXCM01"
+#define BT_UUID_DEXCOM_VAL 0xFEBC
+
+static const struct bt_data ad_cgms[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA_BYTES(BT_DATA_UUID16_ALL,
 				BT_UUID_16_ENCODE(BT_UUID_CGMS_VAL),
 				BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
 };
-static const struct bt_data sd[] = {
+static const struct bt_data sd_cgms[] = {
 	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
+
+static const struct bt_data ad_dexcom[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_DEXCOM_VAL)),
+};
+static const struct bt_data sd_dexcom[] = {
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEXCOM_ADV_NAME, sizeof(DEXCOM_ADV_NAME) - 1),
+};
+
+static uint8_t g_comm_profile = SIM_COMM_SIG_CGMS;
+
+static int advertising_set_data_for_profile(void)
+{
+	if (g_comm_profile == SIM_COMM_DEXCOM) {
+		return bt_le_ext_adv_set_data(g_adv, ad_dexcom, ARRAY_SIZE(ad_dexcom),
+					      sd_dexcom, ARRAY_SIZE(sd_dexcom));
+	}
+	return bt_le_ext_adv_set_data(g_adv, ad_cgms, ARRAY_SIZE(ad_cgms),
+				      sd_cgms, ARRAY_SIZE(sd_cgms));
+}
 
 static void advertising_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	int err = bt_le_ext_adv_start(g_adv, BT_LE_EXT_ADV_START_DEFAULT);
+	int err = advertising_set_data_for_profile();
 
+	if (err) {
+		printk("Failed to set advertising data (err %d)\n", err);
+		return;
+	}
+
+	err = bt_le_ext_adv_start(g_adv, BT_LE_EXT_ADV_START_DEFAULT);
 	if (err) {
 		printk("Advertising failed to start (err %d)\n", err);
 		return;
 	}
-	printk("Advertising successfully started\n");
+	printk("Advertising started (comm_profile=%s)\n",
+	       g_comm_profile == SIM_COMM_DEXCOM ? "dexcom" : "sig-cgms");
 }
 
 static void advertising_start(void)
 {
 	k_work_submit(&adv_work);
+}
+
+/* Called by comm_thread when a Comm-profile config write is applied. Re-advertise
+ * with the new service UUID / name; a connected client keeps its link but must
+ * reconnect to rediscover under the new profile. */
+void main_apply_comm_profile(uint8_t profile)
+{
+	if (profile == g_comm_profile) {
+		return;
+	}
+	g_comm_profile = profile;
+	printk("main: comm_profile -> %s\n", profile == SIM_COMM_DEXCOM ? "dexcom" : "sig-cgms");
+
+	/* A connectable adv set can't restart while the single connection slot is
+	 * occupied (CONFIG_BT_MAX_CONN=1) — disconnected() re-advertises with the
+	 * new profile anyway. Only re-advertise now if nobody is connected. */
+	if (!g_connected) {
+		(void)bt_le_ext_adv_stop(g_adv);
+		advertising_start();
+	} else {
+		printk("main: re-advertise deferred until disconnect\n");
+	}
 }
 
 static void connected(struct bt_conn *conn, uint8_t err)
@@ -222,6 +280,8 @@ int main(void)
 	}
 
 	sim_config_load_from_flash(&cfg);
+	csv_store_load_manifest();
+	g_comm_profile = cfg.comm_profile;
 
 	err = bt_cgms_init(&params, &g_cgms);
 	if (err) {
@@ -239,12 +299,7 @@ int main(void)
 		printk("Failed to create advertising set (err %d)\n", err);
 		return 0;
 	}
-
-	err = bt_le_ext_adv_set_data(g_adv, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-	if (err) {
-		printk("Failed to set advertising data (err %d)\n", err);
-		return 0;
-	}
+	/* Advertising data is set per comm_profile in advertising_work_handler(). */
 
 	config_service_init();
 	comm_thread_start(g_cgms, &cfg);

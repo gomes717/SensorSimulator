@@ -5,6 +5,7 @@
 
 #include "model_thread.h"
 #include "config_service.h"
+#include "csv_store.h"
 #include "models/cgmsim_cambridge.h"
 #include "models/cgmsim_uva_padova.h"
 #include "models/cgmsim_royparker.h"
@@ -25,6 +26,14 @@ BUILD_ASSERT(sizeof(DeichmannParams) == 22 * sizeof(double), "DeichmannParams fi
 #define MODEL_THREAD_STACK_SIZE 4096
 #define MODEL_THREAD_PRIORITY   5
 #define MINUTES_PER_DAY         1440.0
+
+/* CSV data-source playback: how long a Food Log meal is spread over for the
+ * (report-only) Food/Exercise Status signal. Meals from the uploaded food log
+ * are fed into the same instant-food slots the "Insert Food Now" button uses,
+ * purely so the app has something to plot — they never reach a model in CSV
+ * mode (there is none running). */
+#define CSV_FOODLOG_SPREAD_MIN 30
+#define CSV_FOODLOG_MAX_HITS   8
 
 static K_THREAD_STACK_DEFINE(model_thread_stack, MODEL_THREAD_STACK_SIZE);
 static struct k_thread model_thread_data;
@@ -65,9 +74,19 @@ struct instant_exercise_slot {
 	double intensity_pct;
 };
 
+/* Instant PISA attenuation slot — multiplies the sensor reading by
+ * (1 - depth * sin(pi * elapsed/duration)) while active. */
+struct instant_pisa_slot {
+	bool active;
+	double remaining_min;
+	double duration_min;
+	double depth; /* 0..1 peak attenuation */
+};
+
 static K_MUTEX_DEFINE(instant_lock);
 static struct instant_food_slot instant_food[MAX_INSTANT_EVENTS];
 static struct instant_exercise_slot instant_exercise[MAX_INSTANT_EVENTS];
+static struct instant_pisa_slot instant_pisa[MAX_INSTANT_EVENTS];
 
 static union {
 	CambridgeState cambridge;
@@ -212,10 +231,11 @@ static void apply_config_locked(const struct sim_config *cfg)
 	k_mutex_lock(&instant_lock, K_FOREVER);
 	memset(instant_food, 0, sizeof(instant_food));
 	memset(instant_exercise, 0, sizeof(instant_exercise));
+	memset(instant_pisa, 0, sizeof(instant_pisa));
 	k_mutex_unlock(&instant_lock);
 
-	printk("model_thread: applied config (model_id=%u, sensor_id=%u, mode=%u)\n",
-	       active_cfg.model_id, active_cfg.sensor_id, active_cfg.mode);
+	printk("model_thread: applied config (model_id=%u, sensor_id=%u, mode=%u, data_source=%u)\n",
+	       active_cfg.model_id, active_cfg.sensor_id, active_cfg.mode, active_cfg.data_source);
 
 	/* Fired the instant the reset actually takes effect — the app anchors
 	 * its own t=0 to this notification's arrival instead of to whenever it
@@ -233,10 +253,32 @@ static double active_hr_baseline(void)
 
 static void model_tick(void)
 {
-	double dt_min = (active_cfg.mode == SIM_MODE_FAST) ? 1.0 : (1.0 / 60.0);
+	/* One tick per wall-clock second, always; speed_mult scales how much
+	 * simulated time that represents. x1 = real time, x60 = the old fast
+	 * mode, up to x1000. See PROTOCOL_SPEC.md's "Speed" section. */
+	float mult = active_cfg.speed_mult;
+
+	if (!(mult >= SIM_SPEED_MIN && mult <= SIM_SPEED_MAX)) {
+		mult = SIM_SPEED_DEFAULT;
+	}
+	double dt_min = (1.0 / 60.0) * (double)mult;
 	double time_of_day = fmod(sim_clock_min, MINUTES_PER_DAY);
 	int day_index = (int)(sim_clock_min / MINUTES_PER_DAY);
 	bool rate_fed = model_is_rate_fed(active_cfg.model_id);
+	bool csv_mode = (active_cfg.data_source == SIM_DATA_CSV) && csv_glucose_available();
+
+	/* CSV mode: fold any uploaded Food Log meals reaching their time now into
+	 * the instant-food slots, so the recurring/instant handling below reports
+	 * them on the Food/Exercise Status notification (report-only — no model). */
+	if (csv_mode) {
+		struct csv_food_hit hits[CSV_FOODLOG_MAX_HITS];
+		int n = csv_foodlog_window(sim_clock_min * 60.0, (sim_clock_min + dt_min) * 60.0,
+					   hits, CSV_FOODLOG_MAX_HITS);
+
+		for (int i = 0; i < n; i++) {
+			model_thread_add_instant_food(CSV_FOODLOG_SPREAD_MIN, hits[i].carbs_g);
+		}
+	}
 
 	double carbs = 0.0;
 
@@ -305,9 +347,62 @@ static void model_tick(void)
 			slot->active = false;
 		}
 	}
+
+	/* PISA: smooth transient attenuation of the sensor reading. Multiple
+	 * active bouts compound. Applied to the final reading below (model and
+	 * CSV paths alike — it is a sensor artefact, not a glucose change). */
+	double pisa_factor = 1.0;
+
+	for (int i = 0; i < MAX_INSTANT_EVENTS; i++) {
+		struct instant_pisa_slot *slot = &instant_pisa[i];
+
+		if (!slot->active) {
+			continue;
+		}
+		double elapsed = slot->duration_min - slot->remaining_min;
+		double frac = (slot->duration_min > 0.0) ? elapsed / slot->duration_min : 1.0;
+
+		if (frac < 0.0) {
+			frac = 0.0;
+		} else if (frac > 1.0) {
+			frac = 1.0;
+		}
+		pisa_factor *= (1.0 - slot->depth * sin(frac * 3.14159265358979323846));
+		slot->remaining_min -= dt_min;
+		if (slot->remaining_min <= 0.0) {
+			slot->active = false;
+		}
+	}
+	if (pisa_factor < 0.0) {
+		pisa_factor = 0.0;
+	}
 	k_mutex_unlock(&instant_lock);
 
-	double glucose;
+	double glucose = 0.0;
+	float csv_glucose = 0.0f;
+
+	/* CSV data source: emit the recorded sample for this instant verbatim —
+	 * no physiological model, no sensor-noise model (the recording already
+	 * carries real sensor noise). Falls back to the model path if the lookup
+	 * fails (no track committed). */
+	if (csv_mode && csv_glucose_lookup(sim_clock_min, &csv_glucose)) {
+		glucose = (double)csv_glucose * pisa_factor;
+
+		double carbs_rate_display = rate_fed ? carbs : (carbs > 0.0 ? carbs / dt_min : 0.0);
+
+		k_mutex_lock(&meas_lock, K_FOREVER);
+		latest.glucose_mg_dl = (float)glucose;
+		latest.valid = 1;
+		latest.carbs_g_per_min = (float)carbs_rate_display;
+		latest.exercise_pct = (float)exercise_pct;
+		k_mutex_unlock(&meas_lock);
+
+		printk("model_tick: t_sim=%.2fmin dt=%.4f CSV glucose=%.2f pisa=%.3f carbs=%.3f ex=%.1f\n",
+		       sim_clock_min, dt_min, glucose, pisa_factor, carbs_rate_display, exercise_pct);
+
+		sim_clock_min += dt_min;
+		return;
+	}
 
 	switch (active_cfg.model_id) {
 	case SIM_MODEL_UVA_PADOVA:
@@ -358,17 +453,18 @@ static void model_tick(void)
 
 	k_mutex_lock(&meas_lock, K_FOREVER);
 	if (reading.valid) {
-		latest.glucose_mg_dl = (float)reading.value_mg_dl;
+		latest.glucose_mg_dl = (float)(reading.value_mg_dl * pisa_factor);
 		latest.valid = 1;
 	}
 	latest.carbs_g_per_min = (float)carbs_rate_display;
 	latest.exercise_pct = (float)exercise_pct;
 	k_mutex_unlock(&meas_lock);
 
-	printk("model_tick: t_sim=%.2fmin dt=%.4f mode=%u model=%u sensor=%u glucose=%.2f "
-	       "reading=%.2f(valid=%d) carbs=%.3f ex=%.1f\n",
-	       sim_clock_min, dt_min, active_cfg.mode, active_cfg.model_id, active_cfg.sensor_id,
-	       glucose, reading.value_mg_dl, reading.valid, carbs_rate_display, exercise_pct);
+	printk("model_tick: t_sim=%.2fmin dt=%.4f model=%u sensor=%u glucose=%.2f "
+	       "reading=%.2f(valid=%d) pisa=%.3f carbs=%.3f ex=%.1f\n",
+	       sim_clock_min, dt_min, active_cfg.model_id, active_cfg.sensor_id,
+	       glucose, reading.value_mg_dl, reading.valid, pisa_factor, carbs_rate_display,
+	       exercise_pct);
 
 	sim_clock_min += dt_min;
 }
@@ -385,10 +481,19 @@ void model_thread_set_run_state(uint8_t state)
 		 * apply/reinit path a real config change uses — cheapest way
 		 * to get a full state + sim_clock_min reset without a second
 		 * copy of the reinit logic. Takes effect next tick, same as
-		 * model_thread_apply_config(). */
+		 * model_thread_apply_config().
+		 *
+		 * But do NOT clobber a config write that is already queued and
+		 * not yet applied (e.g. the app sends data_source, then STOPPED,
+		 * then RUNNING back-to-back on Start): that pending config's own
+		 * apply_config_locked() already performs the full reset, so
+		 * overwriting pending_cfg with the stale active_cfg here would
+		 * just drop the newer config. */
 		k_mutex_lock(&cfg_lock, K_FOREVER);
-		pending_cfg = active_cfg;
-		cfg_pending = true;
+		if (!cfg_pending) {
+			pending_cfg = active_cfg;
+			cfg_pending = true;
+		}
 		k_mutex_unlock(&cfg_lock);
 	}
 
@@ -532,5 +637,34 @@ void model_thread_add_instant_exercise(uint16_t duration_min, float intensity_pc
 	}
 	k_mutex_unlock(&instant_lock);
 	printk("model_thread: instant exercise dropped, no free slot (MAX_INSTANT_EVENTS=%d)\n",
+	       MAX_INSTANT_EVENTS);
+}
+
+void model_thread_add_instant_pisa(uint16_t duration_min, float depth_frac)
+{
+	double duration = duration_min > 0 ? (double)duration_min : 1.0;
+	double depth = (double)depth_frac;
+
+	if (depth < 0.0) {
+		depth = 0.0;
+	} else if (depth > 1.0) {
+		depth = 1.0;
+	}
+
+	k_mutex_lock(&instant_lock, K_FOREVER);
+	for (int i = 0; i < MAX_INSTANT_EVENTS; i++) {
+		if (!instant_pisa[i].active) {
+			instant_pisa[i].active = true;
+			instant_pisa[i].remaining_min = duration;
+			instant_pisa[i].duration_min = duration;
+			instant_pisa[i].depth = depth;
+			k_mutex_unlock(&instant_lock);
+			printk("model_thread: instant PISA added, duration_min=%u depth=%.2f\n",
+			       duration_min, depth);
+			return;
+		}
+	}
+	k_mutex_unlock(&instant_lock);
+	printk("model_thread: instant PISA dropped, no free slot (MAX_INSTANT_EVENTS=%d)\n",
 	       MAX_INSTANT_EVENTS);
 }

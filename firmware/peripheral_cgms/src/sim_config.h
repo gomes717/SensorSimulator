@@ -13,14 +13,37 @@
 #include <zephyr/toolchain.h>
 
 #define SIM_CONFIG_MAGIC   0x53494D31u /* "SIM1" */
-#define SIM_CONFIG_VERSION 1
+#define SIM_CONFIG_VERSION 4           /* v2: data_source; v3: speed_mult; v4: comm_profile */
 
 #define MAX_MODEL_PARAMS  34 /* >= UVA/Padova's 33 params */
 #define MAX_SENSOR_PARAMS 14 /* >= Facchinetti's 13 params */
 #define MAX_EVENTS        32
 
+/* Legacy on/off mode byte — superseded by speed_mult (continuous x1..x1000).
+ * Kept in struct sim_config for wire compat; model_thread ignores it. */
 #define SIM_MODE_NORMAL 0
 #define SIM_MODE_FAST   1
+
+/* Simulation speed multiplier bounds. dt_min per 1 Hz tick = (1/60) * speed_mult,
+ * so x1 = real time, x60 = the old "fast mode", x1000 = 1 real second per
+ * ~16.7 simulated minutes. See PROTOCOL_SPEC.md's "Speed" section. */
+#define SIM_SPEED_MIN     1.0f
+#define SIM_SPEED_MAX     1000.0f
+#define SIM_SPEED_DEFAULT 1.0f
+
+/* Which BLE profile the board streams glucose over — see PROTOCOL_SPEC.md's
+ * "Comm profile" section. SIG_CGMS is the Bluetooth SIG standard CGM Service
+ * (0x181F). DEXCOM is a basic imitation of a Dexcom transmitter (FEBC service,
+ * opcode-tagged glucose messages, no auth handshake). */
+#define SIM_COMM_SIG_CGMS 0
+#define SIM_COMM_DEXCOM   1
+
+/* Where the streamed glucose comes from — see PROTOCOL_SPEC.md's "CSV playback
+ * data source" section and src/csv_store.h. SIM_DATA_CSV makes model_thread
+ * emit one row of an uploaded recorded trace per tick instead of stepping a
+ * physiological model + sensor noise. */
+#define SIM_DATA_MODEL 0
+#define SIM_DATA_CSV   1
 
 enum sim_model_id {
 	SIM_MODEL_CAMBRIDGE  = 0,
@@ -62,6 +85,9 @@ struct sim_config {
 	struct food_event food[MAX_EVENTS];
 	uint8_t exercise_count;
 	struct exercise_event exercise[MAX_EVENTS];
+	uint8_t data_source; /* SIM_DATA_MODEL / SIM_DATA_CSV */
+	float speed_mult;    /* v3: SIM_SPEED_MIN..SIM_SPEED_MAX, default SIM_SPEED_DEFAULT */
+	uint8_t comm_profile; /* v4: SIM_COMM_SIG_CGMS / SIM_COMM_DEXCOM */
 } __packed;
 
 /* BLE wire-format structs — byte-identical to what SensorSimulator's
@@ -84,6 +110,21 @@ struct food_list_wire {
 struct exercise_list_wire {
 	uint8_t count;
 	struct exercise_event events[MAX_EVENTS];
+} __packed;
+
+/* Data-source characteristic wire format (1 byte, read + write). */
+struct data_source_wire {
+	uint8_t data_source; /* SIM_DATA_MODEL / SIM_DATA_CSV */
+} __packed;
+
+/* Speed characteristic wire format (float32 LE, read + write). */
+struct speed_wire {
+	float mult;
+} __packed;
+
+/* Comm-profile characteristic wire format (1 byte, read + write). */
+struct comm_profile_wire {
+	uint8_t profile; /* SIM_COMM_SIG_CGMS / SIM_COMM_DEXCOM */
 } __packed;
 
 /* Fills *cfg with Cambridge + Ideal CGM defaults, no events, normal mode. */

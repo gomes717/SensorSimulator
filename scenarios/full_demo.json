@@ -1,0 +1,14 @@
+{
+  "name": "Full demo — speed, meal, exercise, PISA, comm-profile",
+  "actions": [
+    { "at_s": 0,   "kind": "speed",           "args": { "multiplier": 60 } },
+    { "at_s": 1,   "kind": "run_state",       "args": { "state": "start" } },
+    { "at_s": 15,  "kind": "insert_food",     "args": { "carbs_g": 60, "duration_min": 15 } },
+    { "at_s": 45,  "kind": "insert_exercise", "args": { "duration_min": 30, "intensity_pct": 60 } },
+    { "at_s": 75,  "kind": "inject_fault",    "args": { "fault": "pisa", "duration_min": 12, "depth_frac": 0.45 } },
+    { "at_s": 110, "kind": "speed",           "args": { "multiplier": 300 } },
+    { "at_s": 125, "kind": "comm_profile",    "args": { "profile": "dexcom" } },
+    { "at_s": 150, "kind": "comm_profile",    "args": { "profile": "sig" } },
+    { "at_s": 160, "kind": "run_state",       "args": { "state": "stop" } }
+  ]
+}

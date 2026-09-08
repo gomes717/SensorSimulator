@@ -23,6 +23,12 @@ readings against the same model run locally as a cross-check.
   tables for every model/sensor
 - [`firmware/README.md`](firmware/README.md) — building/flashing the
   firmware
+- [`docs/BLE_PAYLOAD_VALIDATION.md`](docs/BLE_PAYLOAD_VALIDATION.md) — our
+  CGM wire format vs. a real Dexcom's; how the stream is cross-checked
+- [`docs/E2E_TEST_PLAN.md`](docs/E2E_TEST_PLAN.md) — full app↔MCU test
+  matrix + the failure-artifact / log-capture harness
+- [`docs/FEATURE_IDEAS.md`](docs/FEATURE_IDEAS.md) — candidate features,
+  effort/risk, suggested order
 
 ## Features
 
@@ -31,6 +37,14 @@ readings against the same model run locally as a cross-check.
   to the board or run it locally with no hardware ("Model Only" mode)
 - Insert one-shot food/exercise events into an already-running simulation
   without resetting it
+- Replay a recorded 24 h CGM trace (Dexcom CSV) from the board instead of a
+  model — uploaded over BLE, stored in the board's external flash
+- Continuous x1–x1000 simulation-speed multiplier; rolling "last 1 hour"
+  graph view (or the whole run)
+- Fault injection (PISA / compression low) with the affected interval shaded
+- Scenario runner — JSON files of timed actions (`scenarios/`), fired from the
+  Scenario window
+- Switchable BLE profile: standard SIG CGMS or a basic Dexcom-style stream
 - Scan for and connect to several nearby BLE devices at once, with
   automatic pairing for devices needing it (Windows)
 - Live treeview of connected devices with their latest glucose reading
@@ -51,6 +65,8 @@ SensorSimulator/
 │   ├── models/       # Physiological models, sensor params, profile persistence
 │   ├── graphic/      # All windows/dialogs (the UI)
 │   └── utils/        # Reserved for generic helpers
+├── scenarios/        # JSON timed-action scripts for the Scenario window
+├── scripts/          # ui_smoke.py, e2e.py (app↔board test harness), validate_ble_stream.py
 ├── firmware/         # peripheral_cgms firmware source (git-tracked, builds/flashes from here)
 ├── cgmsim/           # Standalone CLI simulator — source of truth for the model math
 ├── data/             # Saved profiles.json

@@ -1,0 +1,13 @@
+{
+  "name": "Speed multiplier sweep",
+  "actions": [
+    { "at_s": 0,  "kind": "speed",     "args": { "multiplier": 1 } },
+    { "at_s": 1,  "kind": "run_state", "args": { "state": "start" } },
+    { "at_s": 15, "kind": "speed",     "args": { "multiplier": 10 } },
+    { "at_s": 30, "kind": "speed",     "args": { "multiplier": 60 } },
+    { "at_s": 45, "kind": "speed",     "args": { "multiplier": 300 } },
+    { "at_s": 60, "kind": "speed",     "args": { "multiplier": 1000 } },
+    { "at_s": 80, "kind": "speed",     "args": { "multiplier": 1 } },
+    { "at_s": 90, "kind": "run_state", "args": { "state": "stop" } }
+  ]
+}

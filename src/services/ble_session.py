@@ -33,7 +33,13 @@ CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.EXERCISE_EVENT_UUID: "exercise",  # write-only, appends one event
     ble_uuids.FOOD_INSTANT_UUID: "food_instant",  # write-only, one-shot, does not reset the board
     ble_uuids.EXERCISE_INSTANT_UUID: "exercise_instant",  # write-only, one-shot, does not reset the board
+    ble_uuids.PISA_INSTANT_UUID: "pisa_instant",  # write-only, one-shot, does not reset the board
     ble_uuids.CGMS_ONLY_UUID: "cgms_only",  # read + write, not persisted on the board
+    ble_uuids.DATA_SOURCE_UUID: "data_source",  # read + write, persisted (model vs CSV)
+    ble_uuids.SPEED_UUID: "speed",  # read + write, persisted (x1..x1000 multiplier)
+    ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted (SIG CGMS vs Dexcom)
+    ble_uuids.CSV_CONTROL_UUID: "csv_control",  # write + notify, chunked CSV upload control
+    ble_uuids.CSV_DATA_UUID: "csv_data",  # write-only, CSV upload data chunks
     ble_uuids.FOOD_EVENTS_READBACK_UUID: "food_list",  # read-only, full list
     ble_uuids.EXERCISE_EVENTS_READBACK_UUID: "exercise_list",  # read-only, full list
     ble_uuids.RUN_STATE_UUID: "run_state",  # read + write, not persisted on the board
@@ -111,6 +117,8 @@ class BleSession(QThread):
     write_failed = pyqtSignal(str, str, str)  # address, char_key, error message
     config_read = pyqtSignal(str, str, bytes)  # address, char_key, raw value
     reset_sync = pyqtSignal(str)  # address — see ble_uuids.RESET_SYNC_UUID
+    csv_upload_progress = pyqtSignal(str, int, int)  # address, sent_bytes, total_bytes
+    csv_upload_finished = pyqtSignal(str, bool, str)  # address, ok, message
 
     def __init__(self, address: str, name: str, parent=None) -> None:
         """Store the target device's address and display name for this session."""
@@ -139,6 +147,9 @@ class BleSession(QThread):
         # works on the loop it was created on.
         self._config_characteristics: dict[str, object] = {}
         self._write_queue: asyncio.Queue = asyncio.Queue()
+        # CSV control notifications ({status, received_bytes}), consumed by
+        # _do_csv_upload() as acks between the BEGIN / data / COMMIT phases.
+        self._csv_ctrl_queue: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: BleakClient | None = None  # set once connected, used by request_read()
 
@@ -285,6 +296,78 @@ class BleSession(QThread):
             return
         self.config_read.emit(self._address, char_key, bytes(data))
 
+    # ------------------------------------------------------------------
+    # CSV playback upload (see api.protocol's encode_csv_* + PROTOCOL_SPEC.md)
+    # ------------------------------------------------------------------
+
+    def start_csv_upload(self, uploads: list[dict]) -> None:
+        """Thread-safe: upload one or more CSV tracks to the board.
+
+        Each entry in *uploads* is
+        ``{"track": int, "blob": bytes, "row_count": int, "base_epoch_s": int,
+        "interval_s": int}``. Progress and completion arrive on the
+        csv_upload_progress / csv_upload_finished signals. Safe to call from any
+        thread — the transfer runs on this session's own event loop.
+        """
+        if self._loop is None:
+            self.csv_upload_finished.emit(self._address, False, "not connected")
+            return
+        asyncio.run_coroutine_threadsafe(self._do_csv_upload(uploads), self._loop)
+
+    async def _await_csv_ctrl(self, timeout: float = 5.0) -> tuple[int, int]:
+        """Wait for the next CSV control notification (status, received_bytes)."""
+        return await asyncio.wait_for(self._csv_ctrl_queue.get(), timeout=timeout)
+
+    async def _do_csv_upload(self, uploads: list[dict]) -> None:
+        ctrl = self._config_characteristics.get("csv_control")
+        data = self._config_characteristics.get("csv_data")
+        if ctrl is None or data is None or self._client is None:
+            self.csv_upload_finished.emit(
+                self._address, False, "device does not expose the CSV characteristics"
+            )
+            return
+
+        total = sum(len(u["blob"]) for u in uploads)
+        sent = 0
+        try:
+            for u in uploads:
+                blob: bytes = u["blob"]
+                while not self._csv_ctrl_queue.empty():
+                    self._csv_ctrl_queue.get_nowait()
+
+                begin = protocol.encode_csv_begin(
+                    u["track"], u["row_count"], u["base_epoch_s"],
+                    u["interval_s"], len(blob), protocol.csv_crc32(blob),
+                )
+                await self._client.write_gatt_char(ctrl, begin, response=True)
+                status, _ = await self._await_csv_ctrl()
+                if status != protocol.CSV_CTRL_STATUS_OK:
+                    raise RuntimeError(f"board rejected BEGIN for track {u['track']}")
+
+                for chunk in protocol.iter_csv_data_chunks(blob):
+                    await self._client.write_gatt_char(data, chunk, response=True)
+                    sent += len(chunk) - 4  # minus the u32 offset prefix
+                    self.csv_upload_progress.emit(self._address, min(sent, total), total)
+
+                await self._client.write_gatt_char(
+                    ctrl, protocol.encode_csv_commit(u["track"]), response=True
+                )
+                status, received = await self._await_csv_ctrl()
+                if status != protocol.CSV_CTRL_STATUS_OK:
+                    raise RuntimeError(
+                        f"board rejected COMMIT for track {u['track']} "
+                        f"(received {received}/{len(blob)} bytes)"
+                    )
+            self.csv_upload_finished.emit(self._address, True, f"CSV uploaded ({total} bytes)")
+        except Exception as exc:  # pylint: disable=broad-except
+            try:
+                await self._client.write_gatt_char(
+                    ctrl, protocol.encode_csv_abort(), response=True
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+            self.csv_upload_finished.emit(self._address, False, str(exc))
+
     def _user_id(self) -> str:
         """Return a display identifier that stays unique across multiple connected devices.
 
@@ -325,6 +408,12 @@ class BleSession(QThread):
             message.update(_decode_cgm_measurement(bytes(data)))
             print(f"[ble] CGM measurement from {user_id}: {message.get('glucose_value')} mg/dL "
                   f"raw={data.hex()}")
+        elif characteristic.uuid.lower() == ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID:
+            decoded = protocol.decode_dexcom_glucose(bytes(data))
+            if decoded is not None:
+                message.update(decoded)
+            print(f"[ble] dexcom glucose from {user_id}: {message.get('glucose_value')} mg/dL "
+                  f"seq={message.get('sequence')} raw={data.hex()}")
         elif characteristic.uuid.lower() == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
             decoded = protocol.decode_food_exercise_status(bytes(data))
             if decoded is not None:
@@ -334,4 +423,10 @@ class BleSession(QThread):
             print(f"[ble] reset_sync from {user_id}: generation={data[0] if data else '?'}")
             self.reset_sync.emit(self._address)
             return  # control event, not a data point — don't add it to new_message
+        elif characteristic.uuid.lower() == ble_uuids.CSV_CONTROL_UUID:
+            decoded = protocol.decode_csv_control_notify(bytes(data))
+            print(f"[ble] csv_control from {user_id}: {decoded} raw={data.hex()}")
+            if decoded is not None:
+                self._csv_ctrl_queue.put_nowait(decoded)
+            return  # control event, not a data point
         self.new_message.emit(message)

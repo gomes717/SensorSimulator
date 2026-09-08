@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/att.h>
 #include <zephyr/bluetooth/uuid.h>
@@ -42,6 +43,18 @@ static struct bt_uuid_128 exercise_instant_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c000d, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 static struct bt_uuid_128 cgms_only_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c000e, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 csv_control_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c000f, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 csv_data_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0010, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 data_source_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0011, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 speed_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0012, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 pisa_instant_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0013, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 comm_profile_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0014, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 
 /* Config writes are rejected while CGMS-only mode is active — see
  * model_thread.h's model_thread_set_cgms_only() comment. Deliberately does
@@ -149,6 +162,187 @@ static ssize_t write_mode(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
 	}
 	return len;
+}
+
+/* ── Data source: read + write (model vs. uploaded CSV) ──────────────── */
+
+static ssize_t read_data_source(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				  void *buf, uint16_t len, uint16_t offset)
+{
+	struct sim_config cfg;
+
+	comm_thread_copy_config(&cfg);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.data_source,
+				 sizeof(cfg.data_source));
+}
+
+static ssize_t write_data_source(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				   const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 1) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_DATA_SOURCE, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── Speed multiplier: read + write (float32, x1..x1000) ────────────── */
+
+static ssize_t read_speed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			    void *buf, uint16_t len, uint16_t offset)
+{
+	struct sim_config cfg;
+
+	comm_thread_copy_config(&cfg);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.speed_mult,
+				 sizeof(cfg.speed_mult));
+}
+
+static ssize_t write_speed(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			     const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < sizeof(struct speed_wire)) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_SPEED, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── Comm profile: read + write (SIG CGMS vs Dexcom-style stream) ────── */
+
+static ssize_t read_comm_profile(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				   void *buf, uint16_t len, uint16_t offset)
+{
+	struct sim_config cfg;
+
+	comm_thread_copy_config(&cfg);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &cfg.comm_profile,
+				 sizeof(cfg.comm_profile));
+}
+
+static ssize_t write_comm_profile(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				    const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 1) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_COMM_PROFILE, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── Instant PISA event: write-only, one-shot, non-persisted (same class
+ * as the food/exercise instant events). ─────────────────────────────────── */
+
+static ssize_t write_pisa_instant(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				    const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < sizeof(struct pisa_instant_wire)) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_PISA_INSTANT, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── CSV upload transport: control (write + notify) and data (write) ──
+ * Byte layout in PROTOCOL_SPEC.md; the heavy lifting (flash erase/program,
+ * CRC) happens in comm_thread, not here. ────────────────────────────────── */
+
+static ssize_t write_csv_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				   const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 1) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_CSV_CONTROL, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+static ssize_t write_csv_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len < 5) { /* u32 offset + at least 1 data byte */
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_CSV_DATA, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+static void csv_control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+	ARG_UNUSED(value);
 }
 
 /* ── Food / Exercise events: write-only "append one" ─────────────────── */
@@ -434,6 +628,38 @@ BT_GATT_SERVICE_DEFINE(sim_config_svc,
 		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
 		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 		read_cgms_only, write_cgms_only, NULL),
+
+	BT_GATT_CHARACTERISTIC(&data_source_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_data_source, write_data_source, NULL),
+
+	BT_GATT_CHARACTERISTIC(&speed_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_speed, write_speed, NULL),
+
+	BT_GATT_CHARACTERISTIC(&pisa_instant_uuid.uuid,
+		BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_WRITE,
+		NULL, write_pisa_instant, NULL),
+
+	BT_GATT_CHARACTERISTIC(&comm_profile_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_comm_profile, write_comm_profile, NULL),
+
+	BT_GATT_CHARACTERISTIC(&csv_control_uuid.uuid,
+		BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+		BT_GATT_PERM_WRITE,
+		NULL, write_csv_control, NULL),
+	BT_GATT_CCC(csv_control_ccc_changed,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+	BT_GATT_CHARACTERISTIC(&csv_data_uuid.uuid,
+		BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_WRITE,
+		NULL, write_csv_data, NULL),
 );
 
 /* Finds the VALUE attribute (not the declaration attribute) for a
@@ -479,6 +705,21 @@ int config_service_notify_reset_sync(void)
 	}
 	generation++;
 	return bt_gatt_notify(NULL, found, &generation, sizeof(generation));
+}
+
+int config_service_notify_csv_control(uint8_t status, uint32_t received_bytes)
+{
+	static const struct bt_gatt_attr *attr;
+	const struct bt_gatt_attr *found = find_value_attr(&csv_control_uuid.uuid, &attr);
+	uint8_t payload[6];
+
+	if (!found) {
+		return -ENOENT;
+	}
+	payload[0] = status;
+	payload[1] = 0; /* reserved */
+	sys_put_le32(received_bytes, &payload[2]);
+	return bt_gatt_notify(NULL, found, payload, sizeof(payload));
 }
 
 void config_service_init(void)

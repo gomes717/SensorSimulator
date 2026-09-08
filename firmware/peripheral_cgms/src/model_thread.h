@@ -44,6 +44,17 @@ struct exercise_instant_wire {
 	float intensity_pct;
 } __packed;
 
+/* Instant PISA (Pressure-Induced Sensor Attenuation) event — a transient
+ * downward attenuation of the sensor reading producing a false low without
+ * real hypoglycaemia. Same non-disruptive semantics as the food/exercise
+ * instant events (never persisted, never resets the run). depth_frac in
+ * [0, 1] is the peak attenuation at the midpoint of duration_min; the
+ * attenuation ramps in and out as depth_frac * sin(pi * elapsed/duration). */
+struct pisa_instant_wire {
+	uint16_t duration_min;
+	float depth_frac;
+} __packed;
+
 /* Starts the model thread with the given initial config (already loaded from
  * flash / defaulted by the caller), run state RUNNING. Call once at boot. */
 void model_thread_start(const struct sim_config *cfg);
@@ -101,5 +112,13 @@ void model_thread_add_instant_food(uint16_t duration_min, float carbs_g);
  * model_thread_add_instant_food(). While active, contributes
  * max(intensity_pct, whatever the recurring schedule currently gives). */
 void model_thread_add_instant_exercise(uint16_t duration_min, float intensity_pct);
+
+/* Starts an instant PISA attenuation right now, active for duration_min
+ * simulated minutes, peak attenuation depth_frac at the midpoint. Multiplies
+ * the sensor reading by (1 - depth_frac * sin(pi * elapsed/duration)) — a
+ * smooth transient false low. Same non-disruptive semantics as the other
+ * instant events; applies on the CSV data source too (PISA is a sensor
+ * artefact, not a glucose change). */
+void model_thread_add_instant_pisa(uint16_t duration_min, float depth_frac);
 
 #endif /* MODEL_THREAD_H */

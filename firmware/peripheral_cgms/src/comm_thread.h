@@ -28,9 +28,28 @@ enum cfg_msg_type {
 	 * to model_thread's live instant-event slots. */
 	CFG_MSG_FOOD_INSTANT,
 	CFG_MSG_EXERCISE_INSTANT,
+	/* Instant PISA attenuation — not part of sim_config, never persisted,
+	 * applied directly to model_thread's live PISA slots (like the food/
+	 * exercise instant events). */
+	CFG_MSG_PISA_INSTANT,
 	/* CGMS-only mode toggle — not part of sim_config, never persisted. See
 	 * model_thread.h's model_thread_set_cgms_only() comment. */
 	CFG_MSG_CGMS_ONLY,
+	/* Data source (SIM_DATA_MODEL / SIM_DATA_CSV) — part of sim_config,
+	 * persisted like person/sensor/mode. */
+	CFG_MSG_DATA_SOURCE,
+	/* Speed multiplier (float32, SIM_SPEED_MIN..SIM_SPEED_MAX) — part of
+	 * sim_config, persisted. Replaces the legacy on/off CFG_MSG_MODE. */
+	CFG_MSG_SPEED,
+	/* BLE comm profile (SIM_COMM_SIG_CGMS / SIM_COMM_DEXCOM) — part of
+	 * sim_config, persisted. Triggers a re-advertise (main_apply_comm_profile). */
+	CFG_MSG_COMM_PROFILE,
+	/* Uploaded-CSV transport (see csv_store.h / PROTOCOL_SPEC.md). CONTROL
+	 * carries an opcode-tagged BEGIN/COMMIT/ABORT/CLEAR/STATUS payload; DATA
+	 * carries u32 offset + track bytes. Handled straight through csv_store_*,
+	 * not routed through model_thread_apply_config(). */
+	CFG_MSG_CSV_CONTROL,
+	CFG_MSG_CSV_DATA,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking

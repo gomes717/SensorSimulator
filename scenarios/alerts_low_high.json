@@ -1,0 +1,10 @@
+{
+  "name": "Range alerts — HIGH then a PISA false LOW",
+  "actions": [
+    { "at_s": 0,   "kind": "speed",        "args": { "multiplier": 120 } },
+    { "at_s": 1,   "kind": "run_state",    "args": { "state": "start" } },
+    { "at_s": 10,  "kind": "insert_food",  "args": { "carbs_g": 160, "duration_min": 20 } },
+    { "at_s": 90,  "kind": "inject_fault", "args": { "fault": "pisa", "duration_min": 15, "depth_frac": 0.6 } },
+    { "at_s": 170, "kind": "run_state",    "args": { "state": "stop" } }
+  ]
+}

@@ -11,6 +11,7 @@ app only lets the user configure the model/sensor/food/exercise, not a pump).
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -19,8 +20,46 @@ from typing import Any, Callable
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from models import cambridge, deichmann, royparker, uva_padova
+from models import cambridge, deichmann, dexcom_csv, food_log_csv, royparker, uva_padova
 from models.types import ModelId, PersonProfile
+
+# Report-only spread for a Food Log meal in CSV playback — matches the
+# firmware's CSV_FOODLOG_SPREAD_MIN so the app's food/exercise graph shows the
+# same shape the board reports.
+CSV_FOODLOG_SPREAD_MIN = 30.0
+
+
+def load_csv_window(profile: PersonProfile) -> tuple[list[int], int, list[tuple[int, float]]]:
+    """Resolve a profile's CSV assignment into (glucose_samples, interval_s, foodlog).
+
+    ``glucose_samples`` are integer mg/dL on a fixed ``interval_s`` grid over the
+    assigned 24 h window (Dexcom cadence, forward-filled). ``foodlog`` is
+    ``[(offset_s, carbs_g), ...]`` from the matching Food Log CSV, if any.
+    Returns ``([], 0, [])`` when the path/window is missing or unreadable — used
+    by both the local replay engine and the board-upload path so they always
+    agree on the bytes.
+    """
+    path = getattr(profile, "csv_path", None)
+    start_iso = getattr(profile, "csv_window_start_iso", None)
+    if not path or not start_iso:
+        return [], 0, []
+    try:
+        start = datetime.fromisoformat(start_iso)
+        rows = dexcom_csv.read_egv(path)
+        samples = dexcom_csv.resample(rows, start, dexcom_csv.DEFAULT_INTERVAL_S)
+    except (ValueError, OSError):
+        return [], 0, []
+
+    # Food log: explicit path if set, otherwise the sibling that shares the
+    # glucose CSV's ID (Dexcom_001.csv -> Food_Log_001.csv) — no separate pick.
+    food_path = getattr(profile, "food_log_path", None) or food_log_csv.matching_food_log_path(path)
+    foodlog: list[tuple[int, float]] = []
+    if food_path:
+        try:
+            foodlog = food_log_csv.slice_window(food_log_csv.read_food_log(food_path), start)
+        except (ValueError, OSError):
+            foodlog = []
+    return samples, dexcom_csv.DEFAULT_INTERVAL_S, foodlog
 
 
 def _in_daily_window(time_of_day_min: float, start_min: float, duration_min: float) -> bool:
@@ -104,8 +143,11 @@ class SimulationEngine(QThread):
     # or the equivalent instantaneous rate for a firing impulse-fed meal), exercise_pct
     expected_reading = pyqtSignal(str, float, float, float)
 
-    def __init__(self, profile: PersonProfile, fast_mode: bool, parent=None) -> None:
-        """Store the profile/mode to run; call start() to begin ticking.
+    def __init__(self, profile: PersonProfile, speed_mult: float, parent=None) -> None:
+        """Store the profile + speed multiplier to run; call start() to begin ticking.
+
+        *speed_mult* (x1..x1000) scales simulated time per 1 Hz tick exactly as
+        on the MCU: dt_min = (1/60) * speed_mult.
 
         Call set_paused(True) before start() to have a freshly (re)created
         engine sit ready-but-idle until the app's Start button resumes it,
@@ -114,16 +156,16 @@ class SimulationEngine(QThread):
         """
         super().__init__(parent)
         self._profile = profile
-        self._fast_mode = fast_mode
+        self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
         self._paused = False
-        # Instant (one-shot, non-recurring) food/exercise events injected mid-run
-        # via add_instant_food()/add_instant_exercise() — mirrors the firmware's
-        # model_thread instant-event slots (see PROTOCOL_SPEC.md). Guarded by a
-        # plain lock since those are called from the GUI thread while run() below
-        # executes on this QThread.
+        # Instant (one-shot, non-recurring) food/exercise/PISA events injected
+        # mid-run — mirrors the firmware's model_thread instant-event slots (see
+        # PROTOCOL_SPEC.md). Guarded by a plain lock since those are called from
+        # the GUI thread while run() below executes on this QThread.
         self._instant_lock = threading.Lock()
         self._instant_food: list[dict[str, Any]] = []
         self._instant_exercise: list[dict[str, Any]] = []
+        self._instant_pisa: list[dict[str, Any]] = []
 
     def stop(self) -> None:
         """Request the tick loop to end after its current iteration."""
@@ -152,6 +194,34 @@ class SimulationEngine(QThread):
         with self._instant_lock:
             self._instant_exercise.append({"remaining_min": duration, "intensity_pct": float(intensity_pct)})
 
+    def add_instant_pisa(self, duration_min: float, depth_frac: float) -> None:
+        """Start a transient PISA attenuation now, without resetting the simulation.
+
+        Thread-safe. Multiplies the emitted glucose by
+        (1 - depth_frac * sin(pi * elapsed/duration)) while active — the same
+        smooth false-low shape the firmware applies to the sensor reading.
+        """
+        duration = max(float(duration_min), 1.0)
+        with self._instant_lock:
+            self._instant_pisa.append(
+                {"remaining_min": duration, "duration_min": duration,
+                 "depth": max(0.0, min(1.0, float(depth_frac)))}
+            )
+
+    def _pisa_factor(self, dt_min: float) -> float:
+        """Combined attenuation of all active PISA bouts this tick; decays them."""
+        factor = 1.0
+        still_active = []
+        for p in self._instant_pisa:
+            frac = (p["duration_min"] - p["remaining_min"]) / p["duration_min"]
+            frac = min(1.0, max(0.0, frac))
+            factor *= 1.0 - p["depth"] * math.sin(frac * math.pi)
+            p["remaining_min"] -= dt_min
+            if p["remaining_min"] > 0.0:
+                still_active.append(p)
+        self._instant_pisa = still_active
+        return max(0.0, factor)
+
     def pause(self) -> None:
         """Freeze the simulation clock and model state in place until resume()."""
         self._paused = True
@@ -165,6 +235,88 @@ class SimulationEngine(QThread):
         self._paused = paused
 
     def run(self) -> None:
+        """Tick once per wall-clock second until stop() is called.
+
+        Runs the profile's physiological model, or — when
+        ``profile.data_source == "csv"`` and a readable window is assigned —
+        replays that recorded 24 h window verbatim instead (mirroring the
+        firmware's CSV data-source branch), with the food log surfaced
+        report-only on the carbs channel.
+        """
+        if getattr(self._profile, "data_source", "model") == "csv":
+            samples, interval_s, foodlog = load_csv_window(self._profile)
+            if samples:
+                self._run_csv(samples, interval_s, foodlog)
+                return
+            # No usable window assigned — fall through to the model so the
+            # "expected" line still shows something.
+
+        self._run_model()
+
+    def _run_csv(
+        self,
+        samples: list[int],
+        interval_s: int,
+        foodlog: list[tuple[int, float]],
+    ) -> None:
+        """Replay a resampled CSV window row-per-tick, looping at the end."""
+        span_s = max(1, len(samples) * interval_s)
+        sim_clock_min = 0.0
+        pending = sorted(foodlog)  # (offset_s, carbs_g), consumed as the clock passes
+        active_meals: list[dict[str, float]] = []
+
+        while not self.isInterruptionRequested():
+            if self._paused:
+                self.msleep(100)
+                continue
+
+            tick_start = time.monotonic()
+            dt_min = (1.0 / 60.0) * self._speed_mult
+            t_s = sim_clock_min * 60.0
+            loop_s = t_s % span_s
+
+            row = int(loop_s / interval_s) % len(samples)
+            glucose = float(samples[row])
+
+            # Food log (report-only): start a 30-min spread when the clock
+            # reaches a meal; also fold in "Insert Food Now" instant events.
+            while pending and pending[0][0] <= loop_s:
+                _, carbs_g = pending.pop(0)
+                active_meals.append(
+                    {"remaining_min": CSV_FOODLOG_SPREAD_MIN,
+                     "rate": carbs_g / CSV_FOODLOG_SPREAD_MIN}
+                )
+            if not pending and loop_s < dt_min * 60.0:
+                pending = sorted(foodlog)  # window looped — re-arm
+
+            with self._instant_lock:
+                for inst in self._instant_food:
+                    dur = max(inst["duration_min"], 1.0)
+                    active_meals.append({"remaining_min": dur, "rate": inst["carbs_g"] / dur})
+                self._instant_food = []  # CSV mode: report-only, one hand-off
+                glucose *= self._pisa_factor(dt_min)  # PISA attenuates the sensor, CSV or not
+
+            carbs_rate = 0.0
+            still_active = []
+            for meal in active_meals:
+                carbs_rate += meal["rate"]
+                meal["remaining_min"] -= dt_min
+                if meal["remaining_min"] > 0.0:
+                    still_active.append(meal)
+            active_meals = still_active
+
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self.expected_reading.emit(timestamp, glucose, carbs_rate, 0.0)
+            print(
+                f"[engine:csv] t_sim={sim_clock_min:.2f}min row={row} glucose={glucose:.1f} "
+                f"carbs={carbs_rate:.3f}"
+            )
+
+            sim_clock_min += dt_min
+            elapsed = time.monotonic() - tick_start
+            self.msleep(max(0, int(1000 - elapsed * 1000)))
+
+    def _run_model(self) -> None:
         """Tick the model once per wall-clock second until stop() is called."""
         adapter = _ADAPTERS[self._profile.model_id]
         params = {**adapter.default_params(), **self._profile.params}
@@ -184,7 +336,7 @@ class SimulationEngine(QThread):
                 continue
 
             tick_start = time.monotonic()
-            dt_min = 1.0 if self._fast_mode else (1.0 / 60.0)
+            dt_min = (1.0 / 60.0) * self._speed_mult
             time_of_day = sim_clock_min % 1440.0
             day_index = int(sim_clock_min // 1440.0)
 
@@ -229,8 +381,10 @@ class SimulationEngine(QThread):
                         still_active_exercise.append(inst)
                 self._instant_exercise = still_active_exercise
 
+                pisa_factor = self._pisa_factor(dt_min)
+
             adapter.step(state, params, carbs, basal, exercise_pct, hr_bpm, sim_clock_min, dt_min)
-            glucose = adapter.glucose_mg_dl(state, params)
+            glucose = adapter.glucose_mg_dl(state, params) * pisa_factor
 
             # For the food/exercise graph: rate-fed models already carry a g/min rate;
             # impulse-fed models deliver the whole meal on one tick, so express that
@@ -240,7 +394,7 @@ class SimulationEngine(QThread):
             timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self.expected_reading.emit(timestamp, glucose, carbs_rate, exercise_pct)
             print(
-                f"[engine] t_sim={sim_clock_min:.2f}min dt={dt_min:.4f} fast={self._fast_mode} "
+                f"[engine] t_sim={sim_clock_min:.2f}min dt={dt_min:.4f} x{self._speed_mult:g} "
                 f"glucose={glucose:.2f} carbs={carbs_rate:.3f} ex={exercise_pct:.1f}"
             )
 

@@ -1,0 +1,11 @@
+{
+  "name": "Cambridge meal response",
+  "actions": [
+    { "at_s": 0,  "kind": "person",      "args": { "person": "Sample Patient" } },
+    { "at_s": 1,  "kind": "speed",       "args": { "multiplier": 60 } },
+    { "at_s": 2,  "kind": "run_state",   "args": { "state": "start" } },
+    { "at_s": 15, "kind": "insert_food", "args": { "carbs_g": 45, "duration_min": 15 } },
+    { "at_s": 75, "kind": "insert_food", "args": { "carbs_g": 70, "duration_min": 20 } },
+    { "at_s": 150, "kind": "run_state",  "args": { "state": "stop" } }
+  ]
+}

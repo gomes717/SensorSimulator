@@ -56,6 +56,30 @@ def save(settings: dict[str, float]) -> None:
     _write_raw(data)
 
 
+def load_pref(key: str, default):
+    """Return an arbitrary persisted preference (speed multiplier, graph window …).
+
+    Kept separate from the range-threshold load()/save() so new scalar UI
+    preferences don't need their own file plumbing. Returns *default* if the
+    key is absent or the stored value isn't the same basic type.
+    """
+    value = _read_raw().get(key)
+    if isinstance(default, bool):
+        return bool(value) if isinstance(value, bool) else default
+    if isinstance(default, (int, float)):
+        return type(default)(value) if isinstance(value, (int, float)) else default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else default
+    return value if value is not None else default
+
+
+def save_pref(key: str, value) -> None:
+    """Persist a single preference, leaving every other key untouched."""
+    data = _read_raw()
+    data[key] = value
+    _write_raw(data)
+
+
 def load_theme() -> str:
     """Return the saved UI theme: "system", "light" or "dark"."""
     theme = _read_raw().get("theme")

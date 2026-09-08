@@ -80,6 +80,12 @@ Custom 128-bit UUIDs (`src/ble_uuids.py`), all under one primary service:
 | Food instant event | `5b2c000c-...` | write (one-shot) | 6 B |
 | Exercise instant event | `5b2c000d-...` | write (one-shot) | 6 B |
 | CGMS Only | `5b2c000e-...` | **read + write** | 1 B |
+| CSV control | `5b2c000f-...` | write + notify | 1–18 B in, 6 B notify |
+| CSV data | `5b2c0010-...` | write (chunk) | 5–~240 B |
+| Data source | `5b2c0011-...` | **read + write** | 1 B |
+| Speed | `5b2c0012-...` | **read + write** | 4 B (float32) |
+| PISA instant event | `5b2c0013-...` | write (one-shot) | 6 B |
+| Comm profile | `5b2c0014-...` | **read + write** | 1 B |
 
 All multi-byte fields little-endian. Requires ATT MTU >= 140 B
 (`CONFIG_BT_L2CAP_TX_MTU=247` on the firmware side). Every read/write payload
@@ -138,11 +144,28 @@ changed every 5 minutes, looking frozen. If you want a slower/faster
 effective update rate now, control it at the transport layer, not the
 sensor.
 
-### Mode — 1 byte, read + write
+### Mode — 1 byte, read + write (legacy)
 
-`0` = normal (1 wall-clock second = 1 simulated second). `1` = fast (1
-wall-clock second = 1 simulated minute, 60x). Drives `dt_min` per tick on
-both the firmware's model thread and `src/models/engine.py`.
+`0` = normal, `1` = fast (60x). **Superseded by Speed (below).** Still in
+`struct sim_config` for wire compat, but `model_thread` ignores it and the app
+no longer writes it.
+
+### Speed — `5b2c0012-0d6d-4a3a-8c1e-3f9b6e7a1a00`, float32 LE, read + write
+
+Added 2026-09 (`sim_config` v3). Continuous simulation-speed multiplier,
+clamped to `[1.0, 1000.0]`. **One tick per wall-clock second, always** — the
+multiplier scales how much simulated time each tick advances:
+
+```
+dt_min per tick = (1.0 / 60.0) * speed_mult
+```
+
+so `x1` = real time, `x60` = the old fast mode (1 s = 1 sim-minute), `x1000` =
+1 s ≈ 16.7 sim-minutes. Applied identically on the firmware
+(`model_thread.c`'s `model_tick()`) and in `src/models/engine.py`. Persisted;
+default `1.0`. App side: the Configuration window's **Speed slider** (log-mapped
+0–1000 → x1–x1000), `MainWindow._on_speed_changed()`, `api/protocol.py`'s
+`encode_speed()`/`decode_speed()`.
 
 ### Run state — `5b2c000a-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
@@ -179,6 +202,13 @@ side by re-feeding the currently-active config through the same
 apply/reinit path `model_thread_apply_config()` uses (cheap, and reuses
 that path instead of a separate reset routine), then halting ticks until the
 next `1`.
+
+**Bug, fixed 2026-09:** the STOPPED handler re-fed *the currently-active*
+config, but a config write that was still queued and not yet applied (the app
+sends `data_source`, then STOPPED, then RUNNING back-to-back on Start) was
+overwritten by that stale copy and silently dropped — CSV playback never
+engaged. The handler now only re-feeds `active_cfg` when nothing is already
+pending; a pending write's own apply performs the same full reset.
 
 ### Reset sync — `5b2c000b-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, notify
 
@@ -304,6 +334,75 @@ hardware (2026-08-18): `sim_clock_min` and Deichmann's internal state
 (`Ic`/`x1`/`x2`) continued unbroken across both writes; `carbs`/`ex` in the
 tick log picked up the injected values on the very next tick.
 
+### Instant PISA event (write) — `5b2c0013-...`, `struct { uint16_t duration_min; float depth_frac; }`
+
+Added 2026-09. Pressure-Induced Sensor Attenuation: a transient downward
+attenuation of the **sensor reading** producing a *false low* that does not
+reflect real hypoglycaemia. Same non-disruptive class as the food/exercise
+instant events — never persisted, never resets `sim_clock_min`, routed straight
+to `model_thread`'s live PISA slots (`CFG_MSG_PISA_INSTANT`).
+
+`depth_frac` ∈ `[0, 1]` is the peak attenuation. While a bout is active,
+`elapsed = duration_min - remaining_min`, `frac = elapsed / duration_min`, and
+the final reading is multiplied by:
+
+```
+1 - depth_frac * sin(pi * frac)
+```
+
+— a smooth dip: no effect at the start/end, `depth_frac` attenuation at the
+midpoint. Multiple bouts compound (product). Applied **after** the noise model
+and **on the CSV data source too** (it is a sensor artefact, not a glucose
+change — the underlying `glucose` in the tick log is untouched, only `reading`
+dips). `src/models/engine.py`'s `SimulationEngine.add_instant_pisa()` mirrors it
+so the "expected" line dips the same way. The app shades the affected wall-clock
+interval on the glucose graph (`MainWindow._pisa_spans` / `_draw_pisa_spans()`).
+Verified on hardware (2026-09): 40 % / 10 min bout drove the streamed value from
+100 to ~60 at the midpoint and back to 100, `pisa` factor in the tick log
+tracing `0.88 → 0.60 → 0.88 → 1.0`.
+
+### Comm profile — `5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
+
+Added 2026-09 (`sim_config` v4). Selects which BLE profile the board streams
+glucose over. `0` = **SIG CGMS** (the standard `0x181F` / `0x2AA7` service,
+default). `1` = a **basic Dexcom-style** imitation — *not* a real Dexcom: no
+J-PAKE/AES authentication handshake, realtime glucose message only (no backfill,
+no calibration). Persisted; a write re-advertises the board — if a client is
+connected the switch is deferred to the next disconnect (single connection slot,
+`CONFIG_BT_MAX_CONN=1`), so the app disconnects+reconnects to rediscover.
+
+App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile`, the
+"Communication type" combo in the Configuration window, and
+`services/ble_session.py`'s Dexcom decoder branch.
+
+#### Dexcom-style stream
+
+Advertising in Dexcom mode: the `0xFEBC` service UUID and the name `DXCM01`.
+GATT (`firmware/peripheral_cgms/src/dexcom_service.c`), base
+`F8083532-849E-531C-C594-30F1F86A4EA5`:
+
+| Char | UUID suffix | Props | Purpose |
+|---|---|---|---|
+| Control | `…3535` | write + notify | writes are ACKed and ignored (no auth here) |
+| Glucose | `…3538` | notify | the 14-byte realtime message below |
+
+Realtime glucose message (LE, 14 bytes):
+
+| Off | Size | Field |
+|---|---|---|
+| 0 | u8 | opcode `0x4E` (EGV) |
+| 1 | u8 | status `0` |
+| 2 | u32 | sequence (increments per message) |
+| 6 | u32 | timestamp, seconds since boot |
+| 10 | u16 | glucose mg/dL in the low 12 bits (top bits = display flags, `0` here) |
+| 12 | u8 | state `0x06` |
+| 13 | i8 | trend (`0` = flat) |
+
+Speed multiplier, CSV data source, and PISA all still apply — they shape
+`latest.glucose_mg_dl` upstream in `model_thread`, before `comm_thread` picks the
+profile. See [`docs/BLE_PAYLOAD_VALIDATION.md`](docs/BLE_PAYLOAD_VALIDATION.md)
+§2 for how this compares to a real Dexcom transmitter.
+
 ### CGMS Only mode — `5b2c000e-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
 Added 2026-08-18. A live session mode, not part of `struct sim_config` and
@@ -357,6 +456,64 @@ count was 24 in a 12 s baseline window and exactly 0 in the following 12 s
 with CGMS Only enabled; the same write succeeded immediately after
 disabling.
 
+### CSV playback data source — `5b2c0011` (data source) + `5b2c000f`/`5b2c0010` (upload)
+
+Added 2026-09. Lets the board **replay a recorded CGM trace** instead of
+running a physiological model: the app uploads a 24 h glucose window (and,
+optionally, the matching Food Log) over BLE, the firmware stores it in a
+dedicated external-flash partition (`sim_csv_partition`, see
+[`docs/FIRMWARE.md`](docs/FIRMWARE.md)), and `model_thread` emits one row per
+tick as the standard CGM Measurement — **verbatim, with no on-device sensor
+noise** (the recording already carries real noise). Byte-for-byte identical
+framing to model mode; only the source of the number changes. Meals (recurring
+food events, Food Log CSV, "Insert Food Now") are still evaluated and reported
+on Food/Exercise Status, but **do not alter the streamed glucose** — there is
+no model running to perturb.
+
+**Data source — `5b2c0011-...`, 1 byte, read + write, persisted in `sim_config`
+(now v2).** `0` = physiological model (default), `1` = CSV playback. A write
+resets the simulation clock/state like any other config write. If set to `1`
+with no glucose track committed, the firmware falls back to the model.
+
+**CSV control — `5b2c000f-...`, write + notify.** Opcode-tagged writes; the
+notification is `{ uint8 status; uint8 _reserved; uint32 received_bytes }`
+(6 B, LE), `status` 0 = OK, 1 = ERR.
+
+| Opcode | Write payload | Effect |
+|---|---|---|
+| `0x01` BEGIN | `u8 op; u8 track; u16 row_count; u32 base_epoch_s; u16 interval_s; u32 total_bytes; u32 crc32` (18 B, packed LE) | Erases `ceil(total_bytes / 4096)` sectors of the track's region, arms the write cursor, notifies. |
+| `0x02` COMMIT | `u8 op; u8 track` | Verifies `received_bytes == total_bytes` and CRC-32/ISO-HDLC, writes the manifest, activates the track, notifies. |
+| `0x03` ABORT | `u8 op` | Discards the in-progress upload. |
+| `0x04` CLEAR | `u8 op; u8 track` | Wipes that track's manifest entry. |
+| `0x05` STATUS | `u8 op; u8 track` | Notifies current `received_bytes`. |
+
+`track`: `0` = glucose, `1` = food log.
+
+**CSV data — `5b2c0010-...`, write.** `u32 offset` (into the track) followed by
+up to ~236 payload bytes. The app streams chunks with monotonically increasing
+`offset` between a BEGIN and its COMMIT.
+
+**Track byte formats** (identical on the wire and in flash, LE):
+
+- *glucose*: `int16 mg_dl` × `row_count` (24 h @ 300 s = 288 rows = 576 B).
+  Playback: `row = floor(sim_clock_min·60 / interval_s) % row_count`.
+- *food log*: `{ u32 offset_s; float carbs_g }` × `row_count`, sorted by
+  `offset_s`. Each meal is surfaced report-only via Food/Exercise Status,
+  spread over 30 simulated minutes, looping with the glucose track.
+
+`base_epoch_s` is diagnostic only — playback is driven by `sim_clock_min`, not
+wall-clock. The board is autonomous: after reboot it reloads the manifest and
+resumes CSV playback if `data_source` was `1`.
+
+App side: `api/protocol.py`'s `encode_csv_*` / `build_*_track` helpers,
+`services/ble_session.py`'s `start_csv_upload()`, the CSV Analysis window's
+"Assign window to person…" button, and Configuration → "Send CSV to Board".
+The matching Food Log is paired automatically by file ID
+(`Dexcom_001.csv` ↔ `Food_Log_001.csv`, `food_log_csv.matching_food_log_path()`)
+— no separate file chooser. `models/engine.py` replays the same window locally
+so the "expected" line matches. See [`docs/BLE_PAYLOAD_VALIDATION.md`](docs/BLE_PAYLOAD_VALIDATION.md)
+for how to check received == expected.
+
 ## 3. Readback / "get config from MCU" (Python side)
 
 `BleSession.request_read(char_key)` (thread-safe, any thread) schedules a
@@ -398,6 +555,7 @@ devicetree labels must be globally unique, which is why this one is
 
 ```c
 #define SIM_CONFIG_MAGIC 0x53494D31u  /* "SIM1" */
+#define SIM_CONFIG_VERSION 4          /* v2: data_source; v3: speed_mult; v4: comm_profile */
 #define MAX_MODEL_PARAMS 34
 #define MAX_SENSOR_PARAMS 14
 #define MAX_EVENTS 32
@@ -417,20 +575,29 @@ struct sim_config {
     struct food_event food[MAX_EVENTS];
     uint8_t  exercise_count;
     struct exercise_event exercise[MAX_EVENTS];
-};  /* ~715 bytes total struct size — fits one 4 KB erase sector, but is
+    uint8_t  data_source;        /* v2: 0 model, 1 CSV playback (see §2) */
+    float    speed_mult;         /* v3: x1..x1000 simulation-speed multiplier */
+    uint8_t  comm_profile;       /* v4: 0 SIG CGMS, 1 Dexcom-style (see §2) */
+};  /* ~721 bytes total struct size — fits one 4 KB erase sector, but is
      * itself too big for a single BLE attribute (§2's split characteristics
      * exist because of this 512 B ATT limit, not the flash sector size). */
 ```
 
 Write the whole struct (erase + program) on every characteristic write that
 changes config. Load on boot; fall back to `sim_config_set_defaults()`
-(Cambridge + Ideal CGM + no events + normal mode) if `magic`/`version` don't
-match.
+(Cambridge + Ideal CGM + no events + normal mode + model data source) if
+`magic`/`version` don't match — a v1 flash image reads as version-mismatch and
+falls back to defaults, which is the intended upgrade path.
+
+The uploaded CSV trace + food log live in a **separate** external-flash
+partition, `sim_csv_partition` (252 KB), not this struct — see §2's "CSV
+playback data source" and `firmware/peripheral_cgms/src/csv_store.c`.
 
 ## 6. Threading (Zephyr, two `k_thread`s — the assignment's explicit requirement)
 
-- **model_thread**: 1-second tick (`k_sleep(K_SECONDS(1))`). `dt_min = mode
-  ? 1.0 : (1.0/60.0)`. Maintains `sim_clock_min` (free-running). Evaluates
+- **model_thread**: 1-second tick (`k_sleep(K_SECONDS(1))`).
+  `dt_min = (1.0/60.0) * speed_mult` (see §2's Speed). Maintains
+  `sim_clock_min` (free-running). Evaluates
   food/exercise windows (§2), dispatches to the selected model's
   `step()`/`glucose_*()`, then the selected sensor's noise `*_update()`, and
   publishes `{glucose, valid, carbs_g_per_min, exercise_pct}` under a

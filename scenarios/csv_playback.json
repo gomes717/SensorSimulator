@@ -1,0 +1,10 @@
+{
+  "name": "CSV playback (needs a 'CSV Patient' with a 24 h window assigned)",
+  "actions": [
+    { "at_s": 0,  "kind": "data_source", "args": { "person": "CSV Patient" } },
+    { "at_s": 1,  "kind": "speed",       "args": { "multiplier": 60 } },
+    { "at_s": 2,  "kind": "run_state",   "args": { "state": "start" } },
+    { "at_s": 60, "kind": "inject_fault", "args": { "fault": "pisa", "duration_min": 10, "depth_frac": 0.35 } },
+    { "at_s": 130, "kind": "run_state",  "args": { "state": "stop" } }
+  ]
+}

@@ -28,6 +28,7 @@ def _person_from_dict(d: dict) -> PersonProfile:
         data_source=d.get("data_source", "model"),
         csv_path=d.get("csv_path"),
         csv_window_start_iso=d.get("csv_window_start_iso"),
+        food_log_path=d.get("food_log_path"),
     )
 
 

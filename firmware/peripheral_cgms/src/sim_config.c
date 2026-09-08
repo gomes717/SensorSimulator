@@ -37,6 +37,9 @@ void sim_config_set_defaults(struct sim_config *cfg)
 
 	cfg->food_count = 0;
 	cfg->exercise_count = 0;
+	cfg->data_source = SIM_DATA_MODEL;
+	cfg->speed_mult = SIM_SPEED_DEFAULT;
+	cfg->comm_profile = SIM_COMM_SIG_CGMS;
 }
 
 int sim_config_load_from_flash(struct sim_config *cfg)

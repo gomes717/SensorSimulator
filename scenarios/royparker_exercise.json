@@ -1,0 +1,11 @@
+{
+  "name": "Roy & Parker exercise (needs a 'Roy Parker Patient')",
+  "actions": [
+    { "at_s": 0,  "kind": "person",          "args": { "person": "Roy Parker Patient" } },
+    { "at_s": 1,  "kind": "speed",           "args": { "multiplier": 120 } },
+    { "at_s": 2,  "kind": "run_state",       "args": { "state": "start" } },
+    { "at_s": 15, "kind": "insert_food",     "args": { "carbs_g": 50, "duration_min": 15 } },
+    { "at_s": 35, "kind": "insert_exercise", "args": { "duration_min": 45, "intensity_pct": 60 } },
+    { "at_s": 120, "kind": "run_state",      "args": { "state": "stop" } }
+  ]
+}

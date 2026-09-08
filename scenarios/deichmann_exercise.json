@@ -1,0 +1,11 @@
+{
+  "name": "Deichmann exercise drop (needs a 'Deichmann Patient')",
+  "actions": [
+    { "at_s": 0,  "kind": "person",          "args": { "person": "Deichmann Patient" } },
+    { "at_s": 1,  "kind": "speed",           "args": { "multiplier": 60 } },
+    { "at_s": 2,  "kind": "run_state",       "args": { "state": "start" } },
+    { "at_s": 20, "kind": "insert_exercise", "args": { "duration_min": 30, "intensity_pct": 70 } },
+    { "at_s": 90, "kind": "insert_exercise", "args": { "duration_min": 20, "intensity_pct": 40 } },
+    { "at_s": 150, "kind": "run_state",      "args": { "state": "stop" } }
+  ]
+}

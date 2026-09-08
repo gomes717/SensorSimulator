@@ -85,18 +85,22 @@ while (1) {
 ```
 
 **One tick happens per real-world second, always** — that part never
-changes. What changes with `sim_config.mode` is how much *simulated* time
-that one tick represents (`model_thread.c`'s `model_tick()`):
+changes. What changes with `sim_config.speed_mult` (a continuous x1..x1000
+multiplier, `sim_config` v3 — replaces the old on/off `mode` byte) is how much
+*simulated* time that one tick represents (`model_thread.c`'s `model_tick()`):
 
 ```c
-double dt_min = (active_cfg.mode == SIM_MODE_FAST) ? 1.0 : (1.0 / 60.0);
+double dt_min = (1.0 / 60.0) * speed_mult;   /* speed_mult clamped to [1, 1000] */
 ```
 
-- **Normal mode** (`SIM_MODE_NORMAL`): `dt_min = 1/60` minute = 1 simulated
-  second per tick → **1 real second = 1 simulated second** (real time).
-- **Fast mode** (`SIM_MODE_FAST`): `dt_min = 1.0` minute per tick → **1 real
-  second = 1 simulated minute** (60× speedup) — useful for watching a
-  multi-hour meal/exercise response in a couple of minutes instead of hours.
+- **x1**: `dt_min = 1/60` minute → **1 real second = 1 simulated second** (real time).
+- **x60**: `dt_min = 1.0` minute → **1 real second = 1 simulated minute** (the old
+  "fast mode") — watch a multi-hour response in a couple of minutes.
+- **x1000**: ~16.7 simulated minutes per real second.
+
+The multiplier is set from the app's Configuration-window Speed slider and sent
+over the **Speed** characteristic (`5b2c0012`, float32); `src/models/engine.py`
+applies the identical `dt_min` locally so the "expected" line stays in step.
 
 `sim_clock_min` (a free-running `double`, `model_thread.c`) accumulates
 `dt_min` every tick and is the simulated-minutes-since-start clock the
@@ -128,9 +132,17 @@ recurring event lists) is persisted to the board's **external SPI-NOR flash**
             label = "sim_config_storage";
             reg = <0x00000000 0x00001000>; /* 4 KB, one erase sector */
         };
+        sim_csv_partition: partition@1000 {
+            label = "sim_csv_storage";
+            reg = <0x00001000 0x0003F000>; /* 252 KB — uploaded CSV trace + food log */
+        };
     };
 };
 ```
+
+`sim_csv_partition` holds an optionally-uploaded recorded CGM trace and Food
+Log for the **CSV playback data source** (§6). `sim_config.c` and `csv_store.c`
+both talk to their partitions through the `flash_area` API directly.
 
 This is deliberate, not incidental: the board's *internal* MRAM already
 hosts a partition (`storage_partition`) used by `CONFIG_SETTINGS`/ZMS for
@@ -156,10 +168,14 @@ Load/save cycle:
   `model_thread`. Wholesale erase+rewrite (not incremental) is simple and
   fast enough at ~715 B/4 KB, and matches how infrequently config actually
   changes relative to the 1 Hz simulation tick.
-- **Instant food/exercise events** (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)'s
-  "Instant food/exercise events" section) are the one exception — they
-  never touch flash at all, by design, since they're meant to be transient,
-  mid-run injections, not part of the saved configuration.
+- **Instant food/exercise/PISA events** (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)'s
+  "Instant … event" sections) are the one exception — they never touch flash
+  at all, by design, since they're meant to be transient, mid-run injections,
+  not part of the saved configuration. PISA (Pressure-Induced Sensor
+  Attenuation) multiplies the *sensor reading* by
+  `1 - depth * sin(pi * elapsed/duration)` — a smooth false low that leaves the
+  underlying `glucose` untouched, applied in `model_thread.c` after the noise
+  model and on the CSV data source alike.
 
 This means the board is **fully autonomous**: unplug it from the app, power
 cycle it, and it comes back up streaming CGM data using whatever config was
@@ -261,6 +277,27 @@ characteristic byte layout is authoritative in
 [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 — not repeated here to avoid
 the two documents drifting apart.
 
+### 4.5 Communication profiles
+
+`sim_config.comm_profile` (persisted, v4) picks which BLE profile the board
+streams over:
+
+- **SIG CGMS** (default) — the standard service in §4.3, advertising `0x181F` +
+  the "Nordic Glucose Sensor" name.
+- **Dexcom-style** (`src/dexcom_service.c`) — a *basic imitation* of a Dexcom
+  transmitter: the `0xFEBC` service, `DXCM01` advertised name, and 14-byte
+  opcode-tagged realtime glucose messages on a notify characteristic. **No
+  authentication handshake** (a real Dexcom does J-PAKE/AES), no backfill. It
+  exists so the app can exercise a second, non-SIG wire format.
+
+Both GATT services are registered unconditionally; `comm_thread`'s measurement
+push routes to one or the other by `comm_profile`, and `main.c` advertises only
+the active profile's UUID/name. A profile write re-advertises — deferred to the
+next disconnect when a client is connected, since a connectable adv set can't
+restart with the single connection slot occupied. The speed multiplier, CSV
+data source and PISA all apply upstream (they shape `latest.glucose_mg_dl`), so
+they carry into either profile unchanged.
+
 ## 5. Boot sequence summary
 
 ```
@@ -270,13 +307,44 @@ main() →
   bt_enable()
   settings_load()                  (BT bonding data, internal MRAM)
   sim_config_load_from_flash()     (app config, external SPI-NOR)
+  csv_store_load_manifest()        (uploaded CSV trace + food log, sim_csv_partition)
   bt_cgms_init()                   (standard CGMS instance)
   bt_le_ext_adv_create() + set_data()
   config_service_init()            (custom config service — logs only,
                                      GATT registration is automatic via
-                                     BT_GATT_SERVICE_DEFINE)
+                                     BT_GATT_SERVICE_DEFINE; the Dexcom-style
+                                     service registers the same way)
   comm_thread_start(cgms, cfg)     → spawns comm_thread
   model_thread_start(cfg)          → spawns model_thread
-  advertising_start()
+  advertising_start()              (SIG CGMS or Dexcom AD/name per cfg.comm_profile)
   → board is now advertising, streaming CGM data autonomously
 ```
+
+## 6. CSV playback data source
+
+`sim_config.data_source` (persisted, `SIM_DATA_MODEL` / `SIM_DATA_CSV`) selects
+where the streamed glucose comes from. In `SIM_DATA_CSV` mode `model_thread`'s
+tick skips the physiological model **and** the sensor-noise model entirely and
+instead emits the recorded sample for the current instant:
+
+```c
+row = (uint32_t)(sim_clock_min * 60.0 / interval_s) % row_count;
+```
+
+read 2 bytes at a time straight from `sim_csv_partition` (`csv_glucose_lookup()`).
+The window **loops** when it ends, so a 24 h upload demos indefinitely. A higher
+speed multiplier advances `sim_clock_min` faster exactly as in model mode, so it
+naturally steps multiple rows per tick. PISA attenuation still applies on top.
+
+`csv_store.c` owns the partition: a chunked upload
+(`csv_store_begin` → `csv_store_write` × N → `csv_store_commit`, driven from
+`comm_thread`'s config queue, CRC-32 checked on commit) writes two independent
+**tracks** — glucose (`int16` mg/dL array) and food log
+(`{u32 offset_s; float carbs_g}` array) — plus a small manifest in the last
+sector so playback survives a reboot. The food log is **report-only**: meals
+are folded into the same instant-food slots the "Insert Food Now" button uses
+so they show up on the Food/Exercise Status notification, but nothing feeds a
+model (there is none running). See
+[`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2 "CSV playback data source" for the
+wire format and [`BLE_PAYLOAD_VALIDATION.md`](BLE_PAYLOAD_VALIDATION.md) for how
+the stream is checked against the source recording.

@@ -11,7 +11,9 @@ project(peripheral_cgms)
 target_sources(app PRIVATE
   src/main.c
   src/sim_config.c
+  src/csv_store.c
   src/config_service.c
+  src/dexcom_service.c
   src/model_thread.c
   src/comm_thread.c
   src/models/cgmsim_cambridge.c

@@ -7,7 +7,7 @@ Pure stdlib: no Qt, no third-party deps. Only the estimated-glucose-value
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _TS_COL = "Timestamp (YYYY-MM-DDThh:mm:ss)"
@@ -25,6 +25,10 @@ def _parse_ts(raw: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+DEFAULT_INTERVAL_S = 300  # Dexcom EGV cadence
+DEFAULT_WINDOW_HOURS = 24.0
 
 
 def read_egv(path: str | Path) -> list[tuple[datetime, float]]:
@@ -52,4 +56,43 @@ def read_egv(path: str | Path) -> list[tuple[datetime, float]]:
     if not out:
         raise ValueError("No EGV glucose rows found in this CSV.")
     out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def slice_window(
+    rows: list[tuple[datetime, float]],
+    start: datetime,
+    hours: float = DEFAULT_WINDOW_HOURS,
+) -> list[tuple[datetime, float]]:
+    """Return the EGV rows inside ``[start, start + hours)``."""
+    end = start + timedelta(hours=hours)
+    return [(ts, g) for ts, g in rows if start <= ts < end]
+
+
+def resample(
+    rows: list[tuple[datetime, float]],
+    start: datetime,
+    interval_s: int = DEFAULT_INTERVAL_S,
+    hours: float = DEFAULT_WINDOW_HOURS,
+) -> list[int]:
+    """Resample *rows* onto a fixed ``interval_s`` grid over ``hours`` from *start*.
+
+    Returns ``round(hours * 3600 / interval_s)`` integer mg/dL samples. Each grid
+    point takes the most recent reading at or before it (forward-fill); leading
+    grid points with no prior reading take the first reading. Raises
+    ``ValueError`` if *rows* is empty.
+    """
+    if not rows:
+        raise ValueError("No readings to resample.")
+    ordered = sorted(rows, key=lambda pair: pair[0])
+    n = max(1, round(hours * 3600.0 / interval_s))
+    out: list[int] = []
+    idx = 0
+    last = ordered[0][1]
+    for k in range(n):
+        grid_ts = start.timestamp() + k * interval_s
+        while idx < len(ordered) and ordered[idx][0].timestamp() <= grid_ts:
+            last = ordered[idx][1]
+            idx += 1
+        out.append(int(round(last)))
     return out

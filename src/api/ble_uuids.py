@@ -58,3 +58,37 @@ EXERCISE_INSTANT_UUID = "5b2c000d-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # resets and stops, waiting for an explicit RUNNING write. See
 # PROTOCOL_SPEC.md's "CGMS Only mode" section.
 CGMS_ONLY_UUID = "5b2c000e-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Write + notify: chunked upload transport for a recorded CGM trace + Food Log
+# (see PROTOCOL_SPEC.md's "CSV playback data source" section). CONTROL carries an
+# opcode-tagged BEGIN/COMMIT/ABORT/CLEAR/STATUS payload; its notification is
+# {u8 status, u8 _reserved, u32 received_bytes}. DATA carries u32 offset + track
+# bytes. Written to the board's sim_csv_partition (external SPI-NOR).
+CSV_CONTROL_UUID = "5b2c000f-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+CSV_DATA_UUID = "5b2c0010-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Read + write, persisted in sim_config (v2). 1 byte: 0 = run the physiological
+# model (default), 1 = replay the uploaded CSV glucose track verbatim, one row
+# per tick, with no on-device sensor-noise model. See PROTOCOL_SPEC.md.
+DATA_SOURCE_UUID = "5b2c0011-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Read + write, persisted in sim_config (v3). float32 LE simulation-speed
+# multiplier, x1..x1000 — dt_min per 1 Hz tick = (1/60) * mult. Replaces the
+# legacy on/off Mode characteristic (which stays for wire compat). See
+# PROTOCOL_SPEC.md's "Speed" section.
+SPEED_UUID = "5b2c0012-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Write-only, one-shot, not persisted (same class as the food/exercise instant
+# events). u16 duration_min + f32 depth_frac (0..1): a transient Pressure-
+# Induced Sensor Attenuation — the sensor reading is multiplied by
+# (1 - depth_frac * sin(pi * elapsed/duration)), a smooth false low that does
+# not reflect real hypoglycaemia. See PROTOCOL_SPEC.md.
+PISA_INSTANT_UUID = "5b2c0013-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Read + write, persisted in sim_config (v4). 1 byte: 0 = stream the standard
+# Bluetooth SIG CGM Service (0x181F, default), 1 = stream a basic Dexcom-style
+# proprietary format (FEBC service, opcode-tagged messages, no auth). Switching
+# re-advertises the board — reconnect to rediscover. See PROTOCOL_SPEC.md's
+# "Comm profile" section.
+COMM_PROFILE_UUID = "5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+
+# Basic Dexcom-style profile (see ble_session.py / PROTOCOL_SPEC.md). NOT a real
+# Dexcom implementation — no J-PAKE/AES auth, realtime glucose message only.
+DEXCOM_SERVICE_UUID = "0000febc-0000-1000-8000-00805f9b34fb"
+DEXCOM_CONTROL_CHAR_UUID = "f8083535-849e-531c-c594-30f1f86a4ea5"
+DEXCOM_GLUCOSE_CHAR_UUID = "f8083538-849e-531c-c594-30f1f86a4ea5"

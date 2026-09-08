@@ -8,6 +8,8 @@ PARAM_NAMES, copied verbatim from the corresponding cgmsim/inc/*.h).
 from __future__ import annotations
 
 import struct
+import zlib
+from typing import Iterator
 
 from models import cambridge, deichmann, royparker, uva_padova
 from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId
@@ -80,8 +82,81 @@ def encode_sensor_config(sensor_id: SensorId, params: dict[str, float]) -> bytes
 
 
 def encode_mode(fast_mode: bool) -> bytes:
-    """1 byte: 0 = normal (1 sim-second per wall-second), 1 = fast (1 sim-minute per wall-second)."""
+    """Legacy on/off Mode characteristic (superseded by encode_speed). 1 byte."""
     return struct.pack("<B", 1 if fast_mode else 0)
+
+
+SPEED_MIN = 1.0
+SPEED_MAX = 1000.0
+SPEED_DEFAULT = 1.0
+
+
+def encode_speed(multiplier: float) -> bytes:
+    """float32 LE simulation-speed multiplier, clamped to [SPEED_MIN, SPEED_MAX].
+
+    dt_min per tick = (1/60) * multiplier on both the app engine and the MCU:
+    x1 = real time, x60 = the old "fast mode", up to x1000."""
+    m = max(SPEED_MIN, min(SPEED_MAX, float(multiplier)))
+    return struct.pack("<f", m)
+
+
+def decode_speed(data: bytes) -> float | None:
+    """Inverse of encode_speed — the board's current speed multiplier."""
+    if len(data) < 4:
+        return None
+    return struct.unpack_from("<f", data)[0]
+
+
+def encode_pisa_instant(duration_min: int, depth_frac: float) -> bytes:
+    """u16 duration_min + f32 depth_frac (6 bytes). One-shot PISA attenuation,
+    starts "now" on the board; does not reset sim_clock/model state. depth_frac
+    is the peak attenuation (0..1) at the midpoint of the bout."""
+    return struct.pack("<Hf", int(duration_min), max(0.0, min(1.0, float(depth_frac))))
+
+
+# ------------------------------------------------------------------
+# Comm profile (see ble_uuids.COMM_PROFILE_UUID) + the basic Dexcom-style
+# glucose message. Must match firmware src/sim_config.h + src/dexcom_service.c.
+# ------------------------------------------------------------------
+
+COMM_SIG_CGMS = 0
+COMM_DEXCOM = 1
+
+_DEXCOM_MSG_FMT = "<BBIIHBb"  # opcode, status, u32 seq, u32 ts_s, u16 glucose, state, i8 trend
+DEXCOM_MSG_LEN = struct.calcsize(_DEXCOM_MSG_FMT)  # 14
+
+
+def encode_comm_profile(dexcom: bool) -> bytes:
+    """1 byte: 0 = SIG CGMS (0x181F), 1 = basic Dexcom-style stream (FEBC)."""
+    return struct.pack("<B", COMM_DEXCOM if dexcom else COMM_SIG_CGMS)
+
+
+def decode_comm_profile(data: bytes) -> bool | None:
+    """Inverse of encode_comm_profile — True if the board is in Dexcom-style mode."""
+    if len(data) < 1:
+        return None
+    return data[0] == COMM_DEXCOM
+
+
+def decode_dexcom_glucose(data: bytes) -> dict | None:
+    """Decode a basic Dexcom-style realtime glucose message (14 bytes, LE).
+
+    Returns ``{glucose_value, sequence, time_offset_min, trend}`` or None. The
+    glucose field carries mg/dL in its low 12 bits (top bits are display flags,
+    ignored here — the firmware sets them to 0)."""
+    if len(data) < DEXCOM_MSG_LEN:
+        return None
+    opcode, status, seq, ts_s, raw_glucose, _state, trend = struct.unpack_from(
+        _DEXCOM_MSG_FMT, data
+    )
+    return {
+        "glucose_value": float(raw_glucose & 0x0FFF),
+        "sequence": seq,
+        "time_offset_min": ts_s // 60,
+        "trend": trend,
+        "opcode": opcode,
+        "status": status,
+    }
 
 
 def encode_food_event(event: FoodEvent) -> bytes:
@@ -127,6 +202,132 @@ def decode_cgms_only(data: bytes) -> bool | None:
     if len(data) < 1:
         return None
     return data[0] != 0
+
+
+# ------------------------------------------------------------------
+# Data source + CSV playback upload (see ble_uuids.DATA_SOURCE_UUID /
+# CSV_CONTROL_UUID / CSV_DATA_UUID and PROTOCOL_SPEC.md's "CSV playback data
+# source" section). Must match the firmware's src/csv_store.c + comm_thread.c.
+# ------------------------------------------------------------------
+
+DATA_SOURCE_MODEL = 0
+DATA_SOURCE_CSV = 1
+
+CSV_TRACK_GLUCOSE = 0
+CSV_TRACK_FOODLOG = 1
+
+CSV_OP_BEGIN = 0x01
+CSV_OP_COMMIT = 0x02
+CSV_OP_ABORT = 0x03
+CSV_OP_CLEAR = 0x04
+CSV_OP_STATUS = 0x05
+
+CSV_CTRL_STATUS_OK = 0
+CSV_CTRL_STATUS_ERR = 1
+
+# csv_begin_wire: u8 op; u8 track; u16 row_count; u32 base_epoch_s; u16 interval_s;
+# u32 total_bytes; u32 crc32  (packed, little-endian) — 18 bytes.
+_CSV_BEGIN_FMT = "<BBHIHII"
+
+
+def encode_data_source(is_csv: bool) -> bytes:
+    """1 byte: 0 = physiological model, 1 = replay uploaded CSV glucose track."""
+    return struct.pack("<B", DATA_SOURCE_CSV if is_csv else DATA_SOURCE_MODEL)
+
+
+def decode_data_source(data: bytes) -> bool | None:
+    """Inverse of encode_data_source — True if the board is set to CSV playback."""
+    if len(data) < 1:
+        return None
+    return data[0] == DATA_SOURCE_CSV
+
+
+def csv_crc32(blob: bytes) -> int:
+    """CRC-32/ISO-HDLC of *blob* — matches the firmware's crc32_ieee_update(0, ...)."""
+    return zlib.crc32(blob) & 0xFFFFFFFF
+
+
+def build_glucose_track(values_mg_dl: list[float]) -> bytes:
+    """Pack a glucose track: one little-endian int16 mg/dL per sample.
+
+    Values are rounded and clamped to int16 range; the firmware reads them back
+    2 bytes at a time during playback (see csv_glucose_lookup)."""
+    clamped = [max(-32768, min(32767, int(round(v)))) for v in values_mg_dl]
+    return struct.pack("<%dh" % len(clamped), *clamped)
+
+
+def build_foodlog_track(events: list[tuple[int, float]]) -> bytes:
+    """Pack a food-log track: {u32 offset_s; f32 carbs_g} per meal, sorted by offset."""
+    out = bytearray()
+    for offset_s, carbs_g in sorted(events):
+        out += struct.pack("<If", int(offset_s), float(carbs_g))
+    return bytes(out)
+
+
+def encode_csv_begin(
+    track: int,
+    row_count: int,
+    base_epoch_s: int,
+    interval_s: int,
+    total_bytes: int,
+    crc32: int,
+) -> bytes:
+    """CSV control BEGIN: erase + header. See _CSV_BEGIN_FMT."""
+    return struct.pack(
+        _CSV_BEGIN_FMT,
+        CSV_OP_BEGIN,
+        track & 0xFF,
+        row_count & 0xFFFF,
+        base_epoch_s & 0xFFFFFFFF,
+        interval_s & 0xFFFF,
+        total_bytes & 0xFFFFFFFF,
+        crc32 & 0xFFFFFFFF,
+    )
+
+
+def encode_csv_commit(track: int) -> bytes:
+    """CSV control COMMIT: validate received bytes + CRC, activate the track."""
+    return struct.pack("<BB", CSV_OP_COMMIT, track & 0xFF)
+
+
+def encode_csv_abort() -> bytes:
+    """CSV control ABORT: discard the in-progress upload."""
+    return struct.pack("<B", CSV_OP_ABORT)
+
+
+def encode_csv_clear(track: int) -> bytes:
+    """CSV control CLEAR: wipe a committed track's manifest entry."""
+    return struct.pack("<BB", CSV_OP_CLEAR, track & 0xFF)
+
+
+def encode_csv_status(track: int) -> bytes:
+    """CSV control STATUS: ask the board how many bytes it has received."""
+    return struct.pack("<BB", CSV_OP_STATUS, track & 0xFF)
+
+
+def encode_csv_data(offset: int, chunk: bytes) -> bytes:
+    """CSV data write: u32 offset (into the track) + raw track bytes."""
+    return struct.pack("<I", offset & 0xFFFFFFFF) + chunk
+
+
+def iter_csv_data_chunks(blob: bytes, chunk_size: int = 224) -> Iterator[bytes]:
+    """Yield successive encode_csv_data() writes covering *blob*.
+
+    Default chunk_size leaves headroom under an ATT_MTU of 247 (247 - 3 ATT
+    header - 4 offset = 240; 224 is a safe round number)."""
+    for offset in range(0, len(blob), chunk_size):
+        yield encode_csv_data(offset, blob[offset:offset + chunk_size])
+
+
+def decode_csv_control_notify(data: bytes) -> tuple[int, int] | None:
+    """Decode a CSV control notification: (status, received_bytes).
+
+    status is CSV_CTRL_STATUS_OK / CSV_CTRL_STATUS_ERR; byte 1 is reserved."""
+    if len(data) < 6:
+        return None
+    status = data[0]
+    received = struct.unpack_from("<I", data, 2)[0]
+    return status, received
 
 
 def decode_food_exercise_status(data: bytes) -> dict[str, float] | None:
