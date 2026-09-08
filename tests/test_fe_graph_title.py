@@ -38,12 +38,12 @@ def test_title_is_plain_without_a_csv_person(win):
 
 def test_title_says_report_only_for_a_csv_person(win):
     win._active_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
-    win._redraw_food_ex_graph()
-    assert "report-only" in win._fe_ax.get_title().lower()
+    win._graph.redraw_food_ex()
+    assert "report-only" in win._graph.fe_ax.get_title().lower()
 
     win._active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
-    win._redraw_food_ex_graph()
-    assert win._fe_ax.get_title() == "Food / Exercise"
+    win._graph.redraw_food_ex()
+    assert win._graph.fe_ax.get_title() == "Food / Exercise"
 
 
 # --- issue 14: CSV Analysis whole-recording metrics panel -----------------

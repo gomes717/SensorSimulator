@@ -5,11 +5,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import matplotlib  # pylint: disable=wrong-import-order
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QCloseEvent, QColor, QPalette
+from PyQt6.QtGui import QBrush, QCloseEvent, QColor
 from PyQt6.QtWidgets import (
-    QApplication,
     QDialog,
     QGridLayout,
     QGroupBox,
@@ -27,10 +25,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-
 from api import protocol
 from core.ble_message_log import BleMessageLog
 from gui.avatar import avatar_icon
@@ -44,6 +38,7 @@ from gui.debug_window import DebugWindow
 from gui.exercise_config_window import ExerciseConfigWindow
 from gui.fault_panel import FaultPanel
 from gui.food_config_window import FoodConfigWindow
+from gui.glucose_graph import GlucoseGraph
 from gui.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
 from gui.person_config_window import PersonConfigWindow
 from gui.scenario_window import ScenarioWindow
@@ -110,11 +105,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # Rolling view: show only the last N wall-clock seconds of the graphs
         # (0 = entire run). Chosen in the View window, persisted.
         self._view_window_s = float(app_settings.load_pref("view_window_s", 3600.0))
-        self._visible_xlim: tuple[float, float] | None = None
-        # PISA-shaded intervals on the glucose graph: (t_start_s, t_end_s) in
-        # graph time; matching matplotlib patches so they can be cleared.
-        self._pisa_spans: list[tuple[float, float]] = []
-        self._pisa_patches: list = []
         self._model_only = False
         self._cgms_only = False
         # One SimulationEngine per occupied board slot (issue 04). A single
@@ -155,14 +145,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # user_id -> stable small integer shown next to the avatar in the tree
         self._user_ids: dict[str, int] = {}
 
-        # Fixed reference point for every graph's x-axis: real elapsed wall-clock
-        # seconds since the app launched. Using one never-reset reference (instead
-        # of a per-line step counter) is what keeps the received line (board
-        # pushes every ~5s) and the expected line (local engine ticks every 1s)
-        # correctly aligned on the same time axis despite their different
-        # cadences — a step-index axis made the faster line look compressed.
-        self._graph_t0 = datetime.now(UTC)
-
         self._user_items: dict[str, QTreeWidgetItem] = {}
         # user_id -> BLE address, and the set of user_ids whose device has
         # disconnected (their tree row is marked offline until a message with
@@ -171,38 +153,33 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._offline_users: set[str] = set()
         self.tree = self._build_tree()
 
-        self._graph_x: list[float] = []
-        self._graph_y: list[float] = []
-        self._expected_x: list[float] = []
-        self._expected_y: list[float] = []
         self._selected_user: str | None = None
-        self._figure, self._canvas, self._ax, self._line, self._expected_line = self._build_graph()
+        # The two stacked matplotlib panels (issue 18). It keeps the fixed
+        # graph_t0 x-axis origin, the plot buffers and every draw decision;
+        # MainWindow keeps the per-user history and points the panel's live
+        # buffers at the selected user's lists (see _bind_selected_history).
+        self._graph = GlucoseGraph(
+            self._thresholds,
+            self._view_window_s,
+            datetime.now(UTC),
+            on_redraw=self._update_stats_panel,
+            fe_title=self._fe_graph_title,
+        )
 
-        self._food_ex_x: list[float] = []
-        self._food_ex_carbs_y: list[float] = []
-        self._food_ex_exercise_y: list[float] = []
-        # Per-user received history, all sharing the one self._graph_t0 that is
+        # Per-user received history, all sharing the one graph_t0 that is
         # (re)anchored at Start. On a multi-sensor board every slot streams from
         # the same board clock and the same Start, so one shared origin is
         # correct — switching the selected tree row just rebinds the live
-        # buffers below to that user's lists (see _bind_selected_history), it
-        # does not wipe or replay anything. Keys are user_id (tree row id).
-        # {user_id: {"gx","gy","fx","fc","fe": list[float]}}
+        # buffers to that user's lists (see _bind_selected_history), it does not
+        # wipe or replay anything. Keys are user_id (tree row id).
+        # {user_id: {"gx","gy","fx","fc","fe","ex_gx","ex_gy": list[float]}}
         self._history: dict[str, dict[str, list[float]]] = {}
-        (
-            self._fe_figure,
-            self._fe_canvas,
-            self._fe_ax,
-            self._fe_ax2,
-            self._carbs_line,
-            self._exercise_line,
-        ) = self._build_food_exercise_graph()
 
         self._bottom = self._build_bottom_bar()
 
         right_splitter = self._right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.addWidget(self._canvas)
-        right_splitter.addWidget(self._fe_canvas)
+        right_splitter.addWidget(self._graph.canvas)
+        right_splitter.addWidget(self._graph.fe_canvas)
         right_splitter.addWidget(self._bottom)
         right_splitter.setSizes([340, 170, 130])
 
@@ -227,6 +204,48 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # Populate the Configuration window's combos now that the graphs exist
         # (the first selection default restarts the engine, which draws to them).
         self._controller.notify_profiles_changed()
+
+    # -- Graph state now lives on self._graph (issue 18). These read-only views
+    #    keep the hardware harnesses (scripts/e2e.py, scripts/ui_smoke.py), which
+    #    poll the plotted series directly, working unchanged.
+    @property
+    def _graph_x(self) -> list[float]:
+        return self._graph.buf.graph_x
+
+    @property
+    def _graph_y(self) -> list[float]:
+        return self._graph.buf.graph_y
+
+    @property
+    def _expected_x(self) -> list[float]:
+        return self._graph.buf.expected_x
+
+    @property
+    def _expected_y(self) -> list[float]:
+        return self._graph.buf.expected_y
+
+    @property
+    def _food_ex_carbs_y(self) -> list[float]:
+        return self._graph.buf.food_ex_carbs_y
+
+    @property
+    def _food_ex_exercise_y(self) -> list[float]:
+        return self._graph.buf.food_ex_exercise_y
+
+    @property
+    def _pisa_spans(self) -> list[tuple[float, float]]:
+        return self._graph.pisa_spans
+
+    @property
+    def _pisa_patches(self) -> list:
+        return self._graph.pisa_patches
+
+    @property
+    def _visible_xlim(self) -> tuple[float, float] | None:
+        return self._graph.visible_xlim
+
+    def _in_view(self, xs: list[float], ys: list[float]) -> list[float]:
+        return self._graph.in_view(xs, ys)
 
     def _seed_default_profiles(self) -> None:
         """First run (no saved profiles yet): add one default person/sensor.
@@ -300,163 +319,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         tree.header().setStretchLastSection(True)
         tree.currentItemChanged.connect(self._on_user_selected)
         return tree
-
-    def _build_graph(self):
-        """Create the glucose figure/canvas/axes plus a solid "received" and dashed "expected" line.
-
-        Colors are pulled from the live Qt palette rather than hardcoded, so
-        the chart matches whichever theme (dark or light) is actually active
-        instead of always rendering with matplotlib's white default.
-
-        Reads the *application* palette (not self.palette()) so a rebuild
-        triggered right after a theme switch sees the new colors immediately,
-        without waiting for the queued ApplicationPaletteChange event.
-        """
-        palette = QApplication.instance().palette()
-        bg = palette.color(QPalette.ColorRole.Window).name()
-        fg = self._graph_fg = palette.color(QPalette.ColorRole.WindowText).name()
-        accent = palette.color(QPalette.ColorRole.Highlight).name()
-
-        figure = Figure(facecolor=bg)
-        # Fixed margins (not tight_layout) so this plot box lines up horizontally
-        # with the food/exercise plot box below — see the *_MARGINS class attrs.
-        figure.subplots_adjust(**self._GLUCOSE_MARGINS)
-        canvas = FigureCanvas(figure)
-        ax = figure.add_subplot(111, facecolor=bg)
-        ax.set_title("Select a user", color=fg)
-        # No x-label here — this graph shares its time axis with the
-        # food/exercise graph below, which carries the single "Time (s)" label.
-        ax.set_ylabel("Glucose (mg/dL)", color=fg)
-        ax.tick_params(colors=fg)
-        for spine in ax.spines.values():
-            spine.set_color(fg)
-        ax.grid(True, color=fg, alpha=0.15)
-        self._range_bands: list = []
-        self._mean_line = ax.axhline(0.0, color=fg, lw=1.0, linestyle="-.", alpha=0.0, label="Mean")
-        # "Received" = faint continuous base + one colored overlay per range
-        # category (red out of range, yellow borderline, green in target); see
-        # _recolor_main_trace(). "Expected" stays a single dashed line.
-        (line,) = ax.plot([], [], lw=0.8, color=fg, alpha=0.35)  # faint base for the colored segs
-        _seg_labels = {"g": "In range", "y": "Borderline", "r": "Low / High"}
-        self._seg_lines = {
-            cat: ax.plot(
-                [], [], lw=1.7, color=color, solid_capstyle="round", label=_seg_labels[cat]
-            )[0]
-            for cat, color in self._LINE_COLORS.items()
-        }
-        (expected_line,) = ax.plot(
-            [], [], lw=1.5, color=accent, linestyle="--", alpha=0.7, label="Expected (model)"
-        )
-        legend = ax.legend(
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.16),
-            ncol=3,
-            fontsize=8,
-            frameon=False,
-        )
-        for text in legend.get_texts():
-            text.set_color(fg)
-        self._apply_range_bands(ax)
-        ax.set_ylim(*self._EMPTY_YLIM)  # until real data arrives (see _fit_glucose_ylim)
-        return figure, canvas, ax, line, expected_line
-
-    # red = TBR2/TAR2 (out of range), yellow = TBR1/TAR1 (borderline), green = TIR
-    _RED = "#d32f2f"
-    _YELLOW = "#f4b400"
-    _GREEN = "#2e7d32"
-    _LINE_COLORS = {"r": _RED, "y": _YELLOW, "g": _GREEN}
-    # Clinical range band colors (translucent), same 5-band order: TBR2, TBR1, TIR, TAR1, TAR2.
-    _BAND_COLORS = (_RED, _YELLOW, _GREEN, _YELLOW, _RED)
-    # Left/right are shared so the two stacked plot boxes line up on the time
-    # axis; top/bottom differ — the glucose graph only reserves room for its
-    # legend, the food/exercise graph also carries the "Time (s)" label.
-    _GLUCOSE_MARGINS = dict(left=0.09, right=0.91, top=0.90, bottom=0.18)
-    _FOODEX_MARGINS = dict(left=0.09, right=0.91, top=0.86, bottom=0.32)
-
-    def _apply_range_bands(self, ax=None) -> None:
-        """(Re)draw the 5 horizontal range bands from the current thresholds.
-
-        axhspan patches don't feed the data limits, so the y-axis still
-        autoscales to the glucose lines alone.
-        """
-        ax = ax or self._ax
-        for patch in getattr(self, "_range_bands", []):
-            patch.remove()
-        t = self._thresholds
-        edges = [0.0, t["tbr2_below"], t["tbr1_below"], t["tar1_above"], t["tar2_above"], 600.0]
-        self._range_bands = [
-            ax.axhspan(lo, hi, color=color, alpha=0.09, zorder=0)
-            for lo, hi, color in zip(edges, edges[1:], self._BAND_COLORS)
-        ]
-
-    def _category(self, value: float) -> str:
-        """'r' out of range (low/high), 'y' borderline, 'g' in target — vs current thresholds."""
-        t = self._thresholds
-        if value < t["tbr2_below"] or value > t["tar2_above"]:
-            return "r"
-        if value < t["tbr1_below"] or value > t["tar1_above"]:
-            return "y"
-        return "g"
-
-    def _recolor_main_trace(self) -> None:
-        """Split the Received series into red/yellow/green overlays by range category."""
-        xs, ys = self._graph_x, self._graph_y
-        n = len(ys)
-        nan = float("nan")
-        arrs = {"r": [nan] * n, "y": [nan] * n, "g": [nan] * n}
-        if n:
-            cats = [self._category(v) for v in ys]
-            for i, v in enumerate(ys):
-                here = cats[i]
-                arrs[here][i] = v
-                if i > 0 and cats[i - 1] != here:
-                    arrs[cats[i - 1]][i] = v
-                if i < n - 1 and cats[i + 1] != here:
-                    arrs[cats[i + 1]][i] = v
-        for cat, line in self._seg_lines.items():
-            line.set_data(xs, arrs[cat])
-
-    def _build_food_exercise_graph(self):
-        """Create the food/exercise figure: carbs rate (left axis) and exercise % (right axis)."""
-        palette = QApplication.instance().palette()
-        bg = palette.color(QPalette.ColorRole.Window).name()
-        fg = palette.color(QPalette.ColorRole.WindowText).name()
-        carbs_color = palette.color(QPalette.ColorRole.Highlight).name()
-        exercise_color = "#e0813f"  # fixed accent, distinguishable from the theme highlight color
-
-        figure = Figure(facecolor=bg)
-        figure.subplots_adjust(**self._FOODEX_MARGINS)
-        canvas = FigureCanvas(figure)
-        ax = figure.add_subplot(111, facecolor=bg)
-        ax.set_title("Food / Exercise", color=fg)
-        ax.set_xlabel("Time (s)", color=fg)
-        ax.set_ylabel("Carbs (g/min)", color=fg)
-        ax.tick_params(colors=fg)
-        for spine in ax.spines.values():
-            spine.set_color(fg)
-        ax.grid(True, color=fg, alpha=0.15)
-        (carbs_line,) = ax.plot([], [], lw=1.5, color=carbs_color, label="Carbs (g/min)")
-
-        ax2 = ax.twinx()
-        ax2.set_ylabel("Exercise (%)", color=fg)
-        ax2.tick_params(colors=fg)
-        (exercise_line,) = ax2.plot(
-            [], [], lw=1.5, color=exercise_color, linestyle=":", label="Exercise (%)"
-        )
-
-        lines = [carbs_line, exercise_line]
-        legend = ax.legend(
-            lines,
-            [line.get_label() for line in lines],
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.34),
-            ncol=2,
-            fontsize=8,
-            frameon=False,
-        )
-        for text in legend.get_texts():
-            text.set_color(fg)
-        return figure, canvas, ax, ax2, carbs_line, exercise_line
 
     def _build_bottom_bar(self) -> QWidget:
         """Create the run controls (Start/Pause, Stop, Insert Now) and the live
@@ -535,12 +397,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         TIR/TBR/TAR are shown as time in each band (h:mm) over the visible
         window, not a percentage (issue 13).
         """
-        series = self._in_view(self._graph_x, self._graph_y) or self._in_view(
-            self._expected_x, self._expected_y
-        )
+        g, b = self._graph, self._graph.buf
+        series = g.in_view(b.graph_x, b.graph_y) or g.in_view(b.expected_x, b.expected_y)
         span_min = None
-        if self._visible_xlim is not None:
-            lo, hi = self._visible_xlim
+        if g.visible_xlim is not None:
+            lo, hi = g.visible_xlim
             span_min = max(0.0, (hi - lo) / 60.0)
         m = cgm_metrics.compute(
             series,
@@ -635,51 +496,23 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _on_theme_changed(self) -> None:
         """After a palette switch: rebuild the graph canvases so they repaint in
         the new colors (they read the Qt palette only at build time)."""
-        self._rebuild_graphs()
+        self._graph.rebuild_for_theme(self._right_splitter)
+        self._set_graph_title()
 
-    def _rebuild_graphs(self) -> None:
-        """Recreate both matplotlib canvases in place, preserving the current data."""
-        sizes = self._right_splitter.sizes()
-        (self._figure, self._canvas, self._ax, self._line, self._expected_line) = (
-            self._build_graph()
-        )
-        (
-            self._fe_figure,
-            self._fe_canvas,
-            self._fe_ax,
-            self._fe_ax2,
-            self._carbs_line,
-            self._exercise_line,
-        ) = self._build_food_exercise_graph()
-        old_g = self._right_splitter.replaceWidget(0, self._canvas)
-        old_fe = self._right_splitter.replaceWidget(1, self._fe_canvas)
-        for old in (old_g, old_fe):
-            if old is not None:
-                old.deleteLater()
-        self._right_splitter.setSizes(sizes)
-
-        if self._model_only and self._active_person is not None:
-            self._ax.set_title(
-                f"Model — {self._active_person.name}",
-                color=self._graph_fg,
-                fontweight="bold",
-                fontsize=11,
+    def _set_graph_title(self) -> None:
+        """Set the glucose-graph title for the current mode / selection."""
+        if self._model_only:
+            name = self._active_person.name if self._active_person is not None else None
+            self._graph.set_glucose_title(
+                f"Model — {name}" if name else "Model Only — select a person"
             )
-        elif not self._model_only and self._selected_user:
-            self._ax.set_title(
-                f"Glucose — {self._selected_user}",
-                color=self._graph_fg,
-                fontweight="bold",
-                fontsize=11,
-            )
-        self._redraw_graph()
-        self._redraw_food_ex_graph()
+        elif self._selected_user:
+            self._graph.set_glucose_title(f"Glucose — {self._selected_user}")
 
     def _on_thresholds_changed(self) -> None:
         """Reload thresholds after a Configuration-window save and redraw the bands/metrics."""
         self._thresholds = app_settings.load()
-        self._apply_range_bands()
-        self._redraw_graph()
+        self._graph.set_thresholds(self._thresholds)
 
     def _open_editor(self, which: str) -> None:
         """Route a ConfigController.editor_requested to the right config window."""
@@ -878,9 +711,9 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         )
         # Shade the affected interval: duration is simulated minutes; the graph
         # x-axis is wall-clock seconds, so scale by the current speed multiplier.
-        t0 = self._elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
-        self._pisa_spans.append((t0, t0 + duration_min * 60.0 / self._speed_mult))
-        self._redraw_graph()
+        t0 = self._graph.elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
+        self._graph.add_pisa_span(t0, t0 + duration_min * 60.0 / self._speed_mult)
+        self._graph.redraw_glucose()
 
     # ------------------------------------------------------------------
     # Scenario runner dispatch (gui/scenario_window.py)
@@ -1091,20 +924,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # Simulation engine (parallel "expected" model)
     # ------------------------------------------------------------------
 
-    def _elapsed_seconds(self, timestamp_str: str) -> float:
-        """Convert an ISO timestamp (from a BLE message or SimulationEngine tick) to
-        seconds elapsed since the current view started (self._graph_t0) — the shared
-        x-axis unit for every graph."""
-        return (datetime.fromisoformat(timestamp_str) - self._graph_t0).total_seconds()
-
-    def _reset_expected(self) -> None:
-        self._expected_x, self._expected_y = [], []
-
-    def _reset_food_ex(self) -> None:
-        self._food_ex_x = []
-        self._food_ex_carbs_y = []
-        self._food_ex_exercise_y = []
-
     def _reset_graph_view(self) -> None:
         """Clear every graph and re-anchor the shared timeline at t=0.
 
@@ -1116,15 +935,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         everyone. Switching the selected tree row does NOT come through here
         (see _on_user_selected); it only rebinds to that user's kept history.
         """
-        self._graph_t0 = datetime.now(UTC)
+        self._graph.reset(datetime.now(UTC))
         self._history = {}
-        self._graph_x, self._graph_y = [], []
-        self._reset_expected()
-        self._reset_food_ex()
-        self._pisa_spans = []
         self._bind_selected_history()
-        self._redraw_graph()
-        self._redraw_food_ex_graph()
+        self._graph.redraw_glucose()
+        self._graph.redraw_food_ex()
 
     def _hist(self, user_id: str) -> dict[str, list[float]]:
         """Return (creating on first sight) the history buffers for *user_id*.
@@ -1150,12 +965,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if self._model_only or not self._selected_user:
             return
         h = self._hist(self._selected_user)
-        self._graph_x, self._graph_y = h["gx"], h["gy"]
-        self._food_ex_x = h["fx"]
-        self._food_ex_carbs_y = h["fc"]
-        self._food_ex_exercise_y = h["fe"]
-        if self._per_slot_expected:
-            self._expected_x, self._expected_y = h["ex_gx"], h["ex_gy"]
+        ex = (h["ex_gx"], h["ex_gy"]) if self._per_slot_expected else (None, None)
+        self._graph.bind_buffers(h["gx"], h["gy"], h["fx"], h["fc"], h["fe"], *ex)
 
     def _stop_engine(self) -> None:
         """Stop and discard every engine in the pool.
@@ -1196,26 +1007,9 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         slots = self._engine_slots()
         self._per_slot_expected = len(slots) > 1
-
+        self._set_graph_title()
         if not slots:
-            if self._model_only:
-                self._ax.set_title(
-                    "Model Only — select a person",
-                    color=self._graph_fg,
-                    fontweight="bold",
-                    fontsize=11,
-                )
-                self._canvas.draw_idle()
             return
-
-        if self._model_only and self._active_person is not None:
-            self._ax.set_title(
-                f"Model — {self._active_person.name}",
-                color=self._graph_fg,
-                fontweight="bold",
-                fontsize=11,
-            )
-            self._canvas.draw_idle()
 
         # A freshly rebuilt pool sits idle unless a run is already in progress,
         # so switching profiles/modes/layout doesn't silently start a comparison.
@@ -1263,7 +1057,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         connected board, both anchored to the moment this is called.
         """
         self._restart_engine()  # preps graphs + a paused pool (run_state still "stopped" here)
-        self._graph_t0 = datetime.now(UTC)
+        self._graph.graph_t0 = datetime.now(UTC)
         self._engines.resume_all()
         self._run_state = "running"
         self._set_start_pause_label()
@@ -1288,25 +1082,26 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self, slot: int, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
     ) -> None:
         """Consume one tick from slot *slot*'s engine in the pool."""
-        t = self._elapsed_seconds(timestamp)
+        g = self._graph
+        t = g.elapsed_seconds(timestamp)
         if self._model_only:
-            self._graph_x.append(t)
-            self._graph_y.append(glucose)
-            self._redraw_graph()
-            self._food_ex_x.append(t)
-            self._food_ex_carbs_y.append(carbs_rate)
-            self._food_ex_exercise_y.append(exercise_pct)
-            self._redraw_food_ex_graph()
+            g.buf.graph_x.append(t)
+            g.buf.graph_y.append(glucose)
+            g.redraw_glucose()
+            g.buf.food_ex_x.append(t)
+            g.buf.food_ex_carbs_y.append(carbs_rate)
+            g.buf.food_ex_exercise_y.append(exercise_pct)
+            g.redraw_food_ex()
         elif self._per_slot_expected:
             h = self._hist(self._slot_user_id(slot))
             h["ex_gx"].append(t)
             h["ex_gy"].append(glucose)
             if self._slot_user_id(slot) == self._selected_user:
-                self._redraw_graph()
+                g.redraw_glucose()
         else:
-            self._expected_x.append(t)
-            self._expected_y.append(glucose)
-            self._redraw_graph()
+            g.expected_x.append(t)
+            g.expected_y.append(glucose)
+            g.redraw_glucose()
 
     # ------------------------------------------------------------------
     # BLE message handling
@@ -1353,18 +1148,18 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
             if recording and user_id is not None:
                 h = self._hist(user_id)
-                h["gx"].append(self._elapsed_seconds(msg["timestamp"]))
+                h["gx"].append(self._graph.elapsed_seconds(msg["timestamp"]))
                 h["gy"].append(glucose)
                 if selected:
-                    self._redraw_graph()
+                    self._graph.redraw_glucose()
 
         if recording and user_id is not None and "carbs_g_per_min" in msg:
             h = self._hist(user_id)
-            h["fx"].append(self._elapsed_seconds(msg["timestamp"]))
+            h["fx"].append(self._graph.elapsed_seconds(msg["timestamp"]))
             h["fc"].append(msg["carbs_g_per_min"])
             h["fe"].append(msg.get("exercise_pct", 0.0))
             if selected:
-                self._redraw_food_ex_graph()
+                self._graph.redraw_food_ex()
 
     def _ensure_user_item(self, user_id: str) -> QTreeWidgetItem:
         """Return the tree row for *user_id*, creating it with an ID + avatar on first sight."""
@@ -1432,108 +1227,17 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             return
         self._selected_user = current.data(0, Qt.ItemDataRole.UserRole) or current.text(0)
         self._bind_selected_history()
-        self._redraw_graph()
-        self._redraw_food_ex_graph()
-        if not self._model_only:
-            self._ax.set_title(
-                f"Glucose — {self._selected_user}",
-                color=self._graph_fg,
-                fontweight="bold",
-                fontsize=11,
-            )
-            self._canvas.draw_idle()
-
-    # ------------------------------------------------------------------
-    # Graph redraw helpers
-    # ------------------------------------------------------------------
-
-    def _sync_time_axis(self) -> None:
-        """Give both stacked graphs the same x-range so points at the same time line up.
-
-        Honours the rolling view window (self._view_window_s): when set, only the
-        last N seconds are shown, while the full data arrays are kept so
-        switching to "Entire run" reveals everything again.
-        """
-        xs = self._graph_x + self._expected_x + self._food_ex_x
-        if not xs:
-            self._visible_xlim = None
-            return
-        lo, hi = min(xs), max(xs)
-        if hi <= lo:
-            hi = lo + 1.0
-        if self._view_window_s and (hi - lo) > self._view_window_s:
-            lo = hi - self._view_window_s
-        self._visible_xlim = (lo, hi)
-        self._ax.set_xlim(lo, hi)
-        self._fe_ax.set_xlim(lo, hi)
-
-    def _in_view(self, xs: list[float], ys: list[float]) -> list[float]:
-        """Return the ys whose x is inside the currently visible window (NaNs dropped)."""
-        lo = self._visible_xlim[0] if self._visible_xlim else float("-inf")
-        return [y for x, y in zip(xs, ys) if x >= lo and y == y]
-
-    def _draw_pisa_spans(self) -> None:
-        """(Re)shade the PISA intervals on the glucose graph."""
-        for patch in self._pisa_patches:
-            try:
-                patch.remove()
-            except (ValueError, AttributeError):
-                pass
-        self._pisa_patches = [
-            self._ax.axvspan(a, b, color="#8e44ad", alpha=0.10, zorder=0)
-            for a, b in self._pisa_spans
-        ]
+        self._graph.redraw_glucose()
+        self._graph.redraw_food_ex()
+        self._set_graph_title()
 
     def _on_view_window_changed(self) -> None:
         """Reload the graph time-window preference and redraw."""
         self._view_window_s = float(app_settings.load_pref("view_window_s", 3600.0))
-        self._redraw_graph()
-        self._redraw_food_ex_graph()
-
-    # y-axis when the glucose graph has no data yet (mg/dL)
-    _EMPTY_YLIM = (40.0, 200.0)
-
-    def _fit_glucose_ylim(self) -> None:
-        """Set the glucose y-axis to the data's own min/max plus a small margin.
-
-        Explicit instead of autoscale so the range bands (which extend well
-        past any real reading) can't stretch the axis up to 600.
-        """
-        ys = self._in_view(self._graph_x, self._graph_y) + self._in_view(
-            self._expected_x, self._expected_y
-        )
-        if not ys:
-            self._ax.set_ylim(*self._EMPTY_YLIM)
-            return
-        lo, hi = min(ys), max(ys)
-        pad = max(10.0, (hi - lo) * 0.10)
-        self._ax.set_ylim(max(0.0, lo - pad), hi + pad)
-
-    def _redraw_graph(self) -> None:
-        """Push updated x/y data to both line artists and request a canvas refresh."""
-        self._line.set_data(self._graph_x, self._graph_y)
-        self._recolor_main_trace()
-        self._expected_line.set_data(self._expected_x, self._expected_y)
-        self._sync_time_axis()  # sets self._visible_xlim, used by the helpers below
-        self._draw_pisa_spans()
-        self._fit_glucose_ylim()
-        # Mean of the *received* (board) series only — never the expected line.
-        # A freshly-selected sensor with an empty history would otherwise show
-        # the mean of the Python model, which reads as "the board is tracking
-        # the model".
-        series = self._in_view(self._graph_x, self._graph_y)
-        if series:
-            mean = sum(series) / len(series)
-            self._mean_line.set_ydata([mean, mean])
-            self._mean_line.set_alpha(0.6)
-        else:
-            self._mean_line.set_alpha(0.0)
-        self._update_stats_panel()
-        self._canvas.draw_idle()
-        self._fe_canvas.draw_idle()
+        self._graph.set_view_window(self._view_window_s)
 
     def _fe_graph_title(self) -> str:
-        """Title for the food/exercise graph.
+        """Title for the food/exercise graph, passed to GlucoseGraph as a callback.
 
         In CSV playback there is no model running — the food log is replayed
         report-only and does not affect glucose (see issue 08). Say so, so the
@@ -1542,19 +1246,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if getattr(self._active_person, "data_source", "model") == "csv":
             return "Food log — report-only (CSV playback; does not drive glucose)"
         return "Food / Exercise"
-
-    def _redraw_food_ex_graph(self) -> None:
-        """Push updated x/y data to the food/exercise line artists and request a canvas refresh."""
-        self._fe_ax.set_title(self._fe_graph_title(), color=self._graph_fg)
-        self._carbs_line.set_data(self._food_ex_x, self._food_ex_carbs_y)
-        self._exercise_line.set_data(self._food_ex_x, self._food_ex_exercise_y)
-        self._sync_time_axis()
-        cvis = self._in_view(self._food_ex_x, self._food_ex_carbs_y)
-        evis = self._in_view(self._food_ex_x, self._food_ex_exercise_y)
-        self._fe_ax.set_ylim(0.0, max(1.0, (max(cvis) if cvis else 0.0) * 1.15))
-        self._fe_ax2.set_ylim(0.0, max(1.0, (max(evis) if evis else 0.0) * 1.15))
-        self._fe_canvas.draw_idle()
-        self._canvas.draw_idle()
 
     # ------------------------------------------------------------------
     # Qt overrides
