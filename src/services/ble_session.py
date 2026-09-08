@@ -144,7 +144,13 @@ def decode_notification(
         if own_instance_index is not None:
             if instance_of_handle != own_instance_index:
                 return NotifyResult("ignore")
-        elif instance_of_handle is not None:
+        elif instance_of_handle is not None and user_id != dev_id:
+            # Named generic multi-instance device: one tree row per slot. A
+            # nameless connection (user_id fell back to the bare address) is
+            # NOT fanned out — otherwise a flaky scan that returns no name for
+            # a 4-identity board spawns 4 "<addr> · Sensor N" rows that pile up
+            # alongside the properly-named per-identity connections. Connect to
+            # the numbered identity for per-slot rows.
             tag = f"{user_id} · Sensor {instance_of_handle + 1}"
 
     if u == ble_uuids.RESET_SYNC_UUID:

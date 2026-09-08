@@ -77,6 +77,21 @@ def test_unnumbered_multi_instance_tags_the_user_id_with_the_slot():
     assert m["user_id"] == "Pt · Sensor 2"
 
 
+def test_nameless_multi_instance_connection_stays_one_row():
+    """A connection whose name never resolved (user_id == the bare address) is
+    not fanned out to per-slot rows — see decode_notification's comment."""
+    r = decode_notification(
+        CGM_MEASUREMENT_UUID,
+        _sig_measurement(97),
+        user_id="AA:BB",
+        dev_id="AA:BB",
+        own_instance_index=None,
+        instance_count=4,
+        instance_of_handle=1,
+    )
+    assert _msg(r)["user_id"] == "AA:BB"
+
+
 def test_food_exercise_status_for_another_slot_is_ignored():
     frame = struct.pack("<BBff", 3, 0, 1.5, 0.0)  # u8 slot, u8 pad, f32 carbs/min, f32 ex%
     assert _msg(_decode(ble_uuids.FOOD_EXERCISE_STATUS_UUID, frame, own=3))["slot"] == 3
