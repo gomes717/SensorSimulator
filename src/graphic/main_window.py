@@ -1462,8 +1462,20 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._canvas.draw_idle()
         self._fe_canvas.draw_idle()
 
+    def _fe_graph_title(self) -> str:
+        """Title for the food/exercise graph.
+
+        In CSV playback there is no model running — the food log is replayed
+        report-only and does not affect glucose (see issue 08). Say so, so the
+        carb-rate curve isn't read as driving the trace above it.
+        """
+        if getattr(self._active_person, "data_source", "model") == "csv":
+            return "Food log — report-only (CSV playback; does not drive glucose)"
+        return "Food / Exercise"
+
     def _redraw_food_ex_graph(self) -> None:
         """Push updated x/y data to the food/exercise line artists and request a canvas refresh."""
+        self._fe_ax.set_title(self._fe_graph_title(), color=self._graph_fg)
         self._carbs_line.set_data(self._food_ex_x, self._food_ex_carbs_y)
         self._exercise_line.set_data(self._food_ex_x, self._food_ex_exercise_y)
         self._sync_time_axis()
