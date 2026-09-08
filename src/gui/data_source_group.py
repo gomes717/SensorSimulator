@@ -10,8 +10,10 @@ target BLE session.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -23,9 +25,11 @@ from PyQt6.QtWidgets import (
 
 from api import protocol
 from gui.device_target import restart_board
-from models import food_log_csv
+from models import dexcom_csv, food_log_csv
 from models.engine import load_csv_window
 from models.types import PersonProfile
+
+_DATASET_DIR = Path(__file__).resolve().parent.parent.parent / "dataset"
 
 
 class DataSourceGroup(QGroupBox):
@@ -49,12 +53,16 @@ class DataSourceGroup(QGroupBox):
         box.addWidget(self.model_radio)
         box.addWidget(self.csv_radio)
 
+        self._choose_btn = QPushButton("Choose CSV file…")
+        self._choose_btn.clicked.connect(self._choose_csv)
+        box.addWidget(self._choose_btn)
+
         self._path_label = QLabel("—")
         self._path_label.setWordWrap(True)
         box.addWidget(self._path_label)
         hint = QLabel(
-            "Pick the CSV file and 24 h window in the CSV Analysis window, then "
-            "assign it to this patient there."
+            "The 24 h window starts at the file's first reading. Use the CSV "
+            "Analysis window to slide it to a different day and preview it."
         )
         hint.setWordWrap(True)
         hint.setEnabled(False)
@@ -87,6 +95,7 @@ class DataSourceGroup(QGroupBox):
             w.setEnabled(person is not None)
         if person is None:
             self._send_btn.setEnabled(False)
+            self._choose_btn.setEnabled(False)
             self._path_label.setText("—")
             return
         is_csv = getattr(person, "data_source", "model") == "csv"
@@ -97,8 +106,9 @@ class DataSourceGroup(QGroupBox):
         for w in (self.model_radio, self.csv_radio):
             w.blockSignals(False)
         self._note.setVisible(is_csv)
+        self._choose_btn.setEnabled(is_csv)
 
-        lines = [person.csv_path or "— no CSV region assigned —"]
+        lines = [person.csv_path or "— no CSV file chosen —"]
         if getattr(person, "csv_window_start_iso", None):
             lines.append(f"window start: {person.csv_window_start_iso}")
         food_log = getattr(person, "food_log_path", None)
@@ -115,6 +125,32 @@ class DataSourceGroup(QGroupBox):
             return
         person.data_source = "csv" if self.csv_radio.isChecked() else "model"
         self._on_change()  # persists + re-applies the model-form lock + refreshes us
+
+    def _choose_csv(self) -> None:
+        """Pick a Dexcom EGV CSV for this patient and default the 24 h window to
+        its first reading (the CSV Analysis window can slide it afterwards)."""
+        person = self._current_person()
+        if person is None:
+            return
+        start_dir = str(_DATASET_DIR) if _DATASET_DIR.is_dir() else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose CGM CSV", start_dir, "CSV files (*.csv);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            rows = dexcom_csv.read_egv(path)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Choose CSV", f"Could not read that CSV:\n{exc}")
+            return
+        if not rows:
+            QMessageBox.warning(self, "Choose CSV", "No EGV rows found in that file.")
+            return
+        person.csv_path = path
+        person.food_log_path = None  # auto-matched from the glucose CSV's id
+        person.csv_window_start_iso = rows[0][0].isoformat()
+        person.data_source = "csv"
+        self._on_change()
 
     def send_csv(self) -> None:
         """Build the glucose + food-log tracks for the selected CSV patient, upload
