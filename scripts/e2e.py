@@ -662,7 +662,7 @@ def s7_pisa_firmware(ctx: Ctx):
     BLE cadence barely samples it — which is what "PISA seems not to work"
     (issue 02) actually was. See issue 03.
     """
-    with Case(ctx, "S7-04", "pisa_false_low_firmware", "S7") as c:
+    with Case(ctx, "S7-07", "pisa_firmware_stream", "S7") as c:
         sess = ctx.require_board()
         sess.queue_write("data_source", protocol.encode_data_source(False))
         # Force x1 and WAIT for the apply (S7-03 left the board at x60; a speed

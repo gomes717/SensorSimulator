@@ -59,9 +59,17 @@ run is tagged `dirty`.
 below. It currently ships a *representative subset* of the §4 matrix — the case
 IDs marked ✅ in §4 — plus `--loop N` (run N times back to back, each a fresh
 subprocess). Adding a case is a `with Case(...) as c:` function registered in
-`SUITES`. **19 cases** across 13 suites: S1-02/04, S2-01, S3-01/03/04/05,
-S4-05, S5-02, S6-01, S7-01/03, S8-02/06, S9-01, S10-01, S12-01, S16-01, S17-01.
-Latest full hardware run: **19/19 PASS**.
+`SUITES`. **20 cases** across 13 suites: S1-02/04, S2-01, S3-01/03/04/05,
+S4-05, S5-02, S6-01, S7-01/03/07, S8-02/06, S9-01, S10-01, S12-01, S16-01,
+S17-01. Latest full hardware run: **19/19 PASS** (S7-07 added 2026-09-08, not
+yet in a full-suite run).
+
+A second, faster gate now sits under this one: **`tests/` (pytest)** covers the
+deterministic logic that hardware E2E is bad at — the engine's per-tick maths
+and ODE sub-stepping, PISA envelope, the clinical-metrics maths, the BLE wire
+codec round-trips, model/sensor param order vs the firmware C structs, and two
+offscreen-Qt regressions (disconnect row, CSV food-graph label). Run with
+`uv run pytest -q`. It is part of the pre-commit gate (`docs/CODING_STANDARDS.md`).
 
 Run isolation: a **preflight** resets the board to a known state
 (`comm_profile=SIG`, `data_source=model`, `cgms_only=off`, `speed=x1`,
@@ -254,6 +262,7 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 | S7-04 | PISA on the CSV data source | CSV rows still emitted but attenuated by the same factor |
 | S7-05 | fire a config write (e.g. Stop) while an instant event is active | instant slots cleared by `apply_config_locked()` (no bleed into next run) |
 | S7-06 | > 8 instant events of one kind queued | 9th logged as "dropped, no free slot", not a crash |
+| S7-07 ✅ | PISA on the **firmware model stream** at **x1** (S7-03 only exercises Model Only) | forces + settles x1 (a Speed write resets the sim clock + clears instant events), injects a firmware PISA, asserts a **multi-sample ramp** to ~midpoint depth — not a one-sample blip. Above ~x10 a bout finishes in 1–3 ticks and the BLE cadence barely samples it; that was "PISA seems not to work" (issue 02). |
 
 ### S8 — CSV data source (`5b2c000f` / `5b2c0010` / `5b2c0011`)
 
@@ -382,6 +391,26 @@ Keep the last ~10 run folders; older ones are safe to delete (add
 ---
 
 ## 8. Known gaps & harness notes
+
+### Regression pins for the 2026-09-08 stabilization fixes (issue 11)
+
+The old suite reported 19/19 PASS while several real defects were open — mostly
+because the deterministic ones were only tested through Model Only, or not at
+all. Each fix now ships with a pin:
+
+| Fix | Pin |
+|---|---|
+| PISA "not working" (issue 02) | E2E **S7-07** (firmware stream, x1, ramp not blip) |
+| speed multiplier breaks the ODE (issue 03) | `tests/test_engine_step.py` — x1000 physiological for all 4 models; no-cap UVA/Padova → 0 |
+| user shows connected after disconnect (issue 06) | `tests/test_disconnect_row.py` (offscreen Qt) |
+| food graph misleads in CSV mode (issue 08) | `tests/test_fe_graph_title.py` (offscreen Qt) |
+| model param order vs firmware C struct (issue 05) | `tests/test_param_order.py` + `tests/param_order/*.golden` |
+| engine tick logic (issue 01) | `tests/test_engine_step.py` — raw-model equivalence |
+
+Issue 04 (one model per user / slot) and issue 07 (BLE timeslot) get their pins
+when those land.
+
+### Standing gaps
 
 - No hardware in CI — this plan is a **local** gate, run by hand.
 - S11-02 / S12-06 need a deliberate corruption/power-cut path; treat as manual
