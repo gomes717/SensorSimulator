@@ -25,7 +25,7 @@
   issue 06, commit 2438d17):** `BleMessageLog.device_disconnected` → `MainWindow`
   marca a linha "⚊ offline" (cinza, valor `—`); a próxima mensagem do mesmo
   `dev_id` limpa (reconexão). Verificado em hardware.
-- [ ] Arrumar legenda dos gráficos.
+- [~] Arrumar legenda dos gráficos. **Parcial (2026-09-08, issue 16):** a legenda do gráfico de glicose agora rotula o traço colorido (In range / Borderline / Low-High), além de Mean e Expected.
 - [x] Arrumar o multiplicador de tempo — em velocidades altas está quebrando a
   integração da EDO. **Feito (2026-09-08, issue 03, commit 8873dfd):** o firmware já
   fazia sub-step (`MODEL_SUBSTEP_MAX_MIN = 1.0` em `model_thread.c`); faltava
@@ -61,10 +61,10 @@
   byte no `PROTOCOL_SPEC.md`. A `.tex` foi reenquadrada para não implicar
   compatibilidade com transmissor real. Interop com app de terceiro (AES G6 +
   EGV real) = **issue 12** (stretch, Fase 2).
-- [ ] Deixar as regiões do gráfico mais transparentes.
+- [x] Deixar as regiões do gráfico mais transparentes. **Feito (2026-09-08, issue 16):** bandas 0.16→0.09, span PISA 0.15→0.10, bandas + seleção da janela CSV idem.
 - [ ] Mudar o avatar.
 - [ ] Melhorar o alerta de glicose.
-- [ ] Melhorar a visibilidade de qual pessoa/sensor está sendo apresentado no gráfico.
+- [x] Melhorar a visibilidade de qual pessoa/sensor está sendo apresentado no gráfico. **Feito (2026-09-08, issue 16):** título do gráfico de glicose em negrito 11 pt ("Glucose — <user>" / "Model — <name>").
 - [ ] Melhorar o E2E, que deixou passar muitos erros.
 - [x] Arrumar o modelo rodando na aplicação: hoje roda um único modelo para todos
   os usuários; deve haver um modelo por usuário. **Feito (2026-09-08, issue 04,
@@ -79,7 +79,7 @@
   distintas nos buckets certos. (Falta uma revalidação do caminho de sensor
   único no `ui_smoke` A/B — a pilha BLE do Windows travou depois do teste de 4
   conexões; precisa de um toggle do adaptador BT.)
-- [ ] Arrumar a organização de pastas (`api`, `core`, `gui`, `services`, `models`, `utils`).
+- [x] Arrumar a organização de pastas. **Feito (2026-09-08, issue 17, commit fc6b51c):** a árvore já era api/core/services/models/utils; renomeado `src/graphic/` → `src/gui/` (rename mecânico em src/scripts/tests/pyproject/docs).
 - [x] Arrumar o PISA — parece não estar funcionando. **Investigado (2026-09-08,
   issue 02):** PISA está correto — verificado no motor da aplicação (teste
   unitário + `ui_smoke` cenário E) e no firmware a x1 (novo caso E2E **S7-04**:
@@ -89,5 +89,5 @@
   (~2–5 s) mal o amostra — um único blip ou nada. O S7-03 antigo mascarava isso
   por só testar o Model Only. Correção de fundo (tornar eventos pontuais
   visíveis em alta velocidade) fica no item do multiplicador de tempo abaixo.
-- [ ] Adicionar métrica global na janela de CSV Analysis.
+- [x] Adicionar métrica global na janela de CSV Analysis. **Feito (2026-09-08, issue 14, commit cdf28f6):** painel "Whole recording" ao lado de "Selected 24 h window".
 - [ ] Tirar o "slot" das janelas de configuração — usar o nome do usuário ou qual sensor se quer configurar.
