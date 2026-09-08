@@ -55,7 +55,19 @@
 - [ ] Melhorar o alerta de glicose.
 - [ ] Melhorar a visibilidade de qual pessoa/sensor está sendo apresentado no gráfico.
 - [ ] Melhorar o E2E, que deixou passar muitos erros.
-- [ ] Arrumar o modelo rodando na aplicação: hoje roda um único modelo para todos os usuários; deve haver um modelo por usuário.
+- [x] Arrumar o modelo rodando na aplicação: hoje roda um único modelo para todos
+  os usuários; deve haver um modelo por usuário. **Feito (2026-09-08, issue 04,
+  commits 1f06d1c + ec6c28e):** `EnginePool` em `models/engine.py` roda um
+  `SimulationEngine` por slot ocupado do board layout (ou um único slot 0 sem
+  layout / em Model Only). Relógio e velocidade globais; pause/resume/stop e
+  eventos pontuais fazem fan-out. Cada slot registra sua linha "expected" em
+  `_history[user_id]["ex_g*"]` com a mesma chave que o stream recebido. Combo
+  "Slot: 0/1/2/3" das janelas de evento pontual virou "Target: All sensors /
+  Sensor N — <pessoa>". Testes `test_engine_pool.py` + `test_multi_slot_engines.py`.
+  Verificado em hardware: layout de 4 pessoas → 4 motores com 4 trajetórias
+  distintas nos buckets certos. (Falta uma revalidação do caminho de sensor
+  único no `ui_smoke` A/B — a pilha BLE do Windows travou depois do teste de 4
+  conexões; precisa de um toggle do adaptador BT.)
 - [ ] Arrumar a organização de pastas (`api`, `core`, `gui`, `services`, `models`, `utils`).
 - [x] Arrumar o PISA — parece não estar funcionando. **Investigado (2026-09-08,
   issue 02):** PISA está correto — verificado no motor da aplicação (teste
