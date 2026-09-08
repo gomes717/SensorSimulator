@@ -103,7 +103,12 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         assign_row.addWidget(self._assign_status, 1)
         layout.addLayout(assign_row)
 
-        layout.addWidget(self._build_stats_group())
+        stats_row = QHBoxLayout()
+        whole_group, self._whole_labels = self._build_stats_group("Whole recording")
+        sel_group, self._stat_labels = self._build_stats_group("Selected 24 h window")
+        stats_row.addWidget(whole_group)
+        stats_row.addWidget(sel_group)
+        layout.addLayout(stats_row)
 
     # ------------------------------------------------------------------
     # Builders
@@ -187,24 +192,38 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         for cat, line in self._seg_lines.items():
             line.set_data(self._hours, arrs[cat])
 
-    def _build_stats_group(self) -> QGroupBox:
-        group = QGroupBox("Selected 24 h window")
+    _STAT_ROWS = (
+        ("n", "Readings"),
+        ("mean", "Mean glucose (mg/dL)"),
+        ("variance", "Variance"),
+        ("sd", "Std. deviation"),
+        ("cv", "CV (%)"),
+        ("tir", "TIR (h:mm)"),
+        ("tbr", "TBR (h:mm)  [TBR1 / TBR2]"),
+        ("tar", "TAR (h:mm)  [TAR1 / TAR2]"),
+    )
+
+    def _build_stats_group(self, title: str) -> tuple[QGroupBox, dict[str, QLabel]]:
+        group = QGroupBox(title)
         form = QFormLayout(group)
-        self._stat_labels: dict[str, QLabel] = {}
-        for key, caption in (
-            ("n", "Readings"),
-            ("mean", "Mean glucose (mg/dL)"),
-            ("variance", "Variance"),
-            ("sd", "Std. deviation"),
-            ("cv", "CV (%)"),
-            ("tir", "TIR (h:mm)"),
-            ("tbr", "TBR (h:mm)  [TBR1 / TBR2]"),
-            ("tar", "TAR (h:mm)  [TAR1 / TAR2]"),
-        ):
+        labels: dict[str, QLabel] = {}
+        for key, caption in self._STAT_ROWS:
             lbl = QLabel("—")
-            self._stat_labels[key] = lbl
+            labels[key] = lbl
             form.addRow(f"{caption}:", lbl)
-        return group
+        return group, labels
+
+    @staticmethod
+    def _fill_stats(labels: dict[str, QLabel], m: cgm_metrics.GlucoseMetrics) -> None:
+        fmt = cgm_metrics.fmt_hm
+        labels["n"].setText(str(m.n))
+        labels["mean"].setText(f"{m.mean:.1f}")
+        labels["variance"].setText(f"{m.variance:.1f}")
+        labels["sd"].setText(f"{m.sd:.1f}")
+        labels["cv"].setText(f"{m.cv:.1f}")
+        labels["tir"].setText(fmt(m.tir_min))
+        labels["tbr"].setText(f"{fmt(m.tbr_min)}   [{fmt(m.tbr1_min)} / {fmt(m.tbr2_min)}]")
+        labels["tar"].setText(f"{fmt(m.tar_min)}   [{fmt(m.tar1_min)} / {fmt(m.tar2_min)}]")
 
     # ------------------------------------------------------------------
     # Loading
@@ -230,6 +249,11 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         t0 = self._times[0]
         self._hours = [(ts - t0).total_seconds() / 3600.0 for ts in self._times]
         self._file_label.setText(f"{Path(path).name}  ({len(rows)} readings)")
+
+        # Whole-recording metrics — computed once here; the selected-window
+        # panel is refreshed by the slider (issue 14).
+        span_min = (self._times[-1] - t0).total_seconds() / 60.0
+        self._fill_stats(self._whole_labels, self._metrics(self._values, span_min))
 
         self._line.set_data(self._hours, self._values)
         self._apply_range_bands()  # pick up any threshold edits since the window opened
@@ -284,27 +308,17 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         self._range_label.setText(f"{start_dt:%Y-%m-%d %H:%M}  →  {end_dt:%Y-%m-%d %H:%M}")
 
         sel = [g for h, g in zip(self._hours, self._values) if lo <= h <= hi]
-        thresholds = app_settings.load()
-        m = cgm_metrics.compute(
-            sel,
-            tbr2_below=thresholds["tbr2_below"],
-            tbr1_below=thresholds["tbr1_below"],
-            tar1_above=thresholds["tar1_above"],
-            tar2_above=thresholds["tar2_above"],
-            span_minutes=(hi - lo) * 60.0,
-        )
-        fmt = cgm_metrics.fmt_hm
-        self._stat_labels["n"].setText(str(m.n))
-        self._stat_labels["mean"].setText(f"{m.mean:.1f}")
-        self._stat_labels["variance"].setText(f"{m.variance:.1f}")
-        self._stat_labels["sd"].setText(f"{m.sd:.1f}")
-        self._stat_labels["cv"].setText(f"{m.cv:.1f}")
-        self._stat_labels["tir"].setText(fmt(m.tir_min))
-        self._stat_labels["tbr"].setText(
-            f"{fmt(m.tbr_min)}   [{fmt(m.tbr1_min)} / {fmt(m.tbr2_min)}]"
-        )
-        self._stat_labels["tar"].setText(
-            f"{fmt(m.tar_min)}   [{fmt(m.tar1_min)} / {fmt(m.tar2_min)}]"
+        self._fill_stats(self._stat_labels, self._metrics(sel, (hi - lo) * 60.0))
+
+    def _metrics(self, values: list[float], span_minutes: float) -> cgm_metrics.GlucoseMetrics:
+        t = app_settings.load()
+        return cgm_metrics.compute(
+            values,
+            tbr2_below=t["tbr2_below"],
+            tbr1_below=t["tbr1_below"],
+            tar1_above=t["tar1_above"],
+            tar2_above=t["tar2_above"],
+            span_minutes=span_minutes,
         )
 
     # ------------------------------------------------------------------

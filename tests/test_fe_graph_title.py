@@ -44,3 +44,31 @@ def test_title_says_report_only_for_a_csv_person(win):
     win._active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
     win._redraw_food_ex_graph()
     assert win._fe_ax.get_title() == "Food / Exercise"
+
+
+# --- issue 14: CSV Analysis whole-recording metrics panel -----------------
+
+
+def test_csv_analysis_has_whole_and_selected_panels(app):
+    import datetime
+
+    from graphic.csv_analysis_window import CsvAnalysisWindow
+
+    c = CsvAnalysisWindow([], None)
+    n = 48 * 12  # 48 h at 5 min
+    c._times = [datetime.datetime(2020, 1, 1) + datetime.timedelta(minutes=5 * i) for i in range(n)]
+    t0 = c._times[0]
+    c._values = [100.0] * (n - 24) + [45.0] * 24  # last 2 h are TBR2
+    c._hours = [(t - t0).total_seconds() / 3600.0 for t in c._times]
+    c._start_hour = 0.0
+
+    span = (c._times[-1] - t0).total_seconds() / 60.0
+    c._fill_stats(c._whole_labels, c._metrics(c._values, span))
+    c._refresh_selection()
+
+    assert c._whole_labels["n"].text() == str(n)
+    assert c._whole_labels["tbr"].text().startswith("2:00")  # 24 * 5 min low
+    # the first 24 h window is all in range
+    assert c._stat_labels["tbr"].text().startswith("0:00")
+    assert int(c._stat_labels["n"].text()) < n
+    c.close()
