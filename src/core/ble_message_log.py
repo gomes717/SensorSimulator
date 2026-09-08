@@ -13,6 +13,7 @@ class BleMessageLog(QObject):
     """
 
     new_message = pyqtSignal(dict)
+    device_disconnected = pyqtSignal(str)  # BLE address — the session for it has ended
 
     def __init__(self, parent=None) -> None:
         """Start with an empty message history."""
@@ -27,3 +28,7 @@ class BleMessageLog(QObject):
         """Record *message* and notify subscribers."""
         self._messages.append(message)
         self.new_message.emit(message)
+
+    def note_disconnected(self, address: str) -> None:
+        """Relay a BleSession disconnect so views can mark that device's rows offline."""
+        self.device_disconnected.emit(address)

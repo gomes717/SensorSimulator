@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         self._ble_log = BleMessageLog(self)
         self._ble_log.new_message.connect(self._on_new_message)
+        self._ble_log.device_disconnected.connect(self._on_device_disconnected)
 
         self._person_profiles, self._sensor_profiles = profile_store.load()
         self._seed_default_profiles()
@@ -134,6 +135,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._graph_t0 = datetime.now(UTC)
 
         self._user_items: dict[str, QTreeWidgetItem] = {}
+        # user_id -> BLE address, and the set of user_ids whose device has
+        # disconnected (their tree row is marked offline until a message with
+        # the same dev_id arrives again). See issue 06.
+        self._user_dev: dict[str, str] = {}
+        self._offline_users: set[str] = set()
         self.tree = self._build_tree()
 
         self._graph_x: list[float] = []
@@ -1302,6 +1308,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         recording = not self._model_only and (self._cgms_only or self._run_state == "running")
         selected = user_id is not None and user_id == self._selected_user
 
+        if user_id is not None:
+            dev_id = msg.get("dev_id")
+            if dev_id is not None:
+                self._user_dev[user_id] = dev_id
+            if user_id in self._offline_users:  # a message means it's back
+                self._offline_users.discard(user_id)
+                self._set_row_offline(user_id, offline=False)
+
         if "glucose_value" in msg:
             glucose = msg["glucose_value"]
             item = self._ensure_user_item(user_id)
@@ -1353,6 +1367,28 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         else:
             item.setText(0, base)
             item.setForeground(0, QBrush())
+
+    def _set_row_offline(self, user_id: str, *, offline: bool) -> None:
+        """Mark (or clear) the tree row for *user_id* as disconnected."""
+        item = self._user_items.get(user_id)
+        if item is None:
+            return
+        uid = self._user_ids.get(user_id, 0)
+        base = f"#{uid}  {user_id}"
+        if offline:
+            item.setText(0, f"{base}   ⚊ offline")
+            item.setForeground(0, QBrush(QColor("#7f8c8d")))
+            item.setText(1, "—")
+        else:
+            item.setText(0, base)
+            item.setForeground(0, QBrush())
+
+    def _on_device_disconnected(self, address: str) -> None:
+        """A BLE session ended — mark every tree row fed by that device offline (issue 06)."""
+        for user_id, dev_id in self._user_dev.items():
+            if dev_id == address:
+                self._offline_users.add(user_id)
+                self._set_row_offline(user_id, offline=True)
 
     def _on_user_selected(self, current: QTreeWidgetItem | None, _prev) -> None:
         """Switch which device's history is plotted, keeping every user's data.

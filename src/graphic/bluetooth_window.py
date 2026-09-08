@@ -182,6 +182,7 @@ class BluetoothWindow(QWidget):
         session.connected.connect(self._on_connected)
         session.connect_failed.connect(self._on_connect_failed)
         session.disconnected.connect(self._on_disconnected)
+        session.disconnected.connect(self._ble_log.note_disconnected)
         session.new_message.connect(self._ble_log.add_message)
         session.finished.connect(lambda addr=address: self._on_session_finished(addr))
         self._sessions[address] = session
