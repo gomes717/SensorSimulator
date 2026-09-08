@@ -1,9 +1,39 @@
 # Fix PISA injection
 
-Status: blocked (01)
+Status: done (2026-09-08, commit c95e94a)
 Track: A
 Phase: 1
 Blocked by: 01
+
+## Finding: PISA was never broken
+
+Verified correct in three places:
+- app engine — `tests/test_engine_step.py` PISA-envelope test (100 -> 60 -> 100
+  for 40%/10min, underlying glucose unmoved) + `ui_smoke.py` scenario E.
+- firmware at x1 — new E2E **S7-04** (`s7_pisa_firmware`): forces + settles x1,
+  injects a firmware PISA, gets a smooth multi-sample ramp 101 -> ~61 -> recovery.
+- manual hardware check: 50%/4min at x1 -> textbook half-sine 97 -> 48.5 -> back.
+
+"Parece não estar funcionando" is a **speed artifact**: an instant event's
+decay loop uses the full `dt_min`, so above ~x10 a multi-minute bout completes
+in 1-3 model ticks and the ~2-5 s BLE cadence catches one blip or nothing. The
+old S7-03 masked it by only testing Model Only (the local engine at x60/dt=1).
+
+## Done
+
+- S7-04 firmware PISA case added to `scripts/e2e.py` (S7 suite).
+- Facchinetti et al. 2016 (DTT, "Modeling transient disconnections and
+  compression artifacts...") citation added to `architecture_flows.tex` +
+  `cgmsim/FORMULAS.md`.
+- `docs/TODO.md` PISA item closed with the finding.
+
+## Deferred to issue 03
+
+Making instant events (PISA/food/exercise) visible at high speed — either
+sub-step their decay, or clamp/scale, or warn. That's the speed-multiplier
+item's territory.
+
+---
 
 ## Problem
 
