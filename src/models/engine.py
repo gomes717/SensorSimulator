@@ -374,7 +374,9 @@ class ModelStepper:
         self.sim_clock_min += dt_min
         return TickResult(now_iso, glucose, carbs_rate, 0.0)
 
-    def _tick_model(self, dt_min: float, now_iso: str) -> TickResult:
+    def _tick_model(self, dt_min: float, now_iso: str) -> TickResult:  # noqa: C901
+        # Irreducibly branchy: the sub-step loop crossed with the four model
+        # adapters' feed styles (rate-fed vs impulse-fed, meal vs meal-rest).
         m = self._model
         assert m is not None
         adapter = m.adapter

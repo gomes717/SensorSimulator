@@ -35,6 +35,28 @@ Blocked by: —
   round-trip asserts pass; `scripts/ui_smoke.py` connects to the board and
   decodes notifications.
 
+## 2026-09-08 addendum — size ceilings + no-silence rule
+
+User added three size ceilings to the gate:
+
+- cyclomatic complexity per function ≤ 10 — ruff `C901`
+- statements per function ≤ 60 (~100 lines) — ruff `PLR0915`
+  (`[tool.ruff.lint.pylint] max-statements = 60`)
+- lines per module ≤ 1000 — pylint `C0302` (`max-module-lines = 1000`)
+
+Pre-existing offenders carried by `per-file-ignores` (ruff only) tied to
+issue 18: `src/gui/*.py` (Qt `__init__`/`_build_*`, `_scenario_dispatch`),
+`src/services/ble_session.py` (`_session`, `decode_notification`),
+`scripts/*.py` (harness `run_once`). `engine._tick_model` has an inline
+`# noqa: C901` (irreducible 4-model × feed-style branching).
+
+**New standing rule for the agent:** never silence a pylint finding with
+`# pylint: disable=…`. Consequence: `C0302` on `src/gui/main_window.py`
+(1583 lines) is now a **real, unsilenced pre-commit failure** until issue 18
+splits the file under 1000. Commits until then need `--no-verify` (the hook is
+still not activated anyway). The older `# pylint: disable=too-many-instance-
+attributes  # see issue 18` markers pre-date this rule and stay for now.
+
 ---
 
 

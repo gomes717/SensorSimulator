@@ -29,7 +29,17 @@ target-version = "py312"
 extend-exclude = [".venv", "firmware", "cgmsim", "build", "utils", "docs", "*.md"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "C901", "PLR0915"]
+
+# Size / complexity ceilings for new code (docs/CODING_STANDARDS.md):
+#   - cyclomatic complexity per function: 10  (C901)
+#   - statements per function: 60 (~100 lines) (PLR0915)
+#   - lines per module: 1000 — pylint C0302, below.
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-statements = 60
 
 [tool.ruff.lint.per-file-ignores]
 # The physiological model ports use the single-capital symbols from the
@@ -41,10 +51,16 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
 # Residual style debt in the MainWindow god object + its satellite windows —
 # see .scratch/thesis-stabilization/issues/18-arch-debt-mainwindow-god-object.md.
 # Clear these as those windows get deepened; do not add rules here for new code.
-"src/gui/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501"]
+# C901 / PLR0915: the Qt window __init__/_build_* methods and _scenario_dispatch
+# predate the size ceilings; carried until those windows are deepened (issue 18).
+"src/gui/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501", "C901", "PLR0915"]
+# ble_session's asyncio _session loop + decode_notification predate the size
+# ceilings and are tracked with the rest of the BLE-layer debt (issue 18).
+"src/services/ble_session.py" = ["C901", "PLR0915"]
 # The hardware harnesses bootstrap sys.path before importing app modules, keep
-# long-lived log handles open for the run, and use os.path freely.
-"scripts/*.py" = ["E402", "SIM115", "PTH123", "PTH110", "PTH118"]
+# long-lived log handles open for the run, use os.path freely, and their
+# run_once drivers are long by nature.
+"scripts/*.py" = ["E402", "SIM115", "PTH123", "PTH110", "PTH118", "C901", "PLR0915"]
 
 # ---------------------------------------------------------------------------
 # Design-smell detector — pylint (disable=all + design/duplication only)
@@ -60,12 +76,16 @@ disable = ["all"]
 enable = [
     "R0902",  # too-many-instance-attributes  — the MainWindow god object (issue 18)
     "R0904",  # too-many-public-methods
+    "C0302",  # too-many-lines (module) — ceiling 1000, below
 ]
 # duplicate-code (R0801) is left off: the current hits (person/sensor config
 # windows) are already tracked in issue 19, and it has no inline-disable.
 
 [tool.pylint.design]
 max-attributes = 15
+
+[tool.pylint.format]
+max-module-lines = 1000
 
 [tool.pylint.typecheck]
 generated-members = ["PyQt6.*"]
