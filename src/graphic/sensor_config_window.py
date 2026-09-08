@@ -1,7 +1,8 @@
 """Window for creating/editing CGM sensor (noise model) profiles and sending them to a board."""
+
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -254,7 +255,9 @@ class SensorConfigWindow(QWidget):
             return
         decoded = protocol.decode_sensor_config(data)
         if decoded is None:
-            QMessageBox.warning(self, "Sensor Configuration", "Could not decode the board's response.")
+            QMessageBox.warning(
+                self, "Sensor Configuration", "Could not decode the board's response."
+            )
             return
         sensor_id, params = decoded
         profile = self._profiles[self._current_index]

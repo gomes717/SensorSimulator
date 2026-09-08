@@ -6,12 +6,14 @@ The picked 24 h window can also be assigned to a patient as their data source
 replay it instead of running a physiological model (see docs/TODO.md,
 PROTOCOL_SPEC.md's "CSV playback data source" section).
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
+import matplotlib  # pylint: disable=wrong-import-order
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (
@@ -31,12 +33,10 @@ from PyQt6.QtWidgets import (
 
 from models.types import PersonProfile
 
-import matplotlib  # pylint: disable=wrong-import-order
-
 matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas  # noqa: E402
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+from matplotlib.figure import Figure
 
 from models import app_settings, cgm_metrics, dexcom_csv, food_log_csv
 
@@ -234,7 +234,10 @@ class CsvAnalysisWindow(QWidget):
         self._line.set_data(self._hours, self._values)
         self._apply_range_bands()  # pick up any threshold edits since the window opened
         self._recolor_trace()
-        self._ax.set_title(Path(path).name, color=QApplication.instance().palette().color(QPalette.ColorRole.WindowText).name())
+        self._ax.set_title(
+            Path(path).name,
+            color=QApplication.instance().palette().color(QPalette.ColorRole.WindowText).name(),
+        )
         # Fit the axes to the data (min - extra .. max + extra), not to the
         # range bands, which run far past any real reading.
         lo, hi = min(self._values), max(self._values)
@@ -278,9 +281,7 @@ class CsvAnalysisWindow(QWidget):
         start_dt = t0 + timedelta(hours=lo)
         end_dt = t0 + timedelta(hours=hi)
         self._sel_start_dt = start_dt
-        self._range_label.setText(
-            f"{start_dt:%Y-%m-%d %H:%M}  →  {end_dt:%Y-%m-%d %H:%M}"
-        )
+        self._range_label.setText(f"{start_dt:%Y-%m-%d %H:%M}  →  {end_dt:%Y-%m-%d %H:%M}")
 
         sel = [g for h, g in zip(self._hours, self._values) if lo <= h <= hi]
         thresholds = app_settings.load()

@@ -3,6 +3,7 @@ noiseless Ideal CGM — see cgmsim/src/cgmsim_sensors.c for the on-device math t
 mirrors. The noise itself only ever runs on the board; this module exists purely so
 the GUI can show/edit sensible defaults before sending a SensorProfile to it.
 """
+
 from __future__ import annotations
 
 import math
@@ -18,8 +19,16 @@ def breton_default_params() -> dict[str, float]:
 
 def facchinetti_default_params() -> dict[str, float]:
     return {
-        "a0": 1.1, "a1": 2e-4, "a2": 0.0,
-        "b0": -14.8, "b1": 0.04, "b2": 0.0,
-        "aw1": 1.013, "aw2": -0.2135, "sigma_v": math.sqrt(14.45),
-        "ac1": 1.23, "ac2": -0.3995, "sigma_c": math.sqrt(11.3),
+        "a0": 1.1,
+        "a1": 2e-4,
+        "a2": 0.0,
+        "b0": -14.8,
+        "b1": 0.04,
+        "b2": 0.0,
+        "aw1": 1.013,
+        "aw2": -0.2135,
+        "sigma_v": math.sqrt(14.45),
+        "ac1": 1.23,
+        "ac2": -0.3995,
+        "sigma_c": math.sqrt(11.3),
     }

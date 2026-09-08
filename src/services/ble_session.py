@@ -1,17 +1,16 @@
 """Persistent BLE connection that records every notification received from a device."""
+
 from __future__ import annotations
 
 import asyncio
 import re
 import sys
-from datetime import datetime, timezone
-
-from PyQt6.QtCore import QThread, pyqtSignal
+from datetime import UTC, datetime
 
 from bleak import BleakClient
+from PyQt6.QtCore import QThread, pyqtSignal
 
-from api import ble_uuids
-from api import protocol
+from api import ble_uuids, protocol
 
 # Standard Bluetooth SIG "Continuous Glucose Monitoring" service characteristics
 # (used e.g. by Nordic's peripheral_cgms sample). Recognised specially so the
@@ -31,12 +30,14 @@ SOCP_WRITE_CGM_COMMUNICATION_INTERVAL = 0x01
 # peripheral's BLE TX buffer pool and the last-opened session stops receiving
 # anything. So each session subscribes narrowly: its own instance's Measurement
 # char plus these shared ones.
-_FUNCTIONAL_NOTIFY_UUIDS = frozenset({
-    ble_uuids.RESET_SYNC_UUID.lower(),
-    ble_uuids.FOOD_EXERCISE_STATUS_UUID.lower(),
-    ble_uuids.CSV_CONTROL_UUID.lower(),
-    ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID.lower(),
-})
+_FUNCTIONAL_NOTIFY_UUIDS = frozenset(
+    {
+        ble_uuids.RESET_SYNC_UUID.lower(),
+        ble_uuids.FOOD_EXERCISE_STATUS_UUID.lower(),
+        ble_uuids.CSV_CONTROL_UUID.lower(),
+        ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID.lower(),
+    }
+)
 
 # Maps each simulator config characteristic's UUID to the short key used by
 # BleSession.queue_write()/request_read() and by the config windows
@@ -87,7 +88,7 @@ def _sfloat_to_float(raw: int) -> float:
     exponent = raw >> 12
     if exponent >= 0x8:
         exponent -= 0x10
-    return mantissa * (10 ** exponent)
+    return mantissa * (10**exponent)
 
 
 def _decode_cgm_measurement(data: bytes) -> dict:
@@ -144,7 +145,9 @@ class BleSession(QThread):
     board_layout_progress = pyqtSignal(str, int, int)  # address, slots_done, slots_total
     board_layout_finished = pyqtSignal(str, bool, str)  # address, ok, message
 
-    def __init__(self, address: str, name: str, parent=None, display_name: str | None = None) -> None:
+    def __init__(
+        self, address: str, name: str, parent=None, display_name: str | None = None
+    ) -> None:
         """*name* is the advertised BLE name (used for the per-slot demux + the
         pairing decision below — keep it verbatim). *display_name*, if given, is
         what the tree row / graph show instead (e.g. the assigned patient's
@@ -210,7 +213,9 @@ class BleSession(QThread):
         pairing_error = ""
         if sys.platform == "win32" and self._require_pairing:
             try:
-                from services.windows_ble_pairing import pair_with_pin  # local import: Windows-only dep
+                from services.windows_ble_pairing import (
+                    pair_with_pin,
+                )  # local import: Windows-only dep
 
                 await pair_with_pin(self._address, CGM_TEST_PASSKEY)
             except Exception as exc:  # pylint: disable=broad-except
@@ -241,7 +246,10 @@ class BleSession(QThread):
                     uuid = characteristic.uuid.lower()
                     if uuid == CGM_MEASUREMENT_UUID:
                         self._instance_by_handle[characteristic.handle] = instance_index
-                    if "notify" in characteristic.properties or "indicate" in characteristic.properties:
+                    if (
+                        "notify" in characteristic.properties
+                        or "indicate" in characteristic.properties
+                    ):
                         notify_count += 1
                         # Only subscribe to what this session consumes: the
                         # shared functional chars, and the CGM Measurement char
@@ -250,8 +258,10 @@ class BleSession(QThread):
                         # device shown fully). See _FUNCTIONAL_NOTIFY_UUIDS.
                         want = uuid in _FUNCTIONAL_NOTIFY_UUIDS or (
                             uuid in (CGM_MEASUREMENT_UUID, CGM_SOCP_UUID)
-                            and (self._own_instance_index is None
-                                 or instance_index == self._own_instance_index)
+                            and (
+                                self._own_instance_index is None
+                                or instance_index == self._own_instance_index
+                            )
                         )
                         if want:
                             try:
@@ -277,7 +287,10 @@ class BleSession(QThread):
                 # Only (re)configure the instance this identity actually
                 # represents — leave sibling instances, which belong to
                 # other simulated sensors, untouched.
-                if self._own_instance_index is not None and socp_instance != self._own_instance_index:
+                if (
+                    self._own_instance_index is not None
+                    and socp_instance != self._own_instance_index
+                ):
                     continue
                 try:
                     await client.write_gatt_char(
@@ -292,7 +305,7 @@ class BleSession(QThread):
             while not self.isInterruptionRequested():
                 try:
                     char_key, payload = await asyncio.wait_for(self._write_queue.get(), timeout=0.2)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 # A read queued via request_read() rides the same FIFO as
                 # writes, so "set the sensor-select cursor, then read that
@@ -412,8 +425,12 @@ class BleSession(QThread):
                 self._csv_ctrl_queue.get_nowait()
 
             begin = protocol.encode_csv_begin(
-                u["track"], u["row_count"], u["base_epoch_s"],
-                u["interval_s"], len(blob), protocol.csv_crc32(blob),
+                u["track"],
+                u["row_count"],
+                u["base_epoch_s"],
+                u["interval_s"],
+                len(blob),
+                protocol.csv_crc32(blob),
             )
             await self._client.write_gatt_char(ctrl, begin, response=True)
             status, _ = await self._await_csv_ctrl()
@@ -563,18 +580,22 @@ class BleSession(QThread):
             "dev_id": self._address,
             "characteristic": characteristic.uuid,
             "raw_hex": data.hex(),
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID:
             message.update(_decode_cgm_measurement(bytes(data)))
-            print(f"[ble] CGM measurement from {user_id}: {message.get('glucose_value')} mg/dL "
-                  f"raw={data.hex()}")
+            print(
+                f"[ble] CGM measurement from {user_id}: {message.get('glucose_value')} mg/dL "
+                f"raw={data.hex()}"
+            )
         elif characteristic.uuid.lower() == ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID:
             decoded = protocol.decode_dexcom_glucose(bytes(data))
             if decoded is not None:
                 message.update(decoded)
-            print(f"[ble] dexcom glucose from {user_id}: {message.get('glucose_value')} mg/dL "
-                  f"seq={message.get('sequence')} raw={data.hex()}")
+            print(
+                f"[ble] dexcom glucose from {user_id}: {message.get('glucose_value')} mg/dL "
+                f"seq={message.get('sequence')} raw={data.hex()}"
+            )
         elif characteristic.uuid.lower() == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
             decoded = protocol.decode_food_exercise_status(bytes(data))
             # The board sends one status notification per sensor slot on this

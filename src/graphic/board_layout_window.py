@@ -10,10 +10,11 @@ sensor-select cursor + every per-slot characteristic (and uploads a per-slot CSV
 when the assigned person is CSV-backed) over one connection to the board's
 shared config service.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
@@ -30,7 +31,6 @@ from PyQt6.QtWidgets import (
 
 from api import protocol
 from graphic.bluetooth_window import BluetoothWindow
-from models import board_layout as board_layout_model
 from models.board_layout import MAX_SLOTS, BoardLayout
 from models.engine import load_csv_window
 from models.types import PersonProfile, SensorProfile
@@ -130,7 +130,7 @@ class BoardLayoutWindow(QWidget):
         self.reload_profiles()
         self._refresh_conn_status()
 
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def showEvent(self, event) -> None:
         self._refresh_conn_status()
         super().showEvent(event)
 
@@ -256,24 +256,26 @@ class BoardLayoutWindow(QWidget):
                 if not samples or not person.csv_window_start_iso:
                     errors.append(f"Slot {i + 1} ({person.name}): CSV window not set")
                     continue
-                base_epoch = int(
-                    datetime.fromisoformat(person.csv_window_start_iso).timestamp()
-                )
-                uploads = [{
-                    "track": protocol.CSV_TRACK_GLUCOSE,
-                    "blob": protocol.build_glucose_track([float(s) for s in samples]),
-                    "row_count": len(samples),
-                    "base_epoch_s": base_epoch,
-                    "interval_s": interval_s,
-                }]
-                if foodlog:
-                    uploads.append({
-                        "track": protocol.CSV_TRACK_FOODLOG,
-                        "blob": protocol.build_foodlog_track(foodlog),
-                        "row_count": len(foodlog),
+                base_epoch = int(datetime.fromisoformat(person.csv_window_start_iso).timestamp())
+                uploads = [
+                    {
+                        "track": protocol.CSV_TRACK_GLUCOSE,
+                        "blob": protocol.build_glucose_track([float(s) for s in samples]),
+                        "row_count": len(samples),
                         "base_epoch_s": base_epoch,
-                        "interval_s": 0,
-                    })
+                        "interval_s": interval_s,
+                    }
+                ]
+                if foodlog:
+                    uploads.append(
+                        {
+                            "track": protocol.CSV_TRACK_FOODLOG,
+                            "blob": protocol.build_foodlog_track(foodlog),
+                            "row_count": len(foodlog),
+                            "base_epoch_s": base_epoch,
+                            "interval_s": 0,
+                        }
+                    )
                 csv_entry = {"uploads": uploads}
 
             slots.append({"slot": i, "writes": writes, "csv": csv_entry})
@@ -283,7 +285,8 @@ class BoardLayoutWindow(QWidget):
         session = self._pick_session()
         if session is None:
             QMessageBox.warning(
-                self, "Board Layout",
+                self,
+                "Board Layout",
                 "No connected board. Open the Bluetooth window and connect to a sensor first.",
             )
             return

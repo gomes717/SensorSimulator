@@ -5,6 +5,7 @@ integration, same clamping) so this module's output can serve as the
 noiseless "expected" glucose trace compared against the board's own copy of
 this model (which additionally runs a sensor noise model on top).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,22 +28,51 @@ class CambridgeState:
 # Field order matches CambridgeParams in cgmsim/inc/cgmsim_cambridge.h exactly —
 # this is also the wire order used by src/protocol.py's person-config encoding.
 PARAM_NAMES = [
-    "BW", "VG", "VI", "k12", "ka1", "ka2", "ka3", "SIT", "SID", "SIE",
-    "ke", "tmaxI", "tmaxG", "AG", "EGP0", "F01", "Gpeq",
+    "BW",
+    "VG",
+    "VI",
+    "k12",
+    "ka1",
+    "ka2",
+    "ka3",
+    "SIT",
+    "SID",
+    "SIE",
+    "ke",
+    "tmaxI",
+    "tmaxG",
+    "AG",
+    "EGP0",
+    "F01",
+    "Gpeq",
 ]
 
 
 def default_params() -> dict[str, float]:
     return {
-        "BW": 75.0, "VG": 0.16, "VI": 0.12, "k12": 0.066,
-        "ka1": 0.006, "ka2": 0.060, "ka3": 0.030,
-        "SIT": 51.2e-4, "SID": 8.2e-4, "SIE": 520.0e-4,
-        "ke": 0.138, "tmaxI": 55.0, "tmaxG": 40.0, "AG": 0.8,
-        "EGP0": 0.0161, "F01": 0.0097, "Gpeq": 100.0,
+        "BW": 75.0,
+        "VG": 0.16,
+        "VI": 0.12,
+        "k12": 0.066,
+        "ka1": 0.006,
+        "ka2": 0.060,
+        "ka3": 0.030,
+        "SIT": 51.2e-4,
+        "SID": 8.2e-4,
+        "SIE": 520.0e-4,
+        "ke": 0.138,
+        "tmaxI": 55.0,
+        "tmaxG": 40.0,
+        "AG": 0.8,
+        "EGP0": 0.0161,
+        "F01": 0.0097,
+        "Gpeq": 100.0,
     }
 
 
-def _eq_residual(I_ss: float, p: dict[str, float], Q1_ss: float, F01c_ss: float, FR_ss: float) -> float:
+def _eq_residual(
+    I_ss: float, p: dict[str, float], Q1_ss: float, F01c_ss: float, FR_ss: float
+) -> float:
     x1 = p["SIT"] * I_ss
     x2 = p["SID"] * I_ss
     x3 = p["SIE"] * I_ss
@@ -75,13 +105,26 @@ def init_state(p: dict[str, float]) -> CambridgeState:
     Q2_ss = x1_ss * Q1_ss / denom if denom > 0.0 else 0.0
 
     return CambridgeState(
-        Q1=Q1_ss, Q2=Q2_ss, S1=IIR_b * p["tmaxI"], S2=IIR_b * p["tmaxI"],
-        I=I_ss, x1=x1_ss, x2=x2_ss, x3=x3_ss, D1=0.0, D2=0.0,
+        Q1=Q1_ss,
+        Q2=Q2_ss,
+        S1=IIR_b * p["tmaxI"],
+        S2=IIR_b * p["tmaxI"],
+        I=I_ss,
+        x1=x1_ss,
+        x2=x2_ss,
+        x3=x3_ss,
+        D1=0.0,
+        D2=0.0,
     )
 
 
-def step(s: CambridgeState, p: dict[str, float], carbs_g_per_min: float,
-         iir_u_per_h: float, dt_min: float) -> None:
+def step(
+    s: CambridgeState,
+    p: dict[str, float],
+    carbs_g_per_min: float,
+    iir_u_per_h: float,
+    dt_min: float,
+) -> None:
     """Advance *s* by dt_min minutes given a carb intake rate and insulin infusion."""
     G = s.Q1 / (p["VG"] * p["BW"])
     F01c = p["F01"] * p["BW"] * (G / 4.5 if G < 4.5 else 1.0)

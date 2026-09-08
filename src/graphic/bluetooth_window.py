@@ -1,4 +1,5 @@
 """Window that scans for nearby BLE devices and lets the user connect to one."""
+
 from __future__ import annotations
 
 from PyQt6.QtGui import QCloseEvent
@@ -175,8 +176,9 @@ class BluetoothWindow(QWidget):
         self._status.setText(f"Connecting to {label}…")
         self._set_status_cell(address, "Connecting…")
 
-        session = BleSession(address, advertised, self,
-                             display_name=board_layout.device_label(advertised))
+        session = BleSession(
+            address, advertised, self, display_name=board_layout.device_label(advertised)
+        )
         session.connected.connect(self._on_connected)
         session.connect_failed.connect(self._on_connect_failed)
         session.disconnected.connect(self._on_disconnected)
@@ -202,7 +204,9 @@ class BluetoothWindow(QWidget):
 
         QTimer.singleShot(delay_ms, lambda: self._open_session(address, advertised))
 
-    def _on_connected(self, address: str, subscribed: int, notify_total: int, last_error: str) -> None:
+    def _on_connected(
+        self, address: str, subscribed: int, notify_total: int, last_error: str
+    ) -> None:
         """Report a successful connection and whether the device can push any data at all."""
         self._set_status_cell(address, "Connected")
         if notify_total == 0:

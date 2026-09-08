@@ -9,14 +9,16 @@ that the on-device sensor model itself samples from, so it also carries no
 insulin-bolus dosing beyond each model's own constant steady-state basal (the
 app only lets the user configure the model/sensor/food/exercise, not a pump).
 """
+
 from __future__ import annotations
 
 import math
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -181,7 +183,12 @@ class SimulationEngine(QThread):
         duration = max(float(duration_min), 1.0)
         with self._instant_lock:
             self._instant_food.append(
-                {"remaining_min": duration, "duration_min": duration, "carbs_g": float(carbs_g), "delivered": False}
+                {
+                    "remaining_min": duration,
+                    "duration_min": duration,
+                    "carbs_g": float(carbs_g),
+                    "delivered": False,
+                }
             )
 
     def add_instant_exercise(self, duration_min: float, intensity_pct: float) -> None:
@@ -192,7 +199,9 @@ class SimulationEngine(QThread):
         """
         duration = max(float(duration_min), 1.0)
         with self._instant_lock:
-            self._instant_exercise.append({"remaining_min": duration, "intensity_pct": float(intensity_pct)})
+            self._instant_exercise.append(
+                {"remaining_min": duration, "intensity_pct": float(intensity_pct)}
+            )
 
     def add_instant_pisa(self, duration_min: float, depth_frac: float) -> None:
         """Start a transient PISA attenuation now, without resetting the simulation.
@@ -204,8 +213,11 @@ class SimulationEngine(QThread):
         duration = max(float(duration_min), 1.0)
         with self._instant_lock:
             self._instant_pisa.append(
-                {"remaining_min": duration, "duration_min": duration,
-                 "depth": max(0.0, min(1.0, float(depth_frac)))}
+                {
+                    "remaining_min": duration,
+                    "duration_min": duration,
+                    "depth": max(0.0, min(1.0, float(depth_frac))),
+                }
             )
 
     def _pisa_factor(self, dt_min: float) -> float:
@@ -283,8 +295,10 @@ class SimulationEngine(QThread):
             while pending and pending[0][0] <= loop_s:
                 _, carbs_g = pending.pop(0)
                 active_meals.append(
-                    {"remaining_min": CSV_FOODLOG_SPREAD_MIN,
-                     "rate": carbs_g / CSV_FOODLOG_SPREAD_MIN}
+                    {
+                        "remaining_min": CSV_FOODLOG_SPREAD_MIN,
+                        "rate": carbs_g / CSV_FOODLOG_SPREAD_MIN,
+                    }
                 )
             if not pending and loop_s < dt_min * 60.0:
                 pending = sorted(foodlog)  # window looped — re-arm
@@ -305,7 +319,7 @@ class SimulationEngine(QThread):
                     still_active.append(meal)
             active_meals = still_active
 
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            timestamp = datetime.now(UTC).isoformat(timespec="seconds")
             self.expected_reading.emit(timestamp, glucose, carbs_rate, 0.0)
             print(
                 f"[engine:csv] t_sim={sim_clock_min:.2f}min row={row} glucose={glucose:.1f} "
@@ -391,7 +405,7 @@ class SimulationEngine(QThread):
             # tick's delivery as an equivalent rate too, for a comparable plot.
             carbs_rate = carbs if adapter.rate_fed else (carbs / dt_min if carbs > 0.0 else 0.0)
 
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            timestamp = datetime.now(UTC).isoformat(timespec="seconds")
             self.expected_reading.emit(timestamp, glucose, carbs_rate, exercise_pct)
             print(
                 f"[engine] t_sim={sim_clock_min:.2f}min dt={dt_min:.4f} x{self._speed_mult:g} "

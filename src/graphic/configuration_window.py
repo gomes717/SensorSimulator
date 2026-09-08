@@ -7,10 +7,11 @@ forwards every change back to the main window's existing handlers, so the
 simulation / BLE behavior is unchanged. The main window keeps Start/Pause/Stop
 and the Insert Food/Exercise Now buttons.
 """
+
 from __future__ import annotations
 
 import math
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -152,8 +153,9 @@ class ConfigurationWindow(QWidget):
         self.comm_profile_combo.currentIndexChanged.connect(self._on_comm_profile_changed)
         comm_row.addWidget(self.comm_profile_combo, 1)
         box.addLayout(comm_row)
-        comm_hint = QLabel("Switching re-advertises the board; the app drops and "
-                           "reconnects automatically (~3 s).")
+        comm_hint = QLabel(
+            "Switching re-advertises the board; the app drops and reconnects automatically (~3 s)."
+        )
         comm_hint.setWordWrap(True)
         comm_hint.setEnabled(False)
         box.addWidget(comm_hint)
@@ -243,8 +245,10 @@ class ConfigurationWindow(QWidget):
         self._csv_path_label = QLabel("—")
         self._csv_path_label.setWordWrap(True)
         box.addWidget(self._csv_path_label)
-        hint = QLabel("Pick the CSV file and 24 h window in the CSV Analysis window, "
-                      "then assign it to this patient there.")
+        hint = QLabel(
+            "Pick the CSV file and 24 h window in the CSV Analysis window, "
+            "then assign it to this patient there."
+        )
         hint.setWordWrap(True)
         hint.setEnabled(False)
         box.addWidget(hint)
@@ -318,7 +322,8 @@ class ConfigurationWindow(QWidget):
         samples, interval_s, foodlog = load_csv_window(person)
         if not samples:
             QMessageBox.warning(
-                self, "Send CSV",
+                self,
+                "Send CSV",
                 "Could not build the 24 h window — re-assign it in CSV Analysis.",
             )
             return
@@ -343,21 +348,25 @@ class ConfigurationWindow(QWidget):
         from datetime import datetime
 
         base_epoch = int(datetime.fromisoformat(person.csv_window_start_iso).timestamp())
-        uploads = [{
-            "track": protocol.CSV_TRACK_GLUCOSE,
-            "blob": protocol.build_glucose_track([float(s) for s in samples]),
-            "row_count": len(samples),
-            "base_epoch_s": base_epoch,
-            "interval_s": interval_s,
-        }]
-        if foodlog:
-            uploads.append({
-                "track": protocol.CSV_TRACK_FOODLOG,
-                "blob": protocol.build_foodlog_track(foodlog),
-                "row_count": len(foodlog),
+        uploads = [
+            {
+                "track": protocol.CSV_TRACK_GLUCOSE,
+                "blob": protocol.build_glucose_track([float(s) for s in samples]),
+                "row_count": len(samples),
                 "base_epoch_s": base_epoch,
-                "interval_s": 0,
-            })
+                "interval_s": interval_s,
+            }
+        ]
+        if foodlog:
+            uploads.append(
+                {
+                    "track": protocol.CSV_TRACK_FOODLOG,
+                    "blob": protocol.build_foodlog_track(foodlog),
+                    "row_count": len(foodlog),
+                    "base_epoch_s": base_epoch,
+                    "interval_s": 0,
+                }
+            )
 
         try:
             session.csv_upload_progress.disconnect(self._on_csv_progress)

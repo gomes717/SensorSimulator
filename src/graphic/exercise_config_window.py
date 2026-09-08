@@ -1,7 +1,8 @@
 """Window for editing the active person's recurring-daily exercise schedule."""
+
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import QTime
 from PyQt6.QtWidgets import (
@@ -104,8 +105,14 @@ class ExerciseConfigWindow(QWidget):
         layout.addWidget(self._send_status)
 
         self._edit_widgets = [
-            self._time_edit, self._duration_spin, self._intensity_spin,
-            self._add_btn, self._remove_btn, self._save_btn, self._send_btn, self._read_btn,
+            self._time_edit,
+            self._duration_spin,
+            self._intensity_spin,
+            self._add_btn,
+            self._remove_btn,
+            self._save_btn,
+            self._send_btn,
+            self._read_btn,
         ]
         self._events: list[ExerciseEvent] = []
         self.refresh()
@@ -128,7 +135,8 @@ class ExerciseConfigWindow(QWidget):
         tip = (
             "Disabled: this patient replays a recorded CSV window. The recurring "
             "exercise schedule is not used for a CSV-backed patient."
-            if is_csv else ""
+            if is_csv
+            else ""
         )
         for w in self._edit_widgets:
             w.setEnabled(not is_csv)
@@ -136,7 +144,7 @@ class ExerciseConfigWindow(QWidget):
         self._table.setEnabled(not is_csv)
         self._redraw_table()
 
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def showEvent(self, event) -> None:
         """Reload from the active person every time the window is (re)shown."""
         self.refresh()
         super().showEvent(event)

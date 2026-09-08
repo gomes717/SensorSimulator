@@ -3,6 +3,7 @@
 Deterministic per *seed* (the user id), so the same user always gets the same
 color across reconnects. No image assets.
 """
+
 from __future__ import annotations
 
 import hashlib

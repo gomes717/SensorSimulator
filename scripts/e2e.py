@@ -14,6 +14,7 @@ Usage:
   python scripts/e2e.py --reflash          # build.ps1 -Pristine + flash.ps1 first
   python scripts/e2e.py --loop 3           # run the whole thing 3 times back to back
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -36,13 +37,12 @@ from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
 
-import graphic.csv_analysis_window as cav  # noqa: E402
 import graphic.main_window as mw  # noqa: E402
-from api import ble_uuids, protocol  # noqa: E402
+from api import protocol  # noqa: E402
 from graphic.instant_event_dialog import (  # noqa: E402
-    ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog,
+    PisaInstantDialog,
 )
-from models import cambridge, deichmann, engine  # noqa: E402
+from models import cambridge  # noqa: E402
 from models.types import ModelId, PersonProfile  # noqa: E402
 from services.ble_session import BleSession  # noqa: E402
 
@@ -56,6 +56,7 @@ CGM_MEAS = "00002aa7-0000-1000-8000-00805f9b34fb"
 # ----------------------------------------------------------------------
 # Capture streams
 # ----------------------------------------------------------------------
+
 
 class Stream:
     def __init__(self, name: str, path: Path, maxlen: int) -> None:
@@ -126,11 +127,16 @@ def _kill_stray_serial_readers(port: str) -> None:
     still holding *port* open, so a fresh SerialTap can attach."""
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
-             f"Where-Object {{ $_.CommandLine -like '*SerialPort*{port}*' }} | "
-             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
-            capture_output=True, timeout=15,
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
+                f"Where-Object {{ $_.CommandLine -like '*SerialPort*{port}*' }} | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+            ],
+            capture_output=True,
+            timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -167,7 +173,10 @@ class SerialTap:
         try:
             self._proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-Command", _PS_SERIAL.format(port=self._port)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
             )
         except OSError:
             return False
@@ -210,9 +219,15 @@ class SerialTap:
 def _list_com_ports() -> list[str]:
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "[System.IO.Ports.SerialPort]::GetPortNames() -join ','"],
-            capture_output=True, text=True, timeout=15,
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "[System.IO.Ports.SerialPort]::GetPortNames() -join ','",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         ).stdout.strip()
         return [p.strip() for p in out.split(",") if p.strip()]
     except Exception:
@@ -222,6 +237,7 @@ def _list_com_ports() -> list[str]:
 # ----------------------------------------------------------------------
 # Case + context
 # ----------------------------------------------------------------------
+
 
 class _AssertFail(Exception):
     pass
@@ -236,8 +252,15 @@ class _Skip(Exception):
 
 
 class Ctx:
-    def __init__(self, w, run_dir: Path, t0: float, streams: dict[str, Stream],
-                 board_addr: str | None, serial_ok: bool) -> None:
+    def __init__(
+        self,
+        w,
+        run_dir: Path,
+        t0: float,
+        streams: dict[str, Stream],
+        board_addr: str | None,
+        serial_ok: bool,
+    ) -> None:
         self.w = w
         self.run_dir = run_dir
         self.t0 = t0
@@ -343,7 +366,7 @@ class Case:
         self.verdict = "PASS"
         self._t0 = 0.0
 
-    def __enter__(self) -> "Case":
+    def __enter__(self) -> Case:
         self._t0 = time.monotonic()
         self.ctx.mark(f">>> CASE {self.cid} {self.slug}")
         self.ctx.log_event({"kind": "case_start", "case": self.cid})
@@ -364,8 +387,9 @@ class Case:
 
     def assert_(self, ok: bool, name: str, detail: str = "") -> None:
         self.events.append((self._rel(), "assert", f"{name}: {'ok' if ok else 'FAIL'} {detail}"))
-        self.ctx.log_event({"kind": "assert", "case": self.cid, "name": name,
-                            "ok": bool(ok), "detail": detail})
+        self.ctx.log_event(
+            {"kind": "assert", "case": self.cid, "name": name, "ok": bool(ok), "detail": detail}
+        )
         if not ok:
             raise _AssertFail(f"{name}  ({detail})" if detail else name)
 
@@ -404,17 +428,29 @@ class Case:
             self.verdict = "ERROR"
             tb_text = "".join(traceback.format_exception(et, ev, tb))
 
-        note = str(ev) if ev is not None else ", ".join(
-            f"{k}={v}" for k, v in list(self.measures.items())[:4]
+        note = (
+            str(ev)
+            if ev is not None
+            else ", ".join(f"{k}={v}" for k, v in list(self.measures.items())[:4])
         )
         if self.verdict in ("FAIL", "TIMEOUT", "ERROR"):
             self._write_failure_md(note, tb_text)
 
-        (self.dir / "result.json").write_text(json.dumps({
-            "case": self.cid, "slug": self.slug, "suite": self.suite,
-            "verdict": self.verdict, "duration_s": dur, "measures": self.measures,
-            "events": [{"t": round(t, 2), "kind": k, "msg": m} for t, k, m in self.events],
-        }, indent=2), encoding="utf-8")
+        (self.dir / "result.json").write_text(
+            json.dumps(
+                {
+                    "case": self.cid,
+                    "slug": self.slug,
+                    "suite": self.suite,
+                    "verdict": self.verdict,
+                    "duration_s": dur,
+                    "measures": self.measures,
+                    "events": [{"t": round(t, 2), "kind": k, "msg": m} for t, k, m in self.events],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         self.ctx.record(self.cid, self.suite, self.verdict, note)
         self.ctx.log_event({"kind": "case_end", "case": self.cid, "verdict": self.verdict})
         return True  # never propagate — keep the run going
@@ -422,15 +458,29 @@ class Case:
     def _write_failure_md(self, note: str, tb_text: str | None) -> None:
         tl = "\n".join(f"  {t:6.2f}  {k:7}  {m}" for t, k, m in self.events)
         parts = [
-            f"# {self.cid} {self.slug} — {self.verdict}", "",
-            f"**{note}**", "",
-            "## Timeline (relative s)", "```", tl, "```", "",
-            "## Firmware serial — last 120 lines", "```",
-            "\n".join(self.ctx.streams["serial"].tail(120)), "```", "",
-            "## BLE traffic — last 60", "```",
-            "\n".join(self.ctx.streams["ble"].tail(60)), "```", "",
-            "## App log — last 40", "```",
-            "\n".join(self.ctx.streams["app"].tail(40)), "```",
+            f"# {self.cid} {self.slug} — {self.verdict}",
+            "",
+            f"**{note}**",
+            "",
+            "## Timeline (relative s)",
+            "```",
+            tl,
+            "```",
+            "",
+            "## Firmware serial — last 120 lines",
+            "```",
+            "\n".join(self.ctx.streams["serial"].tail(120)),
+            "```",
+            "",
+            "## BLE traffic — last 60",
+            "```",
+            "\n".join(self.ctx.streams["ble"].tail(60)),
+            "```",
+            "",
+            "## App log — last 40",
+            "```",
+            "\n".join(self.ctx.streams["app"].tail(40)),
+            "```",
         ]
         if tb_text:
             parts += ["", "## Python traceback", "```", tb_text, "```"]
@@ -440,6 +490,7 @@ class Case:
 # ----------------------------------------------------------------------
 # Shared helpers
 # ----------------------------------------------------------------------
+
 
 def pump(ms: int) -> None:
     QTest.qWait(ms)
@@ -458,16 +509,21 @@ def cgm_stream(ctx: Ctx) -> list[tuple[float, float]]:
 def dexcom_stream(ctx: Ctx) -> list[float]:
     """Glucose values that came specifically from the Dexcom-style decoder
     (only it adds a `sequence` field)."""
-    return [float(m["glucose_value"]) for m in ctx.w._ble_log.get_messages()
-            if "sequence" in m and m.get("glucose_value") is not None]
+    return [
+        float(m["glucose_value"])
+        for m in ctx.w._ble_log.get_messages()
+        if "sequence" in m and m.get("glucose_value") is not None
+    ]
 
 
 def sig_stream(ctx: Ctx) -> list[float]:
     """Glucose values from the standard SIG CGM Measurement decoder (has
     `time_offset_min` / `flags`, never `sequence`)."""
-    return [float(m["glucose_value"]) for m in ctx.w._ble_log.get_messages()
-            if m.get("glucose_value") is not None and "sequence" not in m
-            and "flags" in m]
+    return [
+        float(m["glucose_value"])
+        for m in ctx.w._ble_log.get_messages()
+        if m.get("glucose_value") is not None and "sequence" not in m and "flags" in m
+    ]
 
 
 def new_person(w, name: str, model=ModelId.CAMBRIDGE, params=None) -> PersonProfile:
@@ -496,12 +552,16 @@ def set_speed(w, mult: int) -> None:
 # Cases  (each: fn(ctx) using `with Case(...) as c:`)
 # ----------------------------------------------------------------------
 
+
 def s1_connect(ctx: Ctx):
     with Case(ctx, "S1-02", "connect_pair_subscribe", "S1") as c:
         sess = ctx.require_board()
         c.step("connected; checking subscriptions")
-        c.wait_until(lambda: any("glucose_value" in m for m in ctx.w._ble_log.get_messages()),
-                     30, "first CGM notification")
+        c.wait_until(
+            lambda: any("glucose_value" in m for m in ctx.w._ble_log.get_messages()),
+            30,
+            "first CGM notification",
+        )
         c.assert_(sess is not None, "session live")
 
 
@@ -516,8 +576,11 @@ def s2_stream_shape(ctx: Ctx):
         vals = [g for _, g in cgm_stream(ctx)[n0:]]
         c.measure("n", len(vals))
         c.measure("range", f"{min(vals):.0f}-{max(vals):.0f}")
-        c.assert_(all(20 <= v <= 500 for v in vals), "all plausible mg/dL",
-                  f"{min(vals):.0f}..{max(vals):.0f}")
+        c.assert_(
+            all(20 <= v <= 500 for v in vals),
+            "all plausible mg/dL",
+            f"{min(vals):.0f}..{max(vals):.0f}",
+        )
         if ctx.serial_live():
             c.assert_(ctx.serial_has("model_tick"), "serial shows model_tick (board is ticking)")
 
@@ -564,8 +627,11 @@ def s5_speed(ctx: Ctx):
         ctx.wait_serial(lambda: ctx.serial_has("dt=1.0000"), 15, "serial dt=1.0000 at x60")
         c.assert_(True, "board dt scaled to x60")
         sess.queue_write("speed", protocol.encode_speed(1000.0))
-        ctx.wait_serial(lambda: ctx.serial_has("dt=16.6") or ctx.serial_has("dt=16.7"),
-                        15, "serial dt~16.67 at x1000")
+        ctx.wait_serial(
+            lambda: ctx.serial_has("dt=16.6") or ctx.serial_has("dt=16.7"),
+            15,
+            "serial dt~16.67 at x1000",
+        )
         c.assert_(True, "board dt scaled to x1000")
         sess.queue_write("speed", protocol.encode_speed(1.0))
 
@@ -583,8 +649,10 @@ def s7_pisa(ctx: Ctx):
         c.measure("baseline", round(base, 1))
         c.step("inject PISA 40% / 12 min")
         PisaInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(12), self._depth_spin.setValue(40.0),
-            QDialog.DialogCode.Accepted)[-1]
+            self._duration_spin.setValue(12),
+            self._depth_spin.setValue(40.0),
+            QDialog.DialogCode.Accepted,
+        )[-1]
         w._open_insert_pisa()
         c.wait_until(lambda: len(w._graph_y) >= base_n + 12, 20, "post-event points")
         post = w._graph_y[base_n:]
@@ -602,7 +670,9 @@ def s8_csv(ctx: Ctx):
     with Case(ctx, "S8-02", "csv_playback_exact", "S8") as c:
         sess = ctx.require_board()
         from datetime import datetime as _dt
+
         from models import dexcom_csv
+
         rows = dexcom_csv.read_egv(DEXCOM_CSV)
         start = rows[0][0]
         samples = dexcom_csv.resample(rows, start, dexcom_csv.DEFAULT_INTERVAL_S)
@@ -610,10 +680,17 @@ def s8_csv(ctx: Ctx):
         c.step(f"upload {len(samples)} rows ({len(blob)} B)")
         up = {"done": False, "ok": False, "msg": ""}
         sess.csv_upload_finished.connect(lambda _a, ok, m: up.update(done=True, ok=ok, msg=m))
-        sess.start_csv_upload([{
-            "track": protocol.CSV_TRACK_GLUCOSE, "blob": blob, "row_count": len(samples),
-            "base_epoch_s": int(_dt.now().timestamp()), "interval_s": dexcom_csv.DEFAULT_INTERVAL_S,
-        }])
+        sess.start_csv_upload(
+            [
+                {
+                    "track": protocol.CSV_TRACK_GLUCOSE,
+                    "blob": blob,
+                    "row_count": len(samples),
+                    "base_epoch_s": int(_dt.now().timestamp()),
+                    "interval_s": dexcom_csv.DEFAULT_INTERVAL_S,
+                }
+            ]
+        )
         c.wait_until(lambda: up["done"], 30, "upload finished")
         c.assert_(up["ok"], "upload ok", up["msg"])
         sess.queue_write("data_source", protocol.encode_data_source(True))
@@ -625,7 +702,9 @@ def s8_csv(ctx: Ctx):
         got = [g for _, g in cgm_stream(ctx)[before:]]
         rowset = set(samples[:30])
         c.measure("got", got[:8])
-        c.assert_(any(g in rowset for g in got), "streamed values are CSV rows (not the flat model line)")
+        c.assert_(
+            any(g in rowset for g in got), "streamed values are CSV rows (not the flat model line)"
+        )
         c.assert_(not all(g == 100.0 for g in got), "not the model default")
         sess.queue_write("data_source", protocol.encode_data_source(False))
 
@@ -660,9 +739,13 @@ def s16_comm_profile(ctx: Ctx):
         dex = _switch_profile(ctx, c, dexcom=True)
         c.measure("dexcom_vals", dex[:5])
         c.assert_(all(20 <= g <= 500 for g in dex), "Dexcom stream decodes plausible", f"{dex[:5]}")
-        c.assert_(len(dexcom_stream(ctx)) > 0, "app received Dexcom-format messages (with sequence)")
-        c.assert_((ctx.serial_has("pushed dexcom") if ctx.serial_live() else True),
-                  "firmware pushing dexcom messages")
+        c.assert_(
+            len(dexcom_stream(ctx)) > 0, "app received Dexcom-format messages (with sequence)"
+        )
+        c.assert_(
+            (ctx.serial_has("pushed dexcom") if ctx.serial_live() else True),
+            "firmware pushing dexcom messages",
+        )
 
         c.step("switch back to SIG CGMS")
         sig2 = _switch_profile(ctx, c, dexcom=False)
@@ -675,6 +758,7 @@ def s16_comm_profile(ctx: Ctx):
 def s10_window(ctx: Ctx):
     with Case(ctx, "S10-01", "rolling_window", "S10") as c:
         from models import app_settings
+
         w = ctx.w
         new_person(w, "E2E Window", ModelId.CAMBRIDGE, cambridge.default_params())
         w._configuration_window.model_only_check.setChecked(True)
@@ -692,7 +776,9 @@ def s10_window(ctx: Ctx):
         w._on_view_window_changed()
         pump(200)
         restored = w._visible_xlim[1] - w._visible_xlim[0]
-        c.measure("full_s", round(full)); c.measure("win_s", round(win, 1)); c.measure("vis", f"{vis}/{total}")
+        c.measure("full_s", round(full))
+        c.measure("win_s", round(win, 1))
+        c.measure("vis", f"{vis}/{total}")
         c.assert_(win <= 6.0, "windowed span ~5 s", f"{win:.1f}")
         c.assert_(vis < total, "fewer points visible when windowed")
         c.assert_(restored >= full - 1.0, "'Entire run' restores full span")
@@ -704,6 +790,7 @@ def s10_window(ctx: Ctx):
 def s17_scenario(ctx: Ctx):
     with Case(ctx, "S17-01", "scenario_runner", "S17") as c:
         from models import scenario as scn
+
         w = ctx.w
         new_person(w, "E2E Scenario", ModelId.CAMBRIDGE, cambridge.default_params())
         w._configuration_window.model_only_check.setChecked(True)
@@ -738,8 +825,11 @@ def s17_scenario(ctx: Ctx):
         c.measure("steps", len(fired))
         c.measure("seen", dict(seen))
         c.assert_(len(fired) >= len(actions), "every action fired", f"{len(fired)}/{len(actions)}")
-        c.assert_(seen["speed"] and seen["food"] and seen["pisa"] and seen["start"] and seen["stop"],
-                  "speed / food / PISA / start / stop all dispatched", str(seen))
+        c.assert_(
+            seen["speed"] and seen["food"] and seen["pisa"] and seen["start"] and seen["stop"],
+            "speed / food / PISA / start / stop all dispatched",
+            str(seen),
+        )
         c.assert_(w._speed_mult == 60.0, "speed action reached the app", f"x{w._speed_mult}")
         QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
         w._configuration_window.model_only_check.setChecked(False)
@@ -763,16 +853,21 @@ def s3_person(ctx: Ctx):
     with Case(ctx, "S3-01", "person_roundtrip", "S3") as c:
         sess = ctx.require_board()
         from models import uva_padova
+
         params = {**uva_padova.default_params(), "BW": 77.5, "VG": 1.61}
         sess.queue_write("person", protocol.encode_person_config(ModelId.UVA_PADOVA, params))
         pump(900)
         mid, got = protocol.decode_person_config(_read_char(sess, "person", c))
         c.measure("model_id", int(mid))
         c.assert_(mid == ModelId.UVA_PADOVA, "model id round-trips", str(mid))
-        c.assert_(abs(got.get("BW", 0) - 77.5) < 0.05 and abs(got.get("VG", 0) - 1.61) < 0.05,
-                  "params round-trip", f"BW={got.get('BW')} VG={got.get('VG')}")
-        sess.queue_write("person", protocol.encode_person_config(
-            ModelId.CAMBRIDGE, cambridge.default_params()))
+        c.assert_(
+            abs(got.get("BW", 0) - 77.5) < 0.05 and abs(got.get("VG", 0) - 1.61) < 0.05,
+            "params round-trip",
+            f"BW={got.get('BW')} VG={got.get('VG')}",
+        )
+        sess.queue_write(
+            "person", protocol.encode_person_config(ModelId.CAMBRIDGE, cambridge.default_params())
+        )
         pump(700)
 
 
@@ -780,9 +875,12 @@ def s3_food_events(ctx: Ctx):
     with Case(ctx, "S3-05", "food_events_roundtrip", "S3") as c:
         sess = ctx.require_board()
         from models.types import FoodEvent
-        evs = [FoodEvent(time_of_day_min=420, duration_min=30, carbs_g=45.0),
-               FoodEvent(time_of_day_min=780, duration_min=45, carbs_g=70.0),
-               FoodEvent(time_of_day_min=1140, duration_min=30, carbs_g=55.0)]
+
+        evs = [
+            FoodEvent(time_of_day_min=420, duration_min=30, carbs_g=45.0),
+            FoodEvent(time_of_day_min=780, duration_min=45, carbs_g=70.0),
+            FoodEvent(time_of_day_min=1140, duration_min=30, carbs_g=55.0),
+        ]
         sess.queue_write("food", protocol.encode_clear_food())
         for e in evs:
             sess.queue_write("food", protocol.encode_food_event(e))
@@ -790,8 +888,11 @@ def s3_food_events(ctx: Ctx):
         back = protocol.decode_food_events(_read_char(sess, "food_list", c))
         c.measure("count", len(back))
         c.assert_(len(back) == 3, "3 events stored", str(len(back)))
-        c.assert_(abs(back[1].carbs_g - 70.0) < 0.1 and back[1].time_of_day_min == 780,
-                  "event fields round-trip", f"{back[1]}")
+        c.assert_(
+            abs(back[1].carbs_g - 70.0) < 0.1 and back[1].time_of_day_min == 780,
+            "event fields round-trip",
+            f"{back[1]}",
+        )
         sess.queue_write("food", protocol.encode_clear_food())
         pump(600)
 
@@ -799,17 +900,20 @@ def s3_food_events(ctx: Ctx):
 def s6_steady_state(ctx: Ctx):
     with Case(ctx, "S6-01", "cambridge_steady_state", "S6") as c:
         sess = ctx.require_board()
-        sess.queue_write("person", protocol.encode_person_config(
-            ModelId.CAMBRIDGE, cambridge.default_params()))
+        sess.queue_write(
+            "person", protocol.encode_person_config(ModelId.CAMBRIDGE, cambridge.default_params())
+        )
         sess.queue_write("data_source", protocol.encode_data_source(False))
         sess.queue_write("speed", protocol.encode_speed(60.0))
         sess.queue_write("run_state", protocol.encode_run_state(0))
         sess.queue_write("run_state", protocol.encode_run_state(1))
         n0 = len(cgm_stream(ctx))
         c.wait_until(lambda: len(cgm_stream(ctx)) >= n0 + 6, 45, ">=6 samples")
-        vals = [g for _, g in cgm_stream(ctx)[n0 + 2:]]
+        vals = [g for _, g in cgm_stream(ctx)[n0 + 2 :]]
         c.measure("mean", round(sum(vals) / len(vals), 1))
-        c.assert_(all(80 <= v <= 120 for v in vals), "Cambridge sits near euglycaemia", f"{vals[:6]}")
+        c.assert_(
+            all(80 <= v <= 120 for v in vals), "Cambridge sits near euglycaemia", f"{vals[:6]}"
+        )
         sess.queue_write("speed", protocol.encode_speed(1.0))
 
 
@@ -865,13 +969,17 @@ def s7_instant_food_no_reset(ctx: Ctx):
                 after.append(v)
         c.measure("after", after)
         mono = all(b >= a - 0.1 for a, b in zip(after, after[1:]))
-        no_backjump = bool(after) and after[0] >= base - 1.0        # not reset to ~0
-        kept_climbing = bool(after) and after[-1] >= base + 2.0     # advanced ≥2 sim-min
-        c.assert_(mono and no_backjump and kept_climbing,
-                  "sim clock kept advancing across the injection (no reset)",
-                  f"baseline@{base} then {after}")
-        c.assert_(not any("applied config" in ln for ln in ctx.serial.tail(30)),
-                  "no config re-apply logged for the instant event")
+        no_backjump = bool(after) and after[0] >= base - 1.0  # not reset to ~0
+        kept_climbing = bool(after) and after[-1] >= base + 2.0  # advanced ≥2 sim-min
+        c.assert_(
+            mono and no_backjump and kept_climbing,
+            "sim clock kept advancing across the injection (no reset)",
+            f"baseline@{base} then {after}",
+        )
+        c.assert_(
+            not any("applied config" in ln for ln in ctx.serial.tail(30)),
+            "no config re-apply logged for the instant event",
+        )
         sess.queue_write("speed", protocol.encode_speed(1.0))
 
 
@@ -883,8 +991,9 @@ def s8_bad_crc(ctx: Ctx):
         sess.csv_upload_finished.connect(lambda _a, ok, m: notes.append((ok, m)))
         # BEGIN with a deliberately wrong CRC, send data, COMMIT -> firmware must ERR
         good = protocol.csv_crc32(blob)
-        begin = protocol.encode_csv_begin(protocol.CSV_TRACK_GLUCOSE, 20, 0, 2, len(blob),
-                                          good ^ 0xFFFF)
+        begin = protocol.encode_csv_begin(
+            protocol.CSV_TRACK_GLUCOSE, 20, 0, 2, len(blob), good ^ 0xFFFF
+        )
         sess.queue_write("csv_control", begin)
         pump(700)
         for chunk in protocol.iter_csv_data_chunks(blob, 200):
@@ -892,13 +1001,18 @@ def s8_bad_crc(ctx: Ctx):
         pump(400)
         sess.queue_write("csv_control", protocol.encode_csv_commit(protocol.CSV_TRACK_GLUCOSE))
         pump(2000)
-        crc_logged = ((ctx.serial_has("CRC mismatch") or ctx.serial_has("commit CRC"))
-                      if ctx.serial_live() else True)
+        crc_logged = (
+            (ctx.serial_has("CRC mismatch") or ctx.serial_has("commit CRC"))
+            if ctx.serial_live()
+            else True
+        )
         c.assert_(crc_logged, "firmware reported a CRC mismatch on commit")
         # board must still be alive & streaming
         n0 = len(cgm_stream(ctx))
         sess.queue_write("run_state", protocol.encode_run_state(1))
-        c.wait_until(lambda: len(cgm_stream(ctx)) > n0, 20, "board still streaming after bad upload")
+        c.wait_until(
+            lambda: len(cgm_stream(ctx)) > n0, 20, "board still streaming after bad upload"
+        )
         c.assert_(len(cgm_stream(ctx)) > n0, "board survived the bad upload")
 
 
@@ -912,12 +1026,16 @@ def s9_cgms_only(ctx: Ctx):
         c.step("enable CGMS Only, then attempt a person-config write")
         sess.queue_write("cgms_only", protocol.encode_cgms_only(True))
         pump(1500)
-        sess.queue_write("person", protocol.encode_person_config(
-            ModelId.CAMBRIDGE, cambridge.default_params()))
+        sess.queue_write(
+            "person", protocol.encode_person_config(ModelId.CAMBRIDGE, cambridge.default_params())
+        )
         pump(1500)
         c.measure("rejected", [k for k, _ in rejected])
-        c.assert_(any(k == "person" for k, _ in rejected),
-                  "person write rejected while CGMS-only", str(rejected))
+        c.assert_(
+            any(k == "person" for k, _ in rejected),
+            "person write rejected while CGMS-only",
+            str(rejected),
+        )
         c.step("disable CGMS Only")
         sess.queue_write("cgms_only", protocol.encode_cgms_only(False))
         sess.queue_write("run_state", protocol.encode_run_state(1))
@@ -942,7 +1060,9 @@ def s12_malformed(ctx: Ctx):
         sess.queue_write("speed", protocol.encode_speed(1.0))
         pump(600)
         got = protocol.decode_speed(_read_char(sess, "speed", c))
-        c.assert_(abs(got - 1.0) < 0.5, "valid write still accepted after malformed ones", f"got {got}")
+        c.assert_(
+            abs(got - 1.0) < 0.5, "valid write still accepted after malformed ones", f"got {got}"
+        )
 
 
 def _read_char(sess: BleSession, key: str, c: Case) -> bytes:
@@ -977,19 +1097,22 @@ SMOKE = ["S1", "S2", "S5", "S6", "S7", "S16", "S17"]
 
 # ----------------------------------------------------------------------
 
+
 def _git_sha(path: str) -> str:
     try:
-        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(_ROOT),
-                             capture_output=True, text=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", path], cwd=str(_ROOT),
-                               capture_output=True, text=True).stdout.strip()
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=str(_ROOT), capture_output=True, text=True
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", path], cwd=str(_ROOT), capture_output=True, text=True
+        ).stdout.strip()
         return sha + ("-dirty" if dirty else "")
     except Exception:
         return "?"
 
 
 def run_once(args) -> int:
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%SZ")
     run_dir = Path(args.out) / run_id
     (run_dir / "cases").mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
@@ -1013,41 +1136,67 @@ def run_once(args) -> int:
     pump(400)
 
     # BLE traffic taps
-    w._ble_log.new_message.connect(lambda m: streams["ble"].add(json.dumps({
-        "dir": "in", "char": (m.get("characteristic") or "")[-4:],
-        "glucose": m.get("glucose_value"), "carbs": m.get("carbs_g_per_min"),
-        "raw": m.get("raw_hex"),
-    }), time.monotonic() - t0))
+    w._ble_log.new_message.connect(
+        lambda m: streams["ble"].add(
+            json.dumps(
+                {
+                    "dir": "in",
+                    "char": (m.get("characteristic") or "")[-4:],
+                    "glucose": m.get("glucose_value"),
+                    "carbs": m.get("carbs_g_per_min"),
+                    "raw": m.get("raw_hex"),
+                }
+            ),
+            time.monotonic() - t0,
+        )
+    )
     _orig_qw = BleSession.queue_write
 
     def _qw(self, key, payload):
-        streams["ble"].add(json.dumps({"dir": "out", "char": key, "hex": payload.hex()}),
-                           time.monotonic() - t0)
+        streams["ble"].add(
+            json.dumps({"dir": "out", "char": key, "hex": payload.hex()}), time.monotonic() - t0
+        )
         return _orig_qw(self, key, payload)
 
     BleSession.queue_write = _qw
 
     ctx = Ctx(w, run_dir, t0, streams, board, serial_ok)
-    (run_dir / "environment.json").write_text(json.dumps({
-        "run_id": run_id, "board": board, "serial_port": SERIAL_PORT if serial_ok else None,
-        "fw_sha": _git_sha("firmware/"), "app_sha": _git_sha("src/"),
-        "python": sys.version.split()[0],
-        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }, indent=2), encoding="utf-8")
+    (run_dir / "environment.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "board": board,
+                "serial_port": SERIAL_PORT if serial_ok else None,
+                "fw_sha": _git_sha("firmware/"),
+                "app_sha": _git_sha("src/"),
+                "python": sys.version.split()[0],
+                "started": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
-    only = ({s.strip().upper() for s in args.only.split(",")} if args.only
-            else set(SMOKE) if args.smoke else set(SUITES))
+    only = (
+        {s.strip().upper() for s in args.only.split(",")}
+        if args.only
+        else set(SMOKE)
+        if args.smoke
+        else set(SUITES)
+    )
     try:
         # Preflight: put the board in a known state so cases don't inherit
         # STOPPED / CSV / x1000 / Dexcom from a previous run.
         if board:
             try:
                 pf = ctx.connect_board()
-                for k, v in (("comm_profile", protocol.encode_comm_profile(False)),
-                             ("data_source", protocol.encode_data_source(False)),
-                             ("cgms_only", protocol.encode_cgms_only(False)),
-                             ("speed", protocol.encode_speed(1.0)),
-                             ("run_state", protocol.encode_run_state(1))):
+                for k, v in (
+                    ("comm_profile", protocol.encode_comm_profile(False)),
+                    ("data_source", protocol.encode_data_source(False)),
+                    ("cgms_only", protocol.encode_cgms_only(False)),
+                    ("speed", protocol.encode_speed(1.0)),
+                    ("run_state", protocol.encode_run_state(1)),
+                ):
                     pf.queue_write(k, v)
                 pump(3000)
                 ctx.log_event({"kind": "preflight", "ok": True})
@@ -1068,14 +1217,16 @@ def run_once(args) -> int:
         ctx.stop_sessions()
         if tap:
             tap.stop()
-        subprocess.run(["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-                       cwd=str(_ROOT), check=False)
+        subprocess.run(
+            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
+            cwd=str(_ROOT),
+            check=False,
+        )
 
     counts: dict[str, int] = {}
     for _cid, _suite, verdict, _note in ctx.results:
         counts[verdict] = counts.get(verdict, 0) + 1
-    lines = [f"# e2e {run_id}", "",
-             "  ".join(f"{v}:{n}" for v, n in sorted(counts.items())), ""]
+    lines = [f"# e2e {run_id}", "", "  ".join(f"{v}:{n}" for v, n in sorted(counts.items())), ""]
     for cid, suite, verdict, note in ctx.results:
         lines.append(f"- {verdict:8} {cid:9} {note}")
     (run_dir / "SUMMARY.md").write_text("\n".join(lines), encoding="utf-8")
@@ -1095,7 +1246,9 @@ def run_once(args) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--board", default=DEFAULT_BOARD)
     ap.add_argument("--no-board", action="store_true")
     ap.add_argument("--only", default="")
@@ -1107,10 +1260,25 @@ def main() -> int:
 
     if args.reflash:
         print("reflashing firmware…")
-        subprocess.run(["powershell", "-NoProfile", "-File",
-                        str(_ROOT / "firmware" / "scripts" / "build.ps1"), "-Pristine"], check=True)
-        subprocess.run(["powershell", "-NoProfile", "-File",
-                        str(_ROOT / "firmware" / "scripts" / "flash.ps1")], check=True)
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-File",
+                str(_ROOT / "firmware" / "scripts" / "build.ps1"),
+                "-Pristine",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-File",
+                str(_ROOT / "firmware" / "scripts" / "flash.ps1"),
+            ],
+            check=True,
+        )
         time.sleep(3)
 
     if args.loop > 1:

@@ -1,14 +1,15 @@
 """Shared 'Target device' combo box used by the four simulator config windows."""
+
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
 from api import protocol
-from services.ble_session import BleSession
 from graphic.bluetooth_window import BluetoothWindow
+from services.ble_session import BleSession
 
 SEND_CONFIRMATION_TIMEOUT_MS = 3000
 
@@ -97,7 +98,7 @@ class DeviceTargetBar(QWidget):
         self._poll.start(2000)
         self.refresh()
 
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def showEvent(self, event) -> None:
         self.refresh()
         super().showEvent(event)
 

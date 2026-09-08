@@ -1,9 +1,12 @@
 """Main application window: toolbar, user treeview, glucose graph, food/exercise graph,
 and the person/sensor/mode selector bar."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+import matplotlib  # pylint: disable=wrong-import-order
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QBrush, QCloseEvent, QColor, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
@@ -23,12 +26,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
 
-import matplotlib  # pylint: disable=wrong-import-order
 matplotlib.use("QtAgg")
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
@@ -40,11 +41,11 @@ from graphic.csv_analysis_window import CsvAnalysisWindow
 from graphic.debug_window import DebugWindow
 from graphic.device_target import restart_board
 from graphic.exercise_config_window import ExerciseConfigWindow
-from graphic.food_config_window import FoodConfigWindow
 from graphic.fault_panel import FaultPanel
+from graphic.food_config_window import FoodConfigWindow
 from graphic.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
-from graphic.scenario_window import ScenarioWindow
 from graphic.person_config_window import PersonConfigWindow
+from graphic.scenario_window import ScenarioWindow
 from graphic.sensor_config_window import SensorConfigWindow
 from graphic.view_config_window import ViewConfigWindow
 from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
@@ -130,7 +131,7 @@ class MainWindow(QMainWindow):
         # pushes every ~5s) and the expected line (local engine ticks every 1s)
         # correctly aligned on the same time axis despite their different
         # cadences — a step-index axis made the faster line look compressed.
-        self._graph_t0 = datetime.now(timezone.utc)
+        self._graph_t0 = datetime.now(UTC)
 
         self._user_items: dict[str, QTreeWidgetItem] = {}
         self.tree = self._build_tree()
@@ -308,7 +309,10 @@ class MainWindow(QMainWindow):
             [], [], lw=1.5, color=accent, linestyle="--", alpha=0.7, label="Expected (model)"
         )
         legend = ax.legend(
-            loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3, fontsize=8,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=3,
+            fontsize=8,
             frameon=False,
         )
         for text in legend.get_texts():
@@ -403,8 +407,12 @@ class MainWindow(QMainWindow):
 
         lines = [carbs_line, exercise_line]
         legend = ax.legend(
-            lines, [line.get_label() for line in lines],
-            loc="upper center", bbox_to_anchor=(0.5, -0.34), ncol=2, fontsize=8,
+            lines,
+            [line.get_label() for line in lines],
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.34),
+            ncol=2,
+            fontsize=8,
             frameon=False,
         )
         for text in legend.get_texts():
@@ -460,9 +468,15 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(group)
         self._stat_value_labels: dict[str, QLabel] = {}
         cells = (
-            ("tir", "TIR"), ("tbr", "TBR"), ("tbr1", "TBR1"), ("tbr2", "TBR2"),
-            ("tar", "TAR"), ("tar1", "TAR1"), ("tar2", "TAR2"),
-            ("mean", "Mean"), ("variance", "Variance"),
+            ("tir", "TIR"),
+            ("tbr", "TBR"),
+            ("tbr1", "TBR1"),
+            ("tbr2", "TBR2"),
+            ("tar", "TAR"),
+            ("tar1", "TAR1"),
+            ("tar2", "TAR2"),
+            ("mean", "Mean"),
+            ("variance", "Variance"),
         )
         for i, (key, caption) in enumerate(cells):
             row, col = divmod(i, 5)
@@ -577,12 +591,16 @@ class MainWindow(QMainWindow):
     def _rebuild_graphs(self) -> None:
         """Recreate both matplotlib canvases in place, preserving the current data."""
         sizes = self._right_splitter.sizes()
+        (self._figure, self._canvas, self._ax, self._line, self._expected_line) = (
+            self._build_graph()
+        )
         (
-            self._figure, self._canvas, self._ax, self._line, self._expected_line
-        ) = self._build_graph()
-        (
-            self._fe_figure, self._fe_canvas, self._fe_ax, self._fe_ax2,
-            self._carbs_line, self._exercise_line,
+            self._fe_figure,
+            self._fe_canvas,
+            self._fe_ax,
+            self._fe_ax2,
+            self._carbs_line,
+            self._exercise_line,
         ) = self._build_food_exercise_graph()
         old_g = self._right_splitter.replaceWidget(0, self._canvas)
         old_fe = self._right_splitter.replaceWidget(1, self._fe_canvas)
@@ -628,7 +646,9 @@ class MainWindow(QMainWindow):
         """Open (or raise) the Food configuration window for the active person."""
         if self._food_config_window is None:
             self._food_config_window = FoodConfigWindow(
-                lambda: self._active_person, self._on_profiles_changed, self._ensure_bluetooth_window
+                lambda: self._active_person,
+                self._on_profiles_changed,
+                self._ensure_bluetooth_window,
             )
         self._food_config_window.show()
         self._food_config_window.raise_()
@@ -638,7 +658,9 @@ class MainWindow(QMainWindow):
         """Open (or raise) the Exercise configuration window for the active person."""
         if self._exercise_config_window is None:
             self._exercise_config_window = ExerciseConfigWindow(
-                lambda: self._active_person, self._on_profiles_changed, self._ensure_bluetooth_window
+                lambda: self._active_person,
+                self._on_profiles_changed,
+                self._ensure_bluetooth_window,
             )
         self._exercise_config_window.show()
         self._exercise_config_window.raise_()
@@ -674,8 +696,11 @@ class MainWindow(QMainWindow):
         dialogs so they show a Slot picker only when it means something."""
         if self._bluetooth_window is None:
             return 1
-        return 4 if any(s.slot_index is not None
-                        for s in self._bluetooth_window.sessions().values()) else 1
+        return (
+            4
+            if any(s.slot_index is not None for s in self._bluetooth_window.sessions().values())
+            else 1
+        )
 
     def _send_instant(self, char_key: str, payload: bytes, slot: int | None) -> None:
         """Send a one-shot event over BLE: to one session with a sensor-select
@@ -701,8 +726,12 @@ class MainWindow(QMainWindow):
         applied on top of whatever's already running, no reset. See
         PROTOCOL_SPEC.md's "Instant food/exercise events" section.
         """
-        if self._engine is None and (self._bluetooth_window is None or not self._bluetooth_window.sessions()):
-            QMessageBox.information(self, "Insert Food Now", "Nothing running to insert into — start a run first.")
+        if self._engine is None and (
+            self._bluetooth_window is None or not self._bluetooth_window.sessions()
+        ):
+            QMessageBox.information(
+                self, "Insert Food Now", "Nothing running to insert into — start a run first."
+            )
             return
         dialog = FoodInstantDialog(self, slots=self._multi_slot_count())
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -711,8 +740,9 @@ class MainWindow(QMainWindow):
         slot = dialog.selected_slot()
         if slot is None and self._engine is not None:
             self._engine.add_instant_food(duration_min, carbs_g)
-        self._send_instant("food_instant",
-                           protocol.encode_food_instant(duration_min, carbs_g), slot)
+        self._send_instant(
+            "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
+        )
 
     def _open_insert_exercise(self) -> None:
         """Prompt for a one-shot exercise bout and inject it into the running simulation now.
@@ -720,7 +750,9 @@ class MainWindow(QMainWindow):
         Same non-disruptive semantics as _open_insert_food, via the
         exercise_instant characteristic.
         """
-        if self._engine is None and (self._bluetooth_window is None or not self._bluetooth_window.sessions()):
+        if self._engine is None and (
+            self._bluetooth_window is None or not self._bluetooth_window.sessions()
+        ):
             QMessageBox.information(
                 self, "Insert Exercise Now", "Nothing running to insert into — start a run first."
             )
@@ -732,12 +764,15 @@ class MainWindow(QMainWindow):
         slot = dialog.selected_slot()
         if slot is None and self._engine is not None:
             self._engine.add_instant_exercise(duration_min, intensity_pct)
-        self._send_instant("exercise_instant",
-                           protocol.encode_exercise_instant(duration_min, intensity_pct), slot)
+        self._send_instant(
+            "exercise_instant", protocol.encode_exercise_instant(duration_min, intensity_pct), slot
+        )
 
     def _open_insert_pisa(self) -> None:
         """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
-        if self._engine is None and (self._bluetooth_window is None or not self._bluetooth_window.sessions()):
+        if self._engine is None and (
+            self._bluetooth_window is None or not self._bluetooth_window.sessions()
+        ):
             QMessageBox.information(
                 self, "Insert PISA Now", "Nothing running to insert into — start a run first."
             )
@@ -761,11 +796,12 @@ class MainWindow(QMainWindow):
         duration_min, depth_frac = values
         if slot is None and self._engine is not None:
             self._engine.add_instant_pisa(duration_min, depth_frac)
-        self._send_instant("pisa_instant",
-                           protocol.encode_pisa_instant(duration_min, depth_frac), slot)
+        self._send_instant(
+            "pisa_instant", protocol.encode_pisa_instant(duration_min, depth_frac), slot
+        )
         # Shade the affected interval: duration is simulated minutes; the graph
         # x-axis is wall-clock seconds, so scale by the current speed multiplier.
-        t0 = self._elapsed_seconds(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        t0 = self._elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
         self._pisa_spans.append((t0, t0 + duration_min * 60.0 / self._speed_mult))
         self._redraw_graph()
 
@@ -802,7 +838,9 @@ class MainWindow(QMainWindow):
                     self._cfg.person_combo.setCurrentIndex(i)
                     break
             self._broadcast_data_source()
-            src = getattr(self._active_person, "data_source", "model") if self._active_person else "?"
+            src = (
+                getattr(self._active_person, "data_source", "model") if self._active_person else "?"
+            )
             return f"person → {name} ({src})"
 
         if kind == "comm_profile":
@@ -816,9 +854,12 @@ class MainWindow(QMainWindow):
             slot = args.get("slot")
             if slot is None and self._engine is not None:
                 self._engine.add_instant_food(duration_min, carbs_g)
-            self._send_instant("food_instant",
-                               protocol.encode_food_instant(duration_min, carbs_g), slot)
-            return f"insert_food {carbs_g:g} g / {duration_min} min" + (f" @slot {slot}" if slot is not None else "")
+            self._send_instant(
+                "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
+            )
+            return f"insert_food {carbs_g:g} g / {duration_min} min" + (
+                f" @slot {slot}" if slot is not None else ""
+            )
 
         if kind == "insert_exercise":
             duration_min = int(args.get("duration_min", 30))
@@ -826,9 +867,14 @@ class MainWindow(QMainWindow):
             slot = args.get("slot")
             if slot is None and self._engine is not None:
                 self._engine.add_instant_exercise(duration_min, intensity_pct)
-            self._send_instant("exercise_instant",
-                               protocol.encode_exercise_instant(duration_min, intensity_pct), slot)
-            return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (f" @slot {slot}" if slot is not None else "")
+            self._send_instant(
+                "exercise_instant",
+                protocol.encode_exercise_instant(duration_min, intensity_pct),
+                slot,
+            )
+            return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (
+                f" @slot {slot}" if slot is not None else ""
+            )
 
         if kind == "inject_fault":
             fault = str(args.get("fault", "pisa"))
@@ -1056,7 +1102,7 @@ class MainWindow(QMainWindow):
         everyone. Switching the selected tree row does NOT come through here
         (see _on_user_selected); it only rebinds to that user's kept history.
         """
-        self._graph_t0 = datetime.now(timezone.utc)
+        self._graph_t0 = datetime.now(UTC)
         self._history = {}
         self._graph_x, self._graph_y = [], []
         self._reset_expected()
@@ -1192,7 +1238,7 @@ class MainWindow(QMainWindow):
         connected board, both anchored to the moment this is called.
         """
         self._restart_engine()  # preps graphs + a paused engine (run_state still "stopped" here)
-        self._graph_t0 = datetime.now(timezone.utc)
+        self._graph_t0 = datetime.now(UTC)
         if self._engine is not None:
             self._engine.resume()
         self._run_state = "running"
@@ -1209,7 +1255,9 @@ class MainWindow(QMainWindow):
         self._send_run_state(protocol.RUN_STATE_STOPPED)
         self._set_start_pause_label()
 
-    def _on_expected_reading(self, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float) -> None:
+    def _on_expected_reading(
+        self, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
+    ) -> None:
         """Consume one tick from the parallel SimulationEngine."""
         t = self._elapsed_seconds(timestamp)
         if self._model_only:
@@ -1251,10 +1299,7 @@ class MainWindow(QMainWindow):
         lists _bind_selected_history aliased onto self._graph_x / etc.).
         """
         user_id = msg.get("user_id")
-        recording = (
-            not self._model_only
-            and (self._cgms_only or self._run_state == "running")
-        )
+        recording = not self._model_only and (self._cgms_only or self._run_state == "running")
         selected = user_id is not None and user_id == self._selected_user
 
         if "glucose_value" in msg:

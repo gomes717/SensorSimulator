@@ -4,6 +4,7 @@
 board (see src/protocol.py) — they must match the dispatch tables in the
 firmware's src/config_service.c exactly.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -48,7 +49,9 @@ class ExerciseEvent:
 
     time_of_day_min: int  # 0-1439
     duration_min: int
-    intensity_pct: float = 50.0  # 0-100; drives Roy/Parker directly, maps to heart rate for Deichmann
+    intensity_pct: float = (
+        50.0  # 0-100; drives Roy/Parker directly, maps to heart rate for Deichmann
+    )
 
 
 @dataclass

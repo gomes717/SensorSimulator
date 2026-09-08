@@ -1,4 +1,5 @@
 """Central log of messages received over BLE connections, shared across windows."""
+
 from __future__ import annotations
 
 from PyQt6.QtCore import QObject, pyqtSignal

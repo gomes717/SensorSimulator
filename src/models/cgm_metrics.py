@@ -4,10 +4,11 @@ Pure: no Qt, no I/O. Shared by the CSV Analysis window and the main window's
 live range-metrics panel. Band edges follow the common consensus targets
 (mg/dL): TBR2 <54, TBR1 54-70, TIR 70-180, TAR1 180-250, TAR2 >250.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 DEFAULT_TBR2_BELOW = 54.0
 DEFAULT_TBR1_BELOW = 70.0
@@ -49,7 +50,7 @@ def compute(
 
     mean = sum(vals) / n
     variance = sum((v - mean) ** 2 for v in vals) / n
-    sd = variance ** 0.5
+    sd = variance**0.5
     cv = (sd / mean * 100.0) if mean else 0.0
 
     tbr2 = sum(1 for v in vals if v < tbr2_below)

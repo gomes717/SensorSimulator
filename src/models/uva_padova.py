@@ -1,4 +1,5 @@
 """Python port of the UVA/Padova T1DMS model — see cgmsim/src/cgmsim_uva_padova.c."""
+
 from __future__ import annotations
 
 import math
@@ -25,23 +26,77 @@ class UvaPadovaState:
 
 # Field order matches UvaPadovaParams in cgmsim/inc/cgmsim_uva_padova.h exactly.
 PARAM_NAMES = [
-    "BW", "VG", "VI", "k1", "k2", "m1", "m2", "m4", "kmin", "kmax",
-    "kgri", "kabs", "ki", "Fcns", "Vm0", "Vmx", "Km0", "p2u", "kp1",
-    "kp2", "kp3", "ke1", "ke2", "ka1", "ka2", "kd", "Td", "bmeal",
-    "cmeal", "f", "HEeq", "Gpeq", "Ib",
+    "BW",
+    "VG",
+    "VI",
+    "k1",
+    "k2",
+    "m1",
+    "m2",
+    "m4",
+    "kmin",
+    "kmax",
+    "kgri",
+    "kabs",
+    "ki",
+    "Fcns",
+    "Vm0",
+    "Vmx",
+    "Km0",
+    "p2u",
+    "kp1",
+    "kp2",
+    "kp3",
+    "ke1",
+    "ke2",
+    "ka1",
+    "ka2",
+    "kd",
+    "Td",
+    "bmeal",
+    "cmeal",
+    "f",
+    "HEeq",
+    "Gpeq",
+    "Ib",
 ]
 
 
 def default_params() -> dict[str, float]:
     return {
-        "BW": 75.0, "VG": 1.88, "VI": 0.05, "k1": 0.065, "k2": 0.079,
-        "m1": 0.190, "m2": 0.484, "m4": 0.194, "kmin": 0.0080, "kmax": 0.0558,
-        "kgri": 0.0558, "kabs": 0.057, "ki": 0.0079, "Fcns": 1.0,
-        "Vm0": 2.5, "Vmx": 0.047, "Km0": 225.59, "p2u": 0.0331,
-        "kp1": 2.7, "kp2": 0.0021, "kp3": 0.009, "ke1": 0.0005, "ke2": 339.0,
-        "ka1": 0.0018, "ka2": 0.0182, "kd": 0.0164, "Td": 10.0,
-        "bmeal": 0.69, "cmeal": 0.17, "f": 0.90, "HEeq": 0.6,
-        "Gpeq": 100.0, "Ib": 25.0,
+        "BW": 75.0,
+        "VG": 1.88,
+        "VI": 0.05,
+        "k1": 0.065,
+        "k2": 0.079,
+        "m1": 0.190,
+        "m2": 0.484,
+        "m4": 0.194,
+        "kmin": 0.0080,
+        "kmax": 0.0558,
+        "kgri": 0.0558,
+        "kabs": 0.057,
+        "ki": 0.0079,
+        "Fcns": 1.0,
+        "Vm0": 2.5,
+        "Vmx": 0.047,
+        "Km0": 225.59,
+        "p2u": 0.0331,
+        "kp1": 2.7,
+        "kp2": 0.0021,
+        "kp3": 0.009,
+        "ke1": 0.0005,
+        "ke2": 339.0,
+        "ka1": 0.0018,
+        "ka2": 0.0182,
+        "kd": 0.0164,
+        "Td": 10.0,
+        "bmeal": 0.69,
+        "cmeal": 0.17,
+        "f": 0.90,
+        "HEeq": 0.6,
+        "Gpeq": 100.0,
+        "Ib": 25.0,
     }
 
 
@@ -63,14 +118,30 @@ def init_state(p: dict[str, float]) -> UvaPadovaState:
     Ip0 = p["Ib"] * p["VI"]
     Il0 = p["m2"] * Ip0 / (p["m1"] + m3eq)
     return UvaPadovaState(
-        Gp=Gp0, Gt=Gt0, Gs=Gp0, Ip=Ip0, Il=Il0,
-        Qsto1=0.0, Qsto2=0.0, Qgut=0.0,
-        XL=p["Ib"], I_=p["Ib"], X=0.0, Isc1=0.0, Isc2=0.0, MealMemory=1.0,
+        Gp=Gp0,
+        Gt=Gt0,
+        Gs=Gp0,
+        Ip=Ip0,
+        Il=Il0,
+        Qsto1=0.0,
+        Qsto2=0.0,
+        Qgut=0.0,
+        XL=p["Ib"],
+        I_=p["Ib"],
+        X=0.0,
+        Isc1=0.0,
+        Isc2=0.0,
+        MealMemory=1.0,
     )
 
 
-def step(s: UvaPadovaState, p: dict[str, float], carbs_g_per_min: float,
-         iir_u_per_min: float, dt_min: float) -> None:
+def step(
+    s: UvaPadovaState,
+    p: dict[str, float],
+    carbs_g_per_min: float,
+    iir_u_per_min: float,
+    dt_min: float,
+) -> None:
     """Advance *s* by dt_min minutes given a carb intake rate [g/min] and insulin [U/min]."""
     M = carbs_g_per_min * 1000.0
     IIR = iir_u_per_min * 6000.0 / p["BW"]

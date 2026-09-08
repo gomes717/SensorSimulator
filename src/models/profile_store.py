@@ -1,4 +1,5 @@
 """JSON persistence for saved Person and Sensor profiles (data/profiles.json)."""
+
 from __future__ import annotations
 
 import json

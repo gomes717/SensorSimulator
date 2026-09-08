@@ -7,6 +7,7 @@ devices that use Passkey Entry — Windows needs the PIN supplied via
 WinRT Device Enumeration API directly, independent of any BleakClient
 instance, so it can run before the GATT connection is even opened.
 """
+
 from __future__ import annotations
 
 import asyncio

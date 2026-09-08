@@ -1,6 +1,7 @@
 """Small dialogs for injecting a one-shot food/exercise event into an already-running
 simulation — distinct from FoodConfigWindow/ExerciseConfigWindow, which edit the
 recurring-daily schedule and (like every other config write) reset the run when sent."""
+
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (

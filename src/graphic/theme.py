@@ -5,6 +5,7 @@
 canvases read their colors from ``widget.palette()`` at build time, so call
 sites must rebuild / re-theme the matplotlib figures after switching.
 """
+
 from __future__ import annotations
 
 from PyQt6.QtGui import QColor, QPalette

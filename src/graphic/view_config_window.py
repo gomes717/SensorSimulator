@@ -1,7 +1,8 @@
 """View configuration window — appearance settings. First control: light/dark theme."""
+
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtWidgets import (
     QApplication,

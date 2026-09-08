@@ -6,6 +6,7 @@ summed per ``time_begin``. Only the timestamp and carb grams are kept — the
 firmware treats the food log as report-only (it never feeds a model in CSV
 playback mode), so calories/protein/fat are dropped.
 """
+
 from __future__ import annotations
 
 import csv
@@ -55,7 +56,7 @@ def read_food_log(path: str | Path) -> list[tuple[datetime, float]]:
     Raises ``ValueError`` if the file has no recognizable rows (wrong CSV kind).
     """
     totals: dict[datetime, float] = {}
-    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+    with open(path, encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None or _CARB_COL not in reader.fieldnames:
             raise ValueError("Not a Food Log export (missing total_carb column).")
@@ -86,8 +87,4 @@ def slice_window(
     csv_store foodlog track expects.
     """
     end = start + timedelta(hours=hours)
-    return [
-        (int((ts - start).total_seconds()), carbs)
-        for ts, carbs in rows
-        if start <= ts < end
-    ]
+    return [(int((ts - start).total_seconds()), carbs) for ts, carbs in rows if start <= ts < end]

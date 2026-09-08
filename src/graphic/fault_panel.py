@@ -4,6 +4,7 @@ Only PISA (compression low) is wired for now; the registry + `MainWindow.inject_
 entry point are the scaffold for adding signal dropout, pressure spike, stuck sensor,
 etc. later (each would gain a firmware slot like `instant_pisa[]` and a `FAULTS` entry).
 """
+
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
@@ -23,8 +24,8 @@ FAULTS: dict[str, dict] = {
     "pisa": {
         "label": "Compression low (PISA)",
         "desc": "Pressure-Induced Sensor Attenuation — a transient downward "
-                "attenuation of the sensor signal (a false low), no real "
-                "hypoglycaemia. The affected interval is shaded on the graph.",
+        "attenuation of the sensor signal (a false low), no real "
+        "hypoglycaemia. The affected interval is shaded on the graph.",
         "dialog": PisaInstantDialog,
     },
 }
@@ -41,10 +42,12 @@ class FaultPanel(QWidget):
         self.resize(460, 260)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
-            "Inject a sensor fault into the running simulation. Faults do not "
-            "reset the run and are mirrored to a connected board."
-        ))
+        layout.addWidget(
+            QLabel(
+                "Inject a sensor fault into the running simulation. Faults do not "
+                "reset the run and are mirrored to a connected board."
+            )
+        )
         for kind, spec in FAULTS.items():
             layout.addWidget(self._fault_group(kind, spec))
         layout.addStretch(1)

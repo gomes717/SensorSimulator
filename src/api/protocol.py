@@ -5,11 +5,12 @@ config_service.c write handlers exactly: little-endian, float32 params in the
 same order as each model's C parameter struct (see each models/*.py module's
 PARAM_NAMES, copied verbatim from the corresponding cgmsim/inc/*.h).
 """
+
 from __future__ import annotations
 
 import struct
 import zlib
-from typing import Iterator
+from collections.abc import Iterator
 
 from models import cambridge, deichmann, royparker, uva_padova
 from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId
@@ -36,8 +37,18 @@ _SENSOR_PARAM_NAMES: dict[SensorId, list[str]] = {
     SensorId.IDEAL: [],
     SensorId.BRETON: ["pacf", "sigma", "alpha", "beta"],
     SensorId.FACCHINETTI: [
-        "a0", "a1", "a2", "b0", "b1", "b2",
-        "aw1", "aw2", "sigma_v", "ac1", "ac2", "sigma_c",
+        "a0",
+        "a1",
+        "a2",
+        "b0",
+        "b1",
+        "b2",
+        "aw1",
+        "aw2",
+        "sigma_v",
+        "ac1",
+        "ac2",
+        "sigma_c",
     ],
 }
 
@@ -316,7 +327,7 @@ def iter_csv_data_chunks(blob: bytes, chunk_size: int = 224) -> Iterator[bytes]:
     Default chunk_size leaves headroom under an ATT_MTU of 247 (247 - 3 ATT
     header - 4 offset = 240; 224 is a safe round number)."""
     for offset in range(0, len(blob), chunk_size):
-        yield encode_csv_data(offset, blob[offset:offset + chunk_size])
+        yield encode_csv_data(offset, blob[offset : offset + chunk_size])
 
 
 def decode_csv_control_notify(data: bytes) -> tuple[int, int] | None:
@@ -430,7 +441,9 @@ def decode_food_events(data: bytes) -> list[FoodEvent]:
         if offset + 8 > len(data):
             break
         time_min, duration_min, carbs_g = struct.unpack_from("<HHf", data, offset)
-        events.append(FoodEvent(time_of_day_min=time_min, carbs_g=carbs_g, duration_min=duration_min))
+        events.append(
+            FoodEvent(time_of_day_min=time_min, carbs_g=carbs_g, duration_min=duration_min)
+        )
         offset += 8
     return events
 
@@ -447,7 +460,9 @@ def decode_exercise_events(data: bytes) -> list[ExerciseEvent]:
             break
         time_min, duration_min, intensity_pct = struct.unpack_from("<HHf", data, offset)
         events.append(
-            ExerciseEvent(time_of_day_min=time_min, duration_min=duration_min, intensity_pct=intensity_pct)
+            ExerciseEvent(
+                time_of_day_min=time_min, duration_min=duration_min, intensity_pct=intensity_pct
+            )
         )
         offset += 8
     return events

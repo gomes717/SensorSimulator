@@ -18,12 +18,13 @@ Scenario file shape (see scenarios/README.md):
 `at_s` is seconds from when the scenario starts (wall clock — under a high speed
 multiplier the simulation compresses, the schedule does not).
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
@@ -55,10 +56,12 @@ class ScenarioRunner(QObject):
     can touch widgets directly.
     """
 
-    step = pyqtSignal(str)       # human-readable description of an executed action
+    step = pyqtSignal(str)  # human-readable description of an executed action
     finished = pyqtSignal()
 
-    def __init__(self, actions: list[Action], dispatch: Callable[[str, dict], str], parent=None) -> None:
+    def __init__(
+        self, actions: list[Action], dispatch: Callable[[str, dict], str], parent=None
+    ) -> None:
         super().__init__(parent)
         self._actions = actions
         self._dispatch = dispatch

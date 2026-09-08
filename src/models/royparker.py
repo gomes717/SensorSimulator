@@ -1,4 +1,5 @@
 """Python port of the Roy & Parker exercise model — see cgmsim/src/cgmsim_royparker.c."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,18 +22,55 @@ class RoyParkerState:
 
 # Field order matches RoyParkerParams in cgmsim/inc/cgmsim_royparker.h exactly.
 PARAM_NAMES = [
-    "Gpeq", "BW", "VolG", "Ib", "u1b", "p1", "p2", "p3", "p4", "n",
-    "a1", "a2", "a3", "a4", "a5", "a6", "k", "T1", "kG", "Tasc", "Tmax", "Tdes",
+    "Gpeq",
+    "BW",
+    "VolG",
+    "Ib",
+    "u1b",
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "n",
+    "a1",
+    "a2",
+    "a3",
+    "a4",
+    "a5",
+    "a6",
+    "k",
+    "T1",
+    "kG",
+    "Tasc",
+    "Tmax",
+    "Tdes",
 ]
 
 
 def default_params() -> dict[str, float]:
     return {
-        "Gpeq": 100.0, "BW": 70.0, "VolG": 117.0, "Ib": 11.0, "u1b": 1.0,
-        "p1": 0.035, "p2": 0.050, "p3": 0.000028, "p4": 9.8e-5, "n": 0.142,
-        "a1": 0.00158, "a2": 0.056, "a3": 0.00195, "a4": 0.0485,
-        "a5": 0.00125, "a6": 0.075, "k": 0.0108, "T1": 6.0,
-        "kG": 0.022, "Tasc": 10.0, "Tmax": 35.0, "Tdes": 10.0,
+        "Gpeq": 100.0,
+        "BW": 70.0,
+        "VolG": 117.0,
+        "Ib": 11.0,
+        "u1b": 1.0,
+        "p1": 0.035,
+        "p2": 0.050,
+        "p3": 0.000028,
+        "p4": 9.8e-5,
+        "n": 0.142,
+        "a1": 0.00158,
+        "a2": 0.056,
+        "a3": 0.00195,
+        "a4": 0.0485,
+        "a5": 0.00125,
+        "a6": 0.075,
+        "k": 0.0108,
+        "T1": 6.0,
+        "kG": 0.022,
+        "Tasc": 10.0,
+        "Tmax": 35.0,
+        "Tdes": 10.0,
     }
 
 
@@ -61,8 +99,15 @@ def _gastric_rate(s: RoyParkerState, p: dict[str, float], t_sim: float) -> float
     return peak * (1.0 - (elapsed - p["Tasc"] - p["Tmax"]) / p["Tdes"])
 
 
-def step(s: RoyParkerState, p: dict[str, float], meal_g: float, iir_u_per_h: float,
-         exercise_pct: float, t_sim_min: float, dt_min: float) -> None:
+def step(
+    s: RoyParkerState,
+    p: dict[str, float],
+    meal_g: float,
+    iir_u_per_h: float,
+    exercise_pct: float,
+    t_sim_min: float,
+    dt_min: float,
+) -> None:
     """Advance *s* by dt_min minutes.
 
     meal_g: carbs ingested this step [g] (0 if no meal starting now — an
@@ -85,9 +130,12 @@ def step(s: RoyParkerState, p: dict[str, float], meal_g: float, iir_u_per_h: flo
     dGgly = p["k"] * s.PVO2max if exercise_pct > 0.0 else -s.Ggly / p["T1"]
 
     u2 = p["kG"] * s.NG * 1000.0  # g/min -> mg/min
-    dG = (-p["p1"] * (s.G - p["Gpeq"]) - s.X * s.G
-          + (p["BW"] / p["VolG"]) * (s.Gprod - s.Ggly - s.Gup)
-          + u2 / p["VolG"])
+    dG = (
+        -p["p1"] * (s.G - p["Gpeq"])
+        - s.X * s.G
+        + (p["BW"] / p["VolG"]) * (s.Gprod - s.Ggly - s.Gup)
+        + u2 / p["VolG"]
+    )
 
     s.NG = max(0.0, s.NG + dNG * dt_min)
     s.PVO2max = max(0.0, s.PVO2max + dPVO2max * dt_min)

@@ -23,6 +23,7 @@ Screenshots + a PASS/SKIP/FAIL line per scenario are written to --out.
 Usage:  python scripts/ui_smoke.py [--board D0:3F:4D:E2:7C:9B] [--no-board]
         [--only A,C] [--out <dir>]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -88,6 +89,7 @@ def record(scenario: str, ok: bool, note: str = "", skipped: bool = False) -> No
 # Board connection (bypasses the scan UI, uses the real BleSession stack)
 # ----------------------------------------------------------------------
 
+
 def connect_board(w, addr: str, timeout_ms: int = 45000):
     bt = w._ensure_bluetooth_window()
     if addr in bt.sessions():
@@ -133,6 +135,7 @@ def graph_ok(w, min_points: int = 3) -> tuple[bool, str]:
 # ----------------------------------------------------------------------
 # Scenarios
 # ----------------------------------------------------------------------
+
 
 def scenario_A_csv_on_board(w, board_addr):
     print("\n[A] CSV on board")
@@ -203,19 +206,24 @@ def scenario_B_model_on_board(w, board_addr):
         record("B model-on-board", False, "board unavailable", skipped=True)
         return
 
-    person = PersonProfile(name="Model Test", model_id=ModelId.CAMBRIDGE,
-                           params=cambridge.default_params())
+    person = PersonProfile(
+        name="Model Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
+    )
     w._person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
-    idx = next(i for i in range(cfg.person_combo.count())
-               if getattr(cfg.person_combo.itemData(i), "name", None) == "Model Test")
+    idx = next(
+        i
+        for i in range(cfg.person_combo.count())
+        if getattr(cfg.person_combo.itemData(i), "name", None) == "Model Test"
+    )
     cfg.person_combo.setCurrentIndex(idx)
     pump(200)
 
     # push person config to the board so it runs the same model
-    from graphic.device_target import restart_board
     from api import protocol
+    from graphic.device_target import restart_board
+
     sess.queue_write("person", protocol.encode_person_config(person.model_id, person.params))
     sess.queue_write("data_source", protocol.encode_data_source(False))
     restart_board(sess)
@@ -226,8 +234,11 @@ def scenario_B_model_on_board(w, board_addr):
     QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
     pump(500)
     select_first_tree_user(w)
-    wait_until(lambda: len(w._graph_y) >= 3 and len(w._expected_y) >= 5, 40000,
-              "received + expected points")
+    wait_until(
+        lambda: len(w._graph_y) >= 3 and len(w._expected_y) >= 5,
+        40000,
+        "received + expected points",
+    )
     recv_pts, exp_pts = len(w._graph_y), len(w._expected_y)  # capture before Stop clears them
     ok, note = graph_ok(w, min_points=3)
     ok = ok and exp_pts >= 5  # the local "expected" model line is running in parallel
@@ -236,8 +247,11 @@ def scenario_B_model_on_board(w, board_addr):
     pump(300)
     # a default Cambridge patient with no meals sits at its steady state, so a
     # near-flat line here is the *correct* model output, not a stuck one.
-    record("B model-on-board", ok,
-           note + f" recv_pts={recv_pts} expected_pts={exp_pts} (flat=steady-state)")
+    record(
+        "B model-on-board",
+        ok,
+        note + f" recv_pts={recv_pts} expected_pts={exp_pts} (flat=steady-state)",
+    )
 
 
 def _model_only_run(w, person, name, do_after, checks, tag):
@@ -245,8 +259,11 @@ def _model_only_run(w, person, name, do_after, checks, tag):
     w._person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
-    idx = next(i for i in range(cfg.person_combo.count())
-               if getattr(cfg.person_combo.itemData(i), "name", None) == person.name)
+    idx = next(
+        i
+        for i in range(cfg.person_combo.count())
+        if getattr(cfg.person_combo.itemData(i), "name", None) == person.name
+    )
     cfg.person_combo.setCurrentIndex(idx)
     pump(200)
     cfg.model_only_check.setChecked(True)
@@ -270,8 +287,10 @@ def scenario_C_model_food(w):
 
     def insert_food(w):
         FoodInstantDialog.exec = lambda self: (
-            self._carbs_spin.setValue(80.0), self._duration_spin.setValue(10),
-            QDialog.DialogCode.Accepted)[-1]
+            self._carbs_spin.setValue(80.0),
+            self._duration_spin.setValue(10),
+            QDialog.DialogCode.Accepted,
+        )[-1]
         w._open_insert_food()
         print("    inserted 80 g / 10 min")
 
@@ -280,10 +299,14 @@ def scenario_C_model_food(w):
         rise = (max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
         mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
         ok = carbs_peak > 0.0 and rise > 2.0 and mean_ok
-        return ok, f"carbs_peak={carbs_peak:.2f} glucose_rise={rise:.1f} mean={w._stat_value_labels['mean'].text()}"
+        return (
+            ok,
+            f"carbs_peak={carbs_peak:.2f} glucose_rise={rise:.1f} mean={w._stat_value_labels['mean'].text()}",
+        )
 
-    person = PersonProfile(name="Food Test", model_id=ModelId.CAMBRIDGE,
-                           params=cambridge.default_params())
+    person = PersonProfile(
+        name="Food Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
+    )
     ok, note = _model_only_run(w, person, "Food Test", insert_food, checks, "C_model_food")
     record("C model+food", ok, note)
 
@@ -293,8 +316,10 @@ def scenario_D_model_exercise(w):
 
     def insert_ex(w):
         ExerciseInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(30), self._intensity_spin.setValue(70.0),
-            QDialog.DialogCode.Accepted)[-1]
+            self._duration_spin.setValue(30),
+            self._intensity_spin.setValue(70.0),
+            QDialog.DialogCode.Accepted,
+        )[-1]
         w._open_insert_exercise()
         print("    inserted 30 min / 70 %")
 
@@ -303,10 +328,14 @@ def scenario_D_model_exercise(w):
         moved = abs(max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
         mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
         ok = ex_peak > 0.0 and mean_ok
-        return ok, f"exercise_peak={ex_peak:.1f} glucose_delta={moved:.1f} mean={w._stat_value_labels['mean'].text()}"
+        return (
+            ok,
+            f"exercise_peak={ex_peak:.1f} glucose_delta={moved:.1f} mean={w._stat_value_labels['mean'].text()}",
+        )
 
-    person = PersonProfile(name="Exercise Test", model_id=ModelId.DEICHMANN,
-                           params=deichmann.default_params())
+    person = PersonProfile(
+        name="Exercise Test", model_id=ModelId.DEICHMANN, params=deichmann.default_params()
+    )
     ok, note = _model_only_run(w, person, "Exercise Test", insert_ex, checks, "D_model_exercise")
     record("D model+exercise", ok, note)
 
@@ -316,37 +345,48 @@ def scenario_E_model_pisa(w):
 
     def insert_pisa(w):
         PisaInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(15), self._depth_spin.setValue(30.0),
-            QDialog.DialogCode.Accepted)[-1]
+            self._duration_spin.setValue(15),
+            self._depth_spin.setValue(30.0),
+            QDialog.DialogCode.Accepted,
+        )[-1]
         w._open_insert_pisa()
         print("    inserted PISA 30 % / 15 min")
 
     def checks(w, base):
         base_lvl = sum(base) / len(base) if base else 0.0
-        post = w._graph_y[len(base):]
+        post = w._graph_y[len(base) :]
         trough = min(post) if post else base_lvl
         recovered = post[-1] if post else base_lvl
         spans = len(w._pisa_spans)
         patches = len(w._pisa_patches)
-        ok = (trough < base_lvl - 8.0) and (recovered > trough + 3.0) and spans == 1 and patches == 1
-        return ok, (f"base={base_lvl:.1f} trough={trough:.1f} recovered={recovered:.1f} "
-                    f"spans={spans} patches={patches}")
+        ok = (
+            (trough < base_lvl - 8.0) and (recovered > trough + 3.0) and spans == 1 and patches == 1
+        )
+        return ok, (
+            f"base={base_lvl:.1f} trough={trough:.1f} recovered={recovered:.1f} "
+            f"spans={spans} patches={patches}"
+        )
 
-    person = PersonProfile(name="PISA Test", model_id=ModelId.CAMBRIDGE,
-                           params=cambridge.default_params())
+    person = PersonProfile(
+        name="PISA Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
+    )
     ok, note = _model_only_run(w, person, "PISA Test", insert_pisa, checks, "E_model_pisa")
     record("E model+PISA", ok, note)
 
 
 def scenario_F_view_window(w):
     print("\n[F] rolling graph window")
-    person = PersonProfile(name="Window Test", model_id=ModelId.CAMBRIDGE,
-                           params=cambridge.default_params())
+    person = PersonProfile(
+        name="Window Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
+    )
     w._person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
-    idx = next(i for i in range(cfg.person_combo.count())
-               if getattr(cfg.person_combo.itemData(i), "name", None) == person.name)
+    idx = next(
+        i
+        for i in range(cfg.person_combo.count())
+        if getattr(cfg.person_combo.itemData(i), "name", None) == person.name
+    )
     cfg.person_combo.setCurrentIndex(idx)
     cfg.model_only_check.setChecked(True)
     cfg.speed_slider.setValue(cfg._speed_to_slider(60))
@@ -376,18 +416,23 @@ def scenario_F_view_window(w):
     app_settings.save_pref("view_window_s", 3600)  # restore default
     w._view_window_s = 3600.0
 
-    ok = (win_span <= 6.0 and visible_pts < total_pts
-          and restored_span >= full_span - 1.0)
-    record("F view-window", ok,
-           f"full_span={full_span:.0f}s windowed={win_span:.1f}s "
-           f"visible={visible_pts}/{total_pts} restored={restored_span:.0f}s")
+    ok = win_span <= 6.0 and visible_pts < total_pts and restored_span >= full_span - 1.0
+    record(
+        "F view-window",
+        ok,
+        f"full_span={full_span:.0f}s windowed={win_span:.1f}s "
+        f"visible={visible_pts}/{total_pts} restored={restored_span:.0f}s",
+    )
 
 
 # ----------------------------------------------------------------------
 
+
 def main() -> int:
     global _out
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--board", default=DEFAULT_BOARD)
     ap.add_argument("--no-board", action="store_true")
     ap.add_argument("--only", default="A,B,C,D,E,F")
@@ -404,11 +449,17 @@ def main() -> int:
 
     try:
         if "A" in only:
-            (scenario_A_csv_on_board(w, board) if board
-             else record("A CSV-on-board", False, "--no-board", skipped=True))
+            (
+                scenario_A_csv_on_board(w, board)
+                if board
+                else record("A CSV-on-board", False, "--no-board", skipped=True)
+            )
         if "B" in only:
-            (scenario_B_model_on_board(w, board) if board
-             else record("B model-on-board", False, "--no-board", skipped=True))
+            (
+                scenario_B_model_on_board(w, board)
+                if board
+                else record("B model-on-board", False, "--no-board", skipped=True)
+            )
         if "C" in only:
             scenario_C_model_food(w)
         if "D" in only:
@@ -419,8 +470,11 @@ def main() -> int:
             scenario_F_view_window(w)
     finally:
         # the assign/config/speed/window steps persist to data/ — restore it
-        subprocess.run(["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-                       cwd=str(_ROOT), check=False)
+        subprocess.run(
+            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
+            cwd=str(_ROOT),
+            check=False,
+        )
         try:
             if w._bluetooth_window is not None:
                 w._bluetooth_window.stop_all_sessions()

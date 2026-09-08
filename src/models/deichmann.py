@@ -1,4 +1,5 @@
 """Python port of the Deichmann exercise-augmented model — see cgmsim/src/cgmsim_deichmann.c."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,18 +21,54 @@ class DeichmannState:
 
 # Field order matches DeichmannParams in cgmsim/inc/cgmsim_deichmann.h exactly.
 PARAM_NAMES = [
-    "Gpeq", "BW", "Gb", "Ib", "HRb", "p1", "p2", "p3", "alpha", "beta",
-    "tauHR", "tau", "f", "AG", "Vg", "tau_m", "k21", "kd", "ka", "ke", "Vi", "IIRb",
+    "Gpeq",
+    "BW",
+    "Gb",
+    "Ib",
+    "HRb",
+    "p1",
+    "p2",
+    "p3",
+    "alpha",
+    "beta",
+    "tauHR",
+    "tau",
+    "f",
+    "AG",
+    "Vg",
+    "tau_m",
+    "k21",
+    "kd",
+    "ka",
+    "ke",
+    "Vi",
+    "IIRb",
 ]
 
 
 def default_params() -> dict[str, float]:
     return {
-        "Gpeq": 100.0, "BW": 70.0, "Gb": 172.0, "Ib": 10.0, "HRb": 80.0,
-        "p1": 0.0041, "p2": 0.0155, "p3": 6.913e-6,
-        "alpha": 2.59e-4, "beta": 3.39e-4, "tauHR": 5.0, "tau": 600.0, "f": 0.1,
-        "AG": 0.8, "Vg": 1.6, "tau_m": 60.0,
-        "k21": 0.0085, "kd": 0.0247, "ka": 0.011, "ke": 0.0357, "Vi": 0.104,
+        "Gpeq": 100.0,
+        "BW": 70.0,
+        "Gb": 172.0,
+        "Ib": 10.0,
+        "HRb": 80.0,
+        "p1": 0.0041,
+        "p2": 0.0155,
+        "p3": 6.913e-6,
+        "alpha": 2.59e-4,
+        "beta": 3.39e-4,
+        "tauHR": 5.0,
+        "tau": 600.0,
+        "f": 0.1,
+        "AG": 0.8,
+        "Vg": 1.6,
+        "tau_m": 60.0,
+        "k21": 0.0085,
+        "kd": 0.0247,
+        "ka": 0.011,
+        "ke": 0.0357,
+        "Vi": 0.104,
         "IIRb": 0.5,
     }
 
@@ -45,8 +82,14 @@ def init_state(p: dict[str, float]) -> DeichmannState:
     return DeichmannState(x1=x1_ss, x2=x2_ss, Ic=Ic_ss, X=X, G=p["Gpeq"])
 
 
-def step(s: DeichmannState, p: dict[str, float], carbs_g_this_step: float,
-         iir_u_per_h: float, hr_bpm: float, dt_min: float) -> None:
+def step(
+    s: DeichmannState,
+    p: dict[str, float],
+    carbs_g_this_step: float,
+    iir_u_per_h: float,
+    hr_bpm: float,
+    dt_min: float,
+) -> None:
     """Advance *s* by dt_min minutes.
 
     carbs_g_this_step: grams ingested during this step (0 if no meal now) — the
@@ -74,10 +117,13 @@ def step(s: DeichmannState, p: dict[str, float], carbs_g_this_step: float,
 
     Xb = p["p3"] * p["Ib"] / p["p2"]
 
-    dG = (-p["p1"] * (s.G - p["Gb"]) - s.X * s.G
-          - p["alpha"] * s.HRint * s.Z * (s.X + Xb) * s.G
-          - p["beta"] * s.Y * s.G
-          + Ra)
+    dG = (
+        -p["p1"] * (s.G - p["Gb"])
+        - s.X * s.G
+        - p["alpha"] * s.HRint * s.Z * (s.X + Xb) * s.G
+        - p["beta"] * s.Y * s.G
+        + Ra
+    )
 
     s.x1 = max(0.0, s.x1 + dx1 * dt_min)
     s.x2 = max(0.0, s.x2 + dx2 * dt_min)

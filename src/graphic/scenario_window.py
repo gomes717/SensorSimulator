@@ -1,4 +1,5 @@
 """Scenario window — load a JSON scenario and run its timed actions."""
+
 from __future__ import annotations
 
 from pathlib import Path

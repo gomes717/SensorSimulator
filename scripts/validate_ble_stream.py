@@ -31,6 +31,7 @@ Examples
 
 Capture file format (one reading per line): ``time_offset_min,glucose_mg_dl``
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,7 +43,6 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(_SRC))
 
-from api import protocol  # noqa: E402
 from models import dexcom_csv, engine, profile_store  # noqa: E402
 from models.types import PersonProfile  # noqa: E402
 
@@ -53,6 +53,7 @@ MODEL_WINDOW = 12  # samples for the moving-average model comparison
 # ----------------------------------------------------------------------
 # Expected-series builders
 # ----------------------------------------------------------------------
+
 
 def csv_expected(samples: list[int], interval_s: int, t_offset_min: float) -> int:
     """The mg/dL the firmware's CSV branch emits at session time *t_offset_min*."""
@@ -65,8 +66,10 @@ def load_profile(name: str) -> PersonProfile:
     for p in persons:
         if p.name == name:
             return p
-    raise SystemExit(f"profile {name!r} not found in data/profiles.json "
-                     f"(have: {', '.join(p.name for p in persons) or 'none'})")
+    raise SystemExit(
+        f"profile {name!r} not found in data/profiles.json "
+        f"(have: {', '.join(p.name for p in persons) or 'none'})"
+    )
 
 
 def csv_window_from_args(args) -> tuple[list[int], int]:
@@ -88,6 +91,7 @@ def csv_window_from_args(args) -> tuple[list[int], int]:
 # Diffing
 # ----------------------------------------------------------------------
 
+
 def diff_csv(received: list[tuple[float, float]], samples: list[int], interval_s: int) -> bool:
     print(f"\n  {'t_off(min)':>11} {'received':>9} {'expected':>9} {'diff':>7}")
     worst = 0.0
@@ -101,8 +105,10 @@ def diff_csv(received: list[tuple[float, float]], samples: list[int], interval_s
             fails += 1
         print(f"  {t_off:>11.1f} {got:>9.1f} {exp:>9d} {d:>7.1f}{flag}")
     ok = fails == 0
-    print(f"\n  samples={len(received)}  worst |diff|={worst:.1f} mg/dL  "
-          f"tolerance={CSV_TOLERANCE_MG_DL}  -> {'PASS' if ok else f'FAIL ({fails} out of range)'}")
+    print(
+        f"\n  samples={len(received)}  worst |diff|={worst:.1f} mg/dL  "
+        f"tolerance={CSV_TOLERANCE_MG_DL}  -> {'PASS' if ok else f'FAIL ({fails} out of range)'}"
+    )
     return ok
 
 
@@ -111,15 +117,20 @@ def summarize_model(received: list[tuple[float, float]]) -> None:
     if not vals:
         print("  no samples")
         return
-    print(f"  n={len(vals)}  mean={statistics.mean(vals):.1f}  "
-          f"sd={statistics.pstdev(vals):.1f}  min={min(vals):.0f}  max={max(vals):.0f}")
-    print("  (model mode: compare these to the app's Expected line / engine log; "
-          "on-device noise makes a sample-exact check meaningless)")
+    print(
+        f"  n={len(vals)}  mean={statistics.mean(vals):.1f}  "
+        f"sd={statistics.pstdev(vals):.1f}  min={min(vals):.0f}  max={max(vals):.0f}"
+    )
+    print(
+        "  (model mode: compare these to the app's Expected line / engine log; "
+        "on-device noise makes a sample-exact check meaningless)"
+    )
 
 
 # ----------------------------------------------------------------------
 # Capture sources
 # ----------------------------------------------------------------------
+
 
 def read_capture(path: str) -> list[tuple[float, float]]:
     out: list[tuple[float, float]] = []
@@ -148,7 +159,7 @@ async def collect_live(address: str, minutes: float) -> list[tuple[float, float]
         exp = raw >> 12
         if exp >= 0x8:
             exp -= 0x10
-        glucose = mant * (10 ** exp)
+        glucose = mant * (10**exp)
         t_off = int.from_bytes(data[4:6], "little")
         got.append((float(t_off), float(round(glucose, 1))))
         print(f"    rx  t_off={t_off}min  glucose={glucose:.1f}  raw={data.hex()}")
@@ -168,8 +179,11 @@ async def collect_live(address: str, minutes: float) -> list[tuple[float, float]
 
 # ----------------------------------------------------------------------
 
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="mode", required=True)
 
     common = argparse.ArgumentParser(add_help=False)
@@ -177,9 +191,12 @@ def main() -> int:
     common.add_argument("--csv-path", help="Dexcom CSV (instead of --profile)")
     common.add_argument("--start", help="ISO datetime of the 24 h window start (with --csv-path)")
     common.add_argument("--food-log", help="matching Food Log CSV (informational only here)")
-    common.add_argument("--model", action="store_true",
-                        help="treat the stream as model-backed: print a distribution summary "
-                             "instead of an exact diff")
+    common.add_argument(
+        "--model",
+        action="store_true",
+        help="treat the stream as model-backed: print a distribution summary "
+        "instead of an exact diff",
+    )
 
     off = sub.add_parser("offline", parents=[common], help="rebuild + diff a capture file")
     off.add_argument("--received", help="capture file: 'time_offset_min,glucose' per line")
@@ -194,14 +211,17 @@ def main() -> int:
         if not args.received:
             # No capture: just show the expected series head so it can be eyeballed.
             samples, interval_s = csv_window_from_args(args)
-            print(f"expected CSV series: {len(samples)} rows @ {interval_s}s "
-                  f"({len(samples) * interval_s / 3600:.1f} h)")
+            print(
+                f"expected CSV series: {len(samples)} rows @ {interval_s}s "
+                f"({len(samples) * interval_s / 3600:.1f} h)"
+            )
             for k in range(0, min(len(samples), 12)):
                 print(f"  row {k:>3}  t_off={k * interval_s / 60:.0f}min  {samples[k]} mg/dL")
             return 0
         received = read_capture(args.received)
     else:
         import asyncio
+
         received = asyncio.run(collect_live(args.address, args.minutes))
 
     if not received:

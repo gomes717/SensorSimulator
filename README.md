@@ -75,31 +75,35 @@ SensorSimulator/
 ├── cgmsim/           # Standalone CLI simulator — source of truth for the model math
 ├── data/             # Saved profiles.json, board_layout.json, settings.json
 ├── docs/             # Architecture & design docs (see above)
-├── requirements.txt
-├── pyproject.toml    # Pylint configuration
+├── pyproject.toml    # Project metadata + tool config (uv, ruff, pylint, pyright)
+├── uv.lock           # Locked dependency set
 └── .gitignore
 ```
 
 ## Setup
 
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
+Requires [uv](https://docs.astral.sh/uv/).
 
-pip install -r requirements.txt
+```bash
+uv sync                              # create .venv and install everything
+git config core.hooksPath scripts/hooks   # enable the pre-commit gate (once per clone)
 ```
 
 ## Running
 
 ```bash
-python src/main.py
+uv run python src/main.py
 ```
 
-## Linting
+## Checks
+
+See `docs/CODING_STANDARDS.md`. The pre-commit hook runs all four; the same
+commands are the manual "full gate":
 
 ```bash
-pylint src/
+uv run ruff format --check .
+uv run ruff check .
+uv run pylint
+uv run pyright
+uv run pytest
 ```

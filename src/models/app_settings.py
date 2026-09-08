@@ -3,6 +3,7 @@ used for the graph bands / range-metrics panels, and the UI theme.
 
 Mirrors profile_store.py's plain json + pathlib style — no external deps.
 """
+
 from __future__ import annotations
 
 import json

@@ -1,18 +1,76 @@
-[tool.pylint.main]
-# Run from the src/ directory so local imports resolve.
-source-roots = ["src"]
-
-[tool.pylint.format]
-max-line-length = 100
-
-[tool.pylint.messages_control]
-disable = [
-    "R0903",   # too-few-public-methods  — expected in Qt widget subclasses
+[project]
+name = "sensor-simulator"
+version = "0.1.0"
+description = "CGM sensor simulator — PyQt6 client for the nRF54L15 CGM firmware"
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6>=6.11,<7",
+    "matplotlib>=3.10,<4",
+    "bleak>=3.0,<4",
 ]
 
-[tool.pylint.typecheck]
-# Suppress false no-member errors coming from PyQt6 descriptors.
-generated-members = ["PyQt6.*"]
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "pylint>=3.3",
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+]
+
+[tool.uv]
+package = false
+
+# ---------------------------------------------------------------------------
+# Lint + format — ruff (see docs/CODING_STANDARDS.md)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "firmware", "cgmsim", "build", "utils", "docs", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Residual debt in the MainWindow god object + its satellite windows — see
+# .scratch/thesis-stabilization/issues/18-arch-debt-mainwindow-god-object.md.
+# No new entries outside src/graphic/.
+
+# ---------------------------------------------------------------------------
+# Design-smell detector — pylint (disable=all + design/duplication only)
+# ---------------------------------------------------------------------------
+[tool.pylint.main]
+source-roots = ["src"]
+
+[tool.pylint.messages_control]
+disable = ["all"]
+enable = [
+    "R0901",  # too-many-ancestors
+    "R0902",  # too-many-instance-attributes
+    "R0903",  # too-few-public-methods
+    "R0904",  # too-many-public-methods
+    "R0911",  # too-many-return-statements
+    "R0912",  # too-many-branches
+    "R0913",  # too-many-arguments
+    "R0914",  # too-many-locals
+    "R0915",  # too-many-statements
+    "R0801",  # duplicate-code
+]
 
 [tool.pylint.design]
-max-attributes = 15   # Qt __init__ methods are legitimately attribute-heavy
+max-attributes = 15
+
+[tool.pylint.typecheck]
+generated-members = ["PyQt6.*"]
+
+# ---------------------------------------------------------------------------
+# Types — pyright (standard; pure modules must be clean)
+# ---------------------------------------------------------------------------
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["src", "scripts", "tests"]
+exclude = ["**/__pycache__", ".venv", "firmware", "cgmsim", "build"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

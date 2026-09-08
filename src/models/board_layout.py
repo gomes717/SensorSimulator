@@ -6,6 +6,7 @@ person X + sensor noise Y". Persisted to ``data/board_layout.json`` by name, so
 it survives a restart and follows a renamed/edited profile by identity of name.
 Applied to a board by :meth:`services.ble_session.BleSession.send_board_layout`.
 """
+
 from __future__ import annotations
 
 import json

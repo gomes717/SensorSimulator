@@ -4,6 +4,7 @@ Pure stdlib: no Qt, no third-party deps. Only the estimated-glucose-value
 (EGV) rows are returned; the header metadata rows (FirstName, Device, Alert,
 ...) and non-numeric readings ("Low"/"High") are skipped.
 """
+
 from __future__ import annotations
 
 import csv
@@ -38,7 +39,7 @@ def read_egv(path: str | Path) -> list[tuple[datetime, float]]:
     kind), so callers can show a clear message.
     """
     out: list[tuple[datetime, float]] = []
-    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+    with open(path, encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None or _GLUCOSE_COL not in reader.fieldnames:
             raise ValueError("Not a Dexcom CGM export (missing glucose column).")

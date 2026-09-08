@@ -1,11 +1,11 @@
 """Background thread for scanning nearby BLE devices via bleak."""
+
 from __future__ import annotations
 
 import asyncio
 
-from PyQt6.QtCore import QThread, pyqtSignal
-
 from bleak import BleakScanner
+from PyQt6.QtCore import QThread, pyqtSignal
 
 
 class BluetoothScanThread(QThread):

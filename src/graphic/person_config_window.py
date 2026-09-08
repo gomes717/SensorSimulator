@@ -1,9 +1,10 @@
 """Window for creating/editing simulated-patient (person) profiles and sending them to a board."""
+
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -212,7 +213,8 @@ class PersonConfigWindow(QWidget):
             "physiological model and its parameters are not used for a "
             "CSV-backed patient — set the data source back to the model in the "
             "Configuration window to edit these."
-            if is_csv else ""
+            if is_csv
+            else ""
         )
         for w in (self._model_combo, self._params_group, self._send_btn, self._read_btn):
             w.setEnabled(not is_csv)
@@ -314,7 +316,9 @@ class PersonConfigWindow(QWidget):
             return
         decoded = protocol.decode_person_config(data)
         if decoded is None:
-            QMessageBox.warning(self, "Person Configuration", "Could not decode the board's response.")
+            QMessageBox.warning(
+                self, "Person Configuration", "Could not decode the board's response."
+            )
             return
         model_id, params = decoded
         profile = self._profiles[self._current_index]
