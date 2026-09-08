@@ -23,7 +23,7 @@ See `spec.md` for framing and decisions.
 
 | # | Title | Status |
 |---|---|---|
-| 12 | Dexcom real G6 compatibility | blocked (Phase 1 + time) — **drop-dead date TBD** |
+| 12 | Dexcom real G6 compatibility | ready — drop-dead **2026-09-15**, Android confirmed |
 
 ## Phase 3 — pre-write-up
 
@@ -39,6 +39,6 @@ See `spec.md` for framing and decisions.
 
 | # | Title |
 |---|---|
-| 18 | MainWindow god object + window/state seam leaks |
-| 19 | Shallow modules + split responsibilities |
-| 20 | No app-level test coverage below "launch the app" |
+| 18 | MainWindow god object + seam leaks | **deferred** — too risky pre-defense |
+| 19 | Shallow modules + split responsibilities | **partial** (05ae500) — name→slot + CSV-upload dedup'd |
+| 20 | No app-level test coverage below "launch the app" | **partial** (743b5f6) — BleSession decode seam + 113 tests |

@@ -1,9 +1,15 @@
 # Architectural debt: shallow modules + split responsibilities
 
-Status: backlog
+Status: (see below)
 Track: B
-Phase: post-thesis (documented for a future maintainer)
+Phase: 3 attempt
 Blocked by: —
+
+## 2026-09-08 status
+
+**Partial (2026-09-08, commit 05ae500).** Done: BleSession uses `board_layout.slot_of()` (one canonical name→slot, drops `import re`); `protocol.build_csv_uploads()` replaces the duplicated glucose+foodlog upload-list assembly in Configuration + BoardLayoutWindow. Tests added. Not done: the rest of the shallow-module list (ble_message_log pass-through, restart_board wrapper, _ModelAdapter step wrappers, scenario.py, app_settings idioms) — cosmetic, deferred.
+
+---
 
 Not scheduled for the defense. Source: architecture review, 2026-09-08.
 

@@ -1,9 +1,15 @@
 # Architectural debt: MainWindow god object + window/state seam leaks
 
-Status: backlog
+Status: (see below)
 Track: B
-Phase: post-thesis (documented for a future maintainer)
+Phase: 3 attempt
 Blocked by: —
+
+## 2026-09-08 status
+
+**Deferred (2026-09-08).** The full break-up (MainWindow → a controller/model; ConfigurationWindow ↔ MainWindow decoupling; typed `new_message` record) is days of work with a wide regression surface. With the defense on 2026-09-15 and Phase 1 (correctness) done, the risk isn't justified. Kept as the future-maintainer map. Small pieces already landed elsewhere: `EnginePool` (issue 04) pulled the multi-engine logic out; `decode_notification` (issue 20) and `build_csv_uploads` (issue 19) extracted two seams.
+
+---
 
 Not scheduled for the defense. Recorded so a future student inherits the map
 instead of rediscovering it. Source: architecture review, 2026-09-08.
