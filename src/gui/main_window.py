@@ -36,10 +36,10 @@ from core.ble_message_log import BleMessageLog
 from gui.avatar import avatar_icon
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_layout_window import BoardLayoutWindow
+from gui.board_link import BoardLink
 from gui.configuration_window import ConfigurationWindow
 from gui.csv_analysis_window import CsvAnalysisWindow
 from gui.debug_window import DebugWindow
-from gui.device_target import restart_board
 from gui.exercise_config_window import ExerciseConfigWindow
 from gui.fault_panel import FaultPanel
 from gui.food_config_window import FoodConfigWindow
@@ -88,6 +88,10 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._fault_panel: FaultPanel | None = None
         self._scenario_window: ScenarioWindow | None = None
 
+        # One write surface over the connected board sessions (issue 18).
+        self._board = BoardLink(
+            lambda: self._bluetooth_window.sessions() if self._bluetooth_window else {}
+        )
         self._ble_log = BleMessageLog(self)
         self._ble_log.new_message.connect(self._on_new_message)
         self._ble_log.device_disconnected.connect(self._on_device_disconnected)
@@ -731,13 +735,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """4 if a connected identity is one slot of a multi-sensor board (its
         advertised name is numbered), else 1 — passed to the instant-event
         dialogs so they show a Slot picker only when it means something."""
-        if self._bluetooth_window is None:
-            return 1
-        return (
-            4
-            if any(s.slot_index is not None for s in self._bluetooth_window.sessions().values())
-            else 1
-        )
+        return 4 if self._board.multi_slot() else 1
 
     def _instant_slot_choices(self) -> list[tuple[int | None, str]]:
         """(value, label) for the instant-event dialogs' Target combo — empty
@@ -751,20 +749,21 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             out.append((i, f"Sensor {i + 1} — {person}" if person else f"Sensor {i + 1}"))
         return out
 
-    def _send_instant(self, char_key: str, payload: bytes, slot: int | None) -> None:
-        """Send a one-shot event over BLE: to one session with a sensor-select
-        prefix when *slot* is given (multi-sensor), else broadcast to every
-        connected session (single-sensor / "all slots")."""
-        if self._bluetooth_window is None:
-            return
-        sessions = list(self._bluetooth_window.sessions().values())
-        if slot is not None and sessions:
-            target = next((s for s in sessions if s.slot_index is not None), sessions[0])
-            target.queue_write("sensor_select", protocol.encode_sensor_select(slot))
-            target.queue_write(char_key, payload)
-        else:
-            for session in sessions:
-                session.queue_write(char_key, payload)
+    def _inject_instant_food(self, slot: int | None, duration_min: int, carbs_g: float) -> None:
+        """One-shot carb bolus: into the local engine(s) and, if connected, the board."""
+        self._engines.add_instant_food(slot, duration_min, carbs_g)
+        self._board.send_instant(
+            "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
+        )
+
+    def _inject_instant_exercise(
+        self, slot: int | None, duration_min: int, intensity_pct: float
+    ) -> None:
+        """One-shot exercise bout: into the local engine(s) and, if connected, the board."""
+        self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
+        self._board.send_instant(
+            "exercise_instant", protocol.encode_exercise_instant(duration_min, intensity_pct), slot
+        )
 
     def _open_insert_food(self) -> None:
         """Prompt for a one-shot carb bolus and inject it into the running simulation now.
@@ -775,9 +774,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         applied on top of whatever's already running, no reset. See
         PROTOCOL_SPEC.md's "Instant food/exercise events" section.
         """
-        if self._engines.is_empty() and (
-            self._bluetooth_window is None or not self._bluetooth_window.sessions()
-        ):
+        if self._engines.is_empty() and not self._board.connected():
             QMessageBox.information(
                 self, "Insert Food Now", "Nothing running to insert into — start a run first."
             )
@@ -786,11 +783,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         carbs_g, duration_min = dialog.values()
-        slot = dialog.selected_slot()
-        self._engines.add_instant_food(slot, duration_min, carbs_g)
-        self._send_instant(
-            "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
-        )
+        self._inject_instant_food(dialog.selected_slot(), duration_min, carbs_g)
 
     def _open_insert_exercise(self) -> None:
         """Prompt for a one-shot exercise bout and inject it into the running simulation now.
@@ -798,9 +791,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         Same non-disruptive semantics as _open_insert_food, via the
         exercise_instant characteristic.
         """
-        if self._engines.is_empty() and (
-            self._bluetooth_window is None or not self._bluetooth_window.sessions()
-        ):
+        if self._engines.is_empty() and not self._board.connected():
             QMessageBox.information(
                 self, "Insert Exercise Now", "Nothing running to insert into — start a run first."
             )
@@ -809,17 +800,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         duration_min, intensity_pct = dialog.values()
-        slot = dialog.selected_slot()
-        self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
-        self._send_instant(
-            "exercise_instant", protocol.encode_exercise_instant(duration_min, intensity_pct), slot
-        )
+        self._inject_instant_exercise(dialog.selected_slot(), duration_min, intensity_pct)
 
     def _open_insert_pisa(self) -> None:
         """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
-        if self._engines.is_empty() and (
-            self._bluetooth_window is None or not self._bluetooth_window.sessions()
-        ):
+        if self._engines.is_empty() and not self._board.connected():
             QMessageBox.information(
                 self, "Insert PISA Now", "Nothing running to insert into — start a run first."
             )
@@ -842,7 +827,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             raise ValueError(f"unknown fault kind {kind!r}")
         duration_min, depth_frac = values
         self._engines.add_instant_pisa(slot, duration_min, depth_frac)
-        self._send_instant(
+        self._board.send_instant(
             "pisa_instant", protocol.encode_pisa_instant(duration_min, depth_frac), slot
         )
         # Shade the affected interval: duration is simulated minutes; the graph
@@ -898,10 +883,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             carbs_g = float(args.get("carbs_g", 50))
             duration_min = int(args.get("duration_min", 15))
             slot = args.get("slot")
-            self._engines.add_instant_food(slot, duration_min, carbs_g)
-            self._send_instant(
-                "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
-            )
+            self._inject_instant_food(slot, duration_min, carbs_g)
             return f"insert_food {carbs_g:g} g / {duration_min} min" + (
                 f" @slot {slot}" if slot is not None else ""
             )
@@ -910,12 +892,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             duration_min = int(args.get("duration_min", 30))
             intensity_pct = float(args.get("intensity_pct", 50))
             slot = args.get("slot")
-            self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
-            self._send_instant(
-                "exercise_instant",
-                protocol.encode_exercise_instant(duration_min, intensity_pct),
-                slot,
-            )
+            self._inject_instant_exercise(slot, duration_min, intensity_pct)
             return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (
                 f" @slot {slot}" if slot is not None else ""
             )
@@ -1038,11 +1015,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._speed_mult = max(1.0, min(1000.0, float(multiplier)))
         app_settings.save_pref("speed_mult", self._speed_mult)
         self._restart_engine()
-        if self._bluetooth_window is not None:
-            payload = protocol.encode_speed(self._speed_mult)
-            for session in self._bluetooth_window.sessions().values():
-                session.queue_write("speed", payload)
-                restart_board(session)
+        self._board.broadcast("speed", protocol.encode_speed(self._speed_mult))
+        self._board.restart_all()
 
     def _on_model_only_toggled(self, checked: bool) -> None:
         """Switch between BLE-driven graphs and pure-model-only graphs."""
@@ -1052,11 +1026,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
     def _send_cgms_only(self, enabled: bool) -> None:
         """Broadcast the CGMS-only toggle to every connected board (see PROTOCOL_SPEC.md)."""
-        if self._bluetooth_window is None:
-            return
-        payload = protocol.encode_cgms_only(enabled)
-        for session in self._bluetooth_window.sessions().values():
-            session.queue_write("cgms_only", payload)
+        self._board.broadcast("cgms_only", protocol.encode_cgms_only(enabled))
 
     def _set_locked_for_cgms_only(self, locked: bool) -> None:
         """Enable/disable every control that would send a now-rejected config write.
@@ -1257,11 +1227,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
     def _send_run_state(self, value: int) -> None:
         """Broadcast a run-state byte to every connected board (see PROTOCOL_SPEC.md)."""
-        if self._bluetooth_window is None:
-            return
-        payload = protocol.encode_run_state(value)
-        for session in self._bluetooth_window.sessions().values():
-            session.queue_write("run_state", payload)
+        self._board.broadcast("run_state", protocol.encode_run_state(value))
 
     def _broadcast_data_source(self) -> None:
         """Tell every connected board whether the active person is model- or CSV-backed.
@@ -1270,17 +1236,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         Send CSV to Board); this just flips the board's playback source so it
         matches what the app's own engine is doing.
         """
-        if self._bluetooth_window is None:
-            return
         is_csv = (
             self._active_person is not None
             and getattr(self._active_person, "data_source", "model") == "csv"
         )
-        ds_payload = protocol.encode_data_source(is_csv)
-        speed_payload = protocol.encode_speed(self._speed_mult)
-        for session in self._bluetooth_window.sessions().values():
-            session.queue_write("data_source", ds_payload)
-            session.queue_write("speed", speed_payload)
+        self._board.broadcast("data_source", protocol.encode_data_source(is_csv))
+        self._board.broadcast("speed", protocol.encode_speed(self._speed_mult))
 
     def _on_start_pause_clicked(self) -> None:
         """Start (from stopped), pause (from running), or resume (from paused)."""

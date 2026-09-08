@@ -1,0 +1,67 @@
+"""Issue 18: BoardLink is the one write surface over the connected board sessions."""
+
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import pytest
+
+pytest.importorskip("PyQt6.QtWidgets")
+
+from api import protocol
+from gui.board_link import BoardLink
+
+
+class _FakeSession:
+    def __init__(self, slot_index=None):
+        self.slot_index = slot_index
+        self.writes: list[tuple[str, bytes]] = []
+
+    def queue_write(self, key, payload):
+        self.writes.append((key, payload))
+
+
+def _link(*sessions):
+    d = {f"a{i}": s for i, s in enumerate(sessions)}
+    return BoardLink(lambda: d), list(d.values())
+
+
+def test_broadcast_writes_to_every_session():
+    link, [s0, s1] = _link(_FakeSession(), _FakeSession())
+    link.broadcast("speed", b"\x01\x02")
+    assert s0.writes == s1.writes == [("speed", b"\x01\x02")]
+
+
+def test_connected_and_multi_slot():
+    empty = BoardLink(lambda: {})
+    assert not empty.connected() and not empty.multi_slot()
+    link, _ = _link(_FakeSession(slot_index=0), _FakeSession(slot_index=1))
+    assert link.connected() and link.multi_slot()
+    link2, _ = _link(_FakeSession(), _FakeSession())
+    assert link2.connected() and not link2.multi_slot()
+
+
+def test_send_to_slot_prefixes_the_cursor():
+    numbered = _FakeSession(slot_index=2)
+    link, _ = _link(_FakeSession(), numbered)
+    link.send_to_slot(3, "pisa_instant", b"\xaa")
+    assert numbered.writes == [
+        ("sensor_select", protocol.encode_sensor_select(3)),
+        ("pisa_instant", b"\xaa"),
+    ]
+
+
+def test_send_instant_none_slot_broadcasts():
+    link, [s0, s1] = _link(_FakeSession(), _FakeSession())
+    link.send_instant("food_instant", b"\x01", None)
+    assert s0.writes == s1.writes == [("food_instant", b"\x01")]
+
+
+def test_no_sessions_is_a_safe_noop():
+    empty = BoardLink(lambda: None)  # provider may return None
+    empty.broadcast("x", b"")
+    empty.send_instant("x", b"", 1)
+    empty.restart_all()
