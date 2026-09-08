@@ -103,6 +103,19 @@ and in the app's `SimulationEngine` — using anything fancier on one side
 and not the other would itself introduce a source of "expected vs.
 received" divergence that has nothing to do with sensor noise.
 
+**Sub-stepping at high speed.** The continuous speed multiplier (§5) can push
+`dt_min` well past 1 minute (x1000 → ~16.7 min/tick), where a single explicit
+Euler step *does* diverge — UVA/Padova collapses to 0, Cambridge/Deichmann
+overshoot by tens of mg/dL. Both sides therefore cap the integration step:
+`nsub = ceil(dt_min / MODEL_SUBSTEP_MAX_MIN)` sub-steps of `dt_min / nsub`
+each, with `MODEL_SUBSTEP_MAX_MIN = 1.0` minute (impulse-fed carbs delivered
+on the first sub-step only; rate-fed carbs and exercise on every one). This is
+`model_thread.c` and `models/engine.py`'s `ModelStepper` running the identical
+loop, so the two stay aligned at every speed. Through ~x300 the sub-stepped
+trajectory matches the x1 reference to within a few mg/dL; at x1000 a residual
+few-percent offset remains during fast transients, but it is the *same* offset
+on both sides. (`tests/test_engine_step.py` pins this.)
+
 ## 5. The timestep, from the MCU up
 
 The physical tick rate is fixed in the firmware:

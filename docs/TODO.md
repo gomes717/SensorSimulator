@@ -21,11 +21,26 @@
 > Track A (correção) primeiro, com testes de regressão; Track B (UX/estrutura)
 > num lote pré-escrita.
 
-- [ ] Usuário aparece conectado mesmo depois de desconectar (estado de conexão não é limpo).
+- [x] Usuário aparece conectado mesmo depois de desconectar. **Feito (2026-09-08,
+  issue 06, commit 2438d17):** `BleMessageLog.device_disconnected` → `MainWindow`
+  marca a linha "⚊ offline" (cinza, valor `—`); a próxima mensagem do mesmo
+  `dev_id` limpa (reconexão). Verificado em hardware.
 - [ ] Arrumar legenda dos gráficos.
-- [ ] Arrumar o multiplicador de tempo — em velocidades altas está quebrando a integração da EDO.
+- [x] Arrumar o multiplicador de tempo — em velocidades altas está quebrando a
+  integração da EDO. **Feito (2026-09-08, issue 03, commit __):** o firmware já
+  fazia sub-step (`MODEL_SUBSTEP_MAX_MIN = 1.0` em `model_thread.c`); faltava
+  espelhar no motor da aplicação. `ModelStepper._tick_model` agora roda o mesmo
+  laço `nsub = ceil(dt_min / 1.0)` — os dois lados usam algoritmo e constante
+  idênticos, então as linhas "expected" e "received" continuam alinhadas em
+  qualquer velocidade. Verificado em hardware a x300 (pico ~405 mg/dL nos dois).
+  Testes em `tests/test_engine_step.py` (sem sub-step, UVA/Padova colapsa a 0 a
+  x1000). **Pendente (sub-item, firmware):** uma escrita em Speed passa pelo
+  `apply_config_locked` completo (reseta `sim_clock` e limpa eventos pontuais) —
+  tornar a velocidade um escalar "a quente" é uma correção separada.
 - [ ] Arrumar o timeslot do BLE entre os "sensores" (multi-identidade).
-- [ ] Quando a fonte for CSV, não mostrar o gráfico de comida.
+- [ ] Quando a fonte for CSV, não mostrar o gráfico de comida. **Feito (2026-09-08,
+  issue 08, commit 45a0892):** o gráfico é rotulado "Food log — report-only (CSV
+  playback; does not drive glucose)" quando a fonte da pessoa ativa é CSV.
 - [ ] Trocar as métricas de % para tempo.
 - [ ] Melhorar a janela de configuração, que está confusa.
 - [ ] Validar o protocolo Dexcom.

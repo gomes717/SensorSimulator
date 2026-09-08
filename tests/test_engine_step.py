@@ -9,9 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import math
+
 import pytest
 
-from models import cambridge, royparker
+from models import cambridge, engine, royparker
 from models.engine import ModelStepper, TickResult
 from models.types import ExerciseEvent, FoodEvent, ModelId, PersonProfile
 
@@ -124,3 +126,56 @@ def test_scheduled_exercise_reports_intensity():
     s = ModelStepper(p)
     out = _steps(s, 20)
     assert out[0].exercise_pct == pytest.approx(60.0)
+
+
+# --- issue 03: speed multiplier must not break the ODE integration ---------
+
+_MEAL = [FoodEvent(time_of_day_min=0, carbs_g=80.0, duration_min=30)]
+_HORIZON_MIN = 180.0
+
+
+def _final_glucose(model_id, dt_min, *, food=None, horizon_min=_HORIZON_MIN):
+    p = PersonProfile(name="t", model_id=model_id, food_events=food or [])
+    s = ModelStepper(p)
+    last = 0.0
+    for _ in range(max(1, round(horizon_min / dt_min))):
+        last = s.tick(dt_min, FIXED_TS).glucose
+    return last, s.sim_clock_min
+
+
+def test_substep_constant_matches_firmware():
+    # firmware/peripheral_cgms/src/model_thread.c: #define MODEL_SUBSTEP_MAX_MIN
+    assert engine.MODEL_SUBSTEP_MAX_MIN == 1.0
+
+
+@pytest.mark.parametrize("model_id", list(ModelId))
+def test_high_speed_stays_physiological(model_id):
+    """A big dt_min sub-steps down to <= MODEL_SUBSTEP_MAX_MIN, so every model
+    stays bounded (no blow-up, no collapse to zero) at x1000 with a meal."""
+    fast, clock = _final_glucose(model_id, 1000.0 / 60.0, food=_MEAL)
+    assert math.isfinite(fast)
+    assert 20.0 < fast < 600.0
+    assert clock == pytest.approx(_HORIZON_MIN, rel=0.25)
+
+
+@pytest.mark.parametrize("speed_mult", [10, 60, 300])
+def test_fast_mode_tracks_the_x1_reference(speed_mult):
+    """Through x300 the sub-stepped trajectory matches x1 closely — the
+    expected-vs-received cross-check stays meaningful at normal fast-mode speeds."""
+    ref, _ = _final_glucose(ModelId.CAMBRIDGE, 1.0 / 60.0, food=_MEAL)
+    fast, _ = _final_glucose(ModelId.CAMBRIDGE, speed_mult / 60.0, food=_MEAL)
+    assert abs(fast - ref) < 5.0
+
+
+def test_substepping_prevents_uva_padova_collapse(monkeypatch):
+    """UVA/Padova at x1000 collapses to 0 under a single 16 min Euler step;
+    the sub-step cap keeps it near the x1 reference. Proves the cap is
+    load-bearing, not decorative."""
+    ref, _ = _final_glucose(ModelId.UVA_PADOVA, 1.0 / 60.0, food=_MEAL)
+
+    with_cap, _ = _final_glucose(ModelId.UVA_PADOVA, 1000.0 / 60.0, food=_MEAL)
+    assert abs(with_cap - ref) < 40.0
+
+    monkeypatch.setattr(engine, "MODEL_SUBSTEP_MAX_MIN", 1.0e9)
+    no_cap, _ = _final_glucose(ModelId.UVA_PADOVA, 1000.0 / 60.0, food=_MEAL)
+    assert no_cap < 20.0 or not math.isfinite(no_cap)  # collapsed

@@ -35,6 +35,14 @@ from models.types import ModelId, PersonProfile
 # same shape the board reports.
 CSV_FOODLOG_SPREAD_MIN = 30.0
 
+# Ceiling on a single explicit-Euler integration step, in simulated minutes.
+# A large dt_min (high speed multiplier) makes the ODEs diverge — at x300 the
+# step is 5 sim-min and Cambridge blows up to ~600 mg/dL. tick() sub-steps so
+# every integration step is <= this. Must match MODEL_SUBSTEP_MAX_MIN in the
+# firmware's model_thread.c so the "expected" and "received" lines stay
+# identical at every speed. x1..x60 (dt_min <= 1) are unaffected (nsub == 1).
+MODEL_SUBSTEP_MAX_MIN = 1.0
+
 
 def load_csv_window(profile: PersonProfile) -> tuple[list[int], int, list[tuple[int, float]]]:
     """Resolve a profile's CSV assignment into (glucose_samples, interval_s, foodlog).
@@ -416,16 +424,24 @@ class ModelStepper:
 
             pisa_factor = self._pisa_factor(dt_min)
 
-        adapter.step(
-            m.state,
-            params,
-            carbs,
-            m.basal,
-            exercise_pct,
-            hr_bpm,
-            self.sim_clock_min,
-            dt_min,
-        )
+        # Sub-step the ODE so a large dt_min can't make explicit Euler diverge —
+        # mirrors the firmware's MODEL_SUBSTEP_MAX_MIN loop in model_thread.c.
+        # Impulse-fed carbs are a one-shot mass, delivered on the first sub-step
+        # only; rate-fed carbs (g/min) and the exercise level apply to every one.
+        nsub = max(1, math.ceil(dt_min / MODEL_SUBSTEP_MAX_MIN))
+        sub_dt = dt_min / nsub
+        carbs_rest = carbs if adapter.rate_fed else 0.0
+        for k in range(nsub):
+            adapter.step(
+                m.state,
+                params,
+                carbs if k == 0 else carbs_rest,
+                m.basal,
+                exercise_pct,
+                hr_bpm,
+                self.sim_clock_min,
+                sub_dt,
+            )
         glucose = adapter.glucose_mg_dl(m.state, params) * pisa_factor
 
         # For the food/exercise graph: rate-fed models already carry a g/min rate;
