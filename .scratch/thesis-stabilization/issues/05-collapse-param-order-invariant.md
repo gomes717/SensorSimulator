@@ -1,9 +1,33 @@
 # Collapse the model param-order invariant to one source of truth
 
-Status: ready
+Status: done (2026-09-08, commit 27a200b)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome — the "collapse" was already mostly done
+
+`models/<m>.py::PARAM_NAMES` is already the single source: `protocol._MODEL_PARAM_NAMES`
+maps `ModelId -> module.PARAM_NAMES` (the same list object, verified by an
+identity test), and `person_config_window` reads `module.PARAM_NAMES` directly.
+No re-typed copies exist. The architecture review's "owned by 4 consumers" was
+overstated — they are thin `ModelId -> ...` dicts, not duplicate name lists.
+
+What was genuinely missing and is now added:
+
+- `tests/param_order/*.golden` — the field order of every model + sensor C
+  parameter struct, transcribed from
+  `firmware/peripheral_cgms/src/models/cgmsim_*.h`. Hand-update on struct change.
+- `tests/test_param_order.py` (12 cases) — Python `PARAM_NAMES` == golden ==
+  `protocol.model_param_names()`; identity check (one list, not two); counts fit
+  the firmware buffers.
+- Tightened the single-source comments; fixed stale `src/protocol.py` paths.
+
+All 4 models + 3 sensors currently match the firmware exactly. No runtime
+behaviour change, so no board re-test.
+
+---
+
 
 ## Problem
 
