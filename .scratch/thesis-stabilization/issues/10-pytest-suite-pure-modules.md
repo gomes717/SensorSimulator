@@ -1,9 +1,15 @@
 # Stand up a pytest suite for the pure modules
 
-Status: ready
+Status: done (2026-09-08, commit e606880)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome
+
+`tests/` now 83 passing (was 0): cgm_metrics (bands/edges/stats), dexcom_csv + food_log_csv readers (fixtures with real headers, ValueError paths), protocol encode/decode round-trips + clamping + chunk reassembly + dexcom decode. Engine-step coverage came with 01/03.
+
+---
 
 ## Problem
 

@@ -1,9 +1,15 @@
 # Harden the E2E suite
 
-Status: ready
+Status: done (2026-09-08, commit 07333e4)
 Track: A
 Phase: 1
 Blocked by: —
+
+## Outcome
+
+The old suite passed 19/19 with bugs open because deterministic checks ran only via Model Only. Added `tests/test_fe_graph_title.py` (issue 08 pin); renamed the firmware-PISA case to **S7-07** (S7-04 reserved in the matrix); `docs/E2E_TEST_PLAN.md` gained a Regression-pins table + a note that pytest is the faster gate under the hardware suite. Pins: 01/02/03/05/06/08. Pending: 04, 07.
+
+---
 
 ## Problem
 

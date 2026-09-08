@@ -15,8 +15,8 @@ See `spec.md` for framing and decisions.
 | 07 | BLE timeslot contention between sensor identities | ready |
 | 08 | Hide the food/exercise graph in CSV mode | **done** (45a0892) |
 | 09 | Dexcom protocol — honest baseline reframe | **done** (308ebeb) |
-| 10 | Stand up a pytest suite for the pure modules | ready |
-| 11 | Harden the E2E suite | ready |
+| 10 | Stand up a pytest suite for the pure modules | **done** (e606880) |
+| 11 | Harden the E2E suite | **done** (07333e4) — pins for 01/02/03/05/06/08 |
 | 21 | Python tooling & coding standard (uv, ruff, pylint, pyright) | **done** (381d9c8 + 48c7516) |
 
 ## Phase 2 — stretch
