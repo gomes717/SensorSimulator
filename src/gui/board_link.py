@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from api import protocol
 from gui.device_target import restart_board
+from models import board_layout
 
 
 class BoardLink:
@@ -43,9 +44,18 @@ class BoardLink:
         target.queue_write(char_key, payload)
 
     def send_instant(self, char_key: str, payload: bytes, slot: int | None) -> None:
-        """A one-shot event: to one slot (with the cursor prefix), or every session."""
+        """A one-shot event: to one slot, or (slot=None) to every sensor.
+
+        The firmware applies an instant event only to the sensor-select cursor's
+        slot (comm_thread.c: model_thread_add_instant_*(comm_thread_selected_slot())),
+        so "all sensors" on a multi-sensor board is cursor+event once per slot,
+        not a single broadcast — which would land N times on one slot.
+        """
         if slot is not None:
             self.send_to_slot(slot, char_key, payload)
+        elif self.multi_slot():
+            for i in range(board_layout.MAX_SLOTS):
+                self.send_to_slot(i, char_key, payload)
         else:
             self.broadcast(char_key, payload)
 

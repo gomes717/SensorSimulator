@@ -54,10 +54,24 @@ def test_send_to_slot_prefixes_the_cursor():
     ]
 
 
-def test_send_instant_none_slot_broadcasts():
-    link, [s0, s1] = _link(_FakeSession(), _FakeSession())
+def test_send_instant_none_slot_broadcasts_on_a_single_sensor_board():
+    link, [s0, s1] = _link(_FakeSession(), _FakeSession())  # slot_index None -> single
     link.send_instant("food_instant", b"\x01", None)
     assert s0.writes == s1.writes == [("food_instant", b"\x01")]
+
+
+def test_send_instant_all_sensors_walks_every_slot_on_a_multi_sensor_board():
+    """Firmware applies an instant event to the cursor's slot only, so 'all
+    sensors' must be cursor+event once per slot, not one broadcast."""
+    from models import board_layout
+
+    numbered = _FakeSession(slot_index=1)
+    link, _ = _link(_FakeSession(), numbered)
+    link.send_instant("food_instant", b"\x07", None)
+    expected = []
+    for i in range(board_layout.MAX_SLOTS):
+        expected += [("sensor_select", protocol.encode_sensor_select(i)), ("food_instant", b"\x07")]
+    assert numbered.writes == expected
 
 
 def test_no_sessions_is_a_safe_noop():
