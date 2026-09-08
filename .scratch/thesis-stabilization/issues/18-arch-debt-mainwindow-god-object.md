@@ -7,7 +7,13 @@ Blocked by: —
 
 ## 2026-09-08 status
 
-**Deferred (2026-09-08).** The full break-up (MainWindow → a controller/model; ConfigurationWindow ↔ MainWindow decoupling; typed `new_message` record) is days of work with a wide regression surface. With the defense on 2026-09-15 and Phase 1 (correctness) done, the risk isn't justified. Kept as the future-maintainer map. Small pieces already landed elsewhere: `EnginePool` (issue 04) pulled the multi-engine logic out; `decode_notification` (issue 20) and `build_csv_uploads` (issue 19) extracted two seams.
+**Partial (2026-09-08).** Done: `EnginePool` (issue 04) pulled the multi-engine logic out; `gui/board_link.py` `BoardLink` (commit 7b12c70) concentrates the ~6 scattered BLE fan-out loops + `_send_instant` + the connected-guards, tested; `_inject_instant_food/_exercise` dedup the 3 Insert-Now handlers vs `_scenario_dispatch`; `decode_notification` (20) + `build_csv_uploads` (19) extracted two more seams; name->slot is one canonical function (19). MainWindow 1622 -> 1583 lines, and ~120 lines of scattered fan-out/dup are now in tested modules.
+
+**Still deferred:** the `ConfigurationWindow` <-> `MainWindow` private-member coupling (a shared controller/state object both talk to). That is a ~1-2 day MVC refactor whose only end-to-end check is a hardware `ui_smoke` pass — the BLE stack is wedged and the defense is 2026-09-15, so the regression risk isn't justified now. Do it post-defense (or when `ui_smoke` is runnable).
+
+---
+
+(orig) The full break-up (MainWindow → a controller/model; ConfigurationWindow ↔ MainWindow decoupling; typed `new_message` record) is days of work with a wide regression surface. With the defense on 2026-09-15 and Phase 1 (correctness) done, the risk isn't justified. Kept as the future-maintainer map. Small pieces already landed elsewhere: `EnginePool` (issue 04) pulled the multi-engine logic out; `decode_notification` (issue 20) and `build_csv_uploads` (issue 19) extracted two seams.
 
 ---
 
