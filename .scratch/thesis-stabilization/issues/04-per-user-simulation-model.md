@@ -1,9 +1,37 @@
 # One simulation model per user / slot (not one shared)
 
-Status: blocked (01)
+Status: done (2026-09-08, commits 1f06d1c + ec6c28e)
 Track: A
 Phase: 1
 Blocked by: 01
+
+## Outcome
+
+- `models/engine.py` `EnginePool(QObject)` — `dict[slot, SimulationEngine]`,
+  re-emits each tick tagged with its slot, one shared speed, fan-out
+  pause/resume/stop, `add_instant_*` routed by slot (None = all). Rebuilt
+  wholesale on any change.
+- `main_window`: `self._engine` -> `self._engines = EnginePool`.
+  `_engine_slots()` = per-slot when the layout has assignments and not Model
+  Only, else `{0: active_person}`. `_on_expected_reading(slot, ...)` files
+  per-slot into `_history[user_id]["ex_g*"]` keyed by the same `device_label`
+  the received stream uses; single-sensor / Model Only keep the old global
+  `_expected_*`. Layout change rebuilds the pool.
+- Slot->name relabel: the instant-event dialogs' "Slot: 0/1/2/3" combo is now
+  "Target: All sensors / Sensor N — <person>".
+- Tests: `test_engine_pool.py`, `test_multi_slot_engines.py` (88 total).
+- Hardware: a 4-person layout + Start builds 4 engines with 4 distinct
+  trajectories, each into its own `P{i} — Sensor {i+1}` bucket; slot 0's
+  received = expected minus the firmware's per-slot Ideal offset.
+
+## Not done here
+
+The `e2e_4sensor.py` "per-slot expected **vs received**" case waits on issue 07
+— on Windows this process only receives slot 0's stream (the WinRT 4-way
+notify-subscription drop). The per-slot *expected* side is pinned by the two
+pytest files above.
+
+---
 
 ## Problem
 
