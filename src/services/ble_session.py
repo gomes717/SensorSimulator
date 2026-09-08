@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from bleak import BleakClient
@@ -104,6 +105,77 @@ def _decode_cgm_measurement(data: bytes) -> dict:
         "time_offset_min": time_offset,
         "flags": flags,
     }
+
+
+@dataclass
+class NotifyResult:
+    """What one GATT notification decoded to — the seam BleSession is tested through.
+
+    ``kind`` is ``"message"`` (append ``message`` to the log), ``"reset_sync"``,
+    ``"csv_control"`` (``csv_ctrl`` = the ``(status, received)`` tuple), or
+    ``"ignore"`` (a sibling instance's stream, filtered out).
+    """
+
+    kind: str
+    message: dict | None = None
+    csv_ctrl: tuple[int, int] | None = None
+
+
+def decode_notification(
+    uuid: str,
+    data: bytes,
+    *,
+    user_id: str,
+    dev_id: str,
+    own_instance_index: int | None,
+    instance_count: int,
+    instance_of_handle: int | None,
+) -> NotifyResult:
+    """Pure decode + per-slot demux of one GATT notification. No bleak, no Qt.
+
+    *own_instance_index* is this identity's 0-based slot (None = show every
+    instance); *instance_of_handle* is which CGMS instance the notifying handle
+    belongs to; *instance_count* is how many CGMS instances the device exposes.
+    """
+    u = uuid.lower()
+
+    tag = user_id
+    if u == CGM_MEASUREMENT_UUID and instance_count > 1:
+        if own_instance_index is not None:
+            if instance_of_handle != own_instance_index:
+                return NotifyResult("ignore")
+        elif instance_of_handle is not None:
+            tag = f"{user_id} · Sensor {instance_of_handle + 1}"
+
+    if u == ble_uuids.RESET_SYNC_UUID:
+        return NotifyResult("reset_sync")
+    if u == ble_uuids.CSV_CONTROL_UUID:
+        return NotifyResult("csv_control", csv_ctrl=protocol.decode_csv_control_notify(data))
+
+    message: dict = {
+        "user_id": tag,
+        "dev_id": dev_id,
+        "characteristic": uuid,
+        "raw_hex": data.hex(),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    if u == CGM_MEASUREMENT_UUID:
+        message.update(_decode_cgm_measurement(data))
+    elif u == ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID:
+        decoded = protocol.decode_dexcom_glucose(data)
+        if decoded is not None:
+            message.update(decoded)
+    elif u == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
+        decoded = protocol.decode_food_exercise_status(data)
+        if (
+            decoded is not None
+            and own_instance_index is not None
+            and decoded.get("slot") != own_instance_index
+        ):
+            return NotifyResult("ignore")
+        if decoded is not None:
+            message.update(decoded)
+    return NotifyResult("message", message=message)
 
 
 class BleSession(QThread):
@@ -576,63 +648,31 @@ class BleSession(QThread):
         return f"{self._name} ({':'.join(suffix)})" if suffix else self._name
 
     def _handle_notification(self, characteristic, data: bytearray) -> None:
-        """Turn a raw GATT notification into a message dict and emit it.
-
-        Drops CGM Measurement notifications from sibling instances that
-        don't belong to this identity's own sensor (see class docstring).
-        """
-        user_id = self._user_id()
-        if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID and self._instance_count > 1:
-            instance = self._instance_by_handle.get(characteristic.handle)
-            if self._own_instance_index is not None:
-                if instance != self._own_instance_index:
-                    return
-            elif instance is not None:
-                user_id = f"{user_id} · Sensor {instance + 1}"
-
-        message = {
-            "user_id": user_id,
-            "dev_id": self._address,
-            "characteristic": characteristic.uuid,
-            "raw_hex": data.hex(),
-            "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
-        }
-        if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID:
-            message.update(_decode_cgm_measurement(bytes(data)))
-            print(
-                f"[ble] CGM measurement from {user_id}: {message.get('glucose_value')} mg/dL "
-                f"raw={data.hex()}"
-            )
-        elif characteristic.uuid.lower() == ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID:
-            decoded = protocol.decode_dexcom_glucose(bytes(data))
-            if decoded is not None:
-                message.update(decoded)
-            print(
-                f"[ble] dexcom glucose from {user_id}: {message.get('glucose_value')} mg/dL "
-                f"seq={message.get('sequence')} raw={data.hex()}"
-            )
-        elif characteristic.uuid.lower() == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
-            decoded = protocol.decode_food_exercise_status(bytes(data))
-            # The board sends one status notification per sensor slot on this
-            # single characteristic; if this session represents one specific
-            # sensor, keep only that slot's (see class docstring).
-            if (
-                decoded is not None
-                and self._own_instance_index is not None
-                and decoded.get("slot") != self._own_instance_index
-            ):
-                return
-            if decoded is not None:
-                message.update(decoded)
-            print(f"[ble] food/exercise status from {user_id}: {decoded}")
-        elif characteristic.uuid.lower() == ble_uuids.RESET_SYNC_UUID:
-            print(f"[ble] reset_sync from {user_id}: generation={data[0] if data else '?'}")
+        """Dispatch one GATT notification: decode + demux in decode_notification()
+        (pure, tested), then do the side effect for its kind."""
+        res = decode_notification(
+            characteristic.uuid,
+            bytes(data),
+            user_id=self._user_id(),
+            dev_id=self._address,
+            own_instance_index=self._own_instance_index,
+            instance_count=self._instance_count,
+            instance_of_handle=self._instance_by_handle.get(characteristic.handle),
+        )
+        if res.kind == "ignore":
+            return
+        if res.kind == "reset_sync":
+            print(f"[ble] reset_sync from {self._user_id()}: gen={data[0] if data else '?'}")
             self.reset_sync.emit(self._address)
-            return  # control event, not a data point — don't add it to new_message
-        elif characteristic.uuid.lower() == ble_uuids.CSV_CONTROL_UUID:
-            decoded = protocol.decode_csv_control_notify(bytes(data))
-            print(f"[ble] csv_control from {user_id}: {decoded} raw={data.hex()}")
-            if decoded is not None:
-                self._csv_ctrl_queue.put_nowait(decoded)
-            return  # control event, not a data point
-        self.new_message.emit(message)
+            return
+        if res.kind == "csv_control":
+            print(f"[ble] csv_control from {self._user_id()}: {res.csv_ctrl} raw={data.hex()}")
+            if res.csv_ctrl is not None:
+                self._csv_ctrl_queue.put_nowait(res.csv_ctrl)
+            return
+        msg = res.message or {}
+        print(
+            f"[ble] {msg.get('user_id')} <- {characteristic.uuid[-4:]}: "
+            f"glucose={msg.get('glucose_value')} raw={data.hex()}"
+        )
+        self.new_message.emit(msg)
