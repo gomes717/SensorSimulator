@@ -26,7 +26,7 @@ from graphic.device_target import DeviceTargetBar, await_send_confirmation, rest
 from models.types import FoodEvent, PersonProfile
 
 
-class FoodConfigWindow(QWidget):
+class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Add/remove recurring-daily meals for whichever person is currently active.
 
     *get_active_person* is re-invoked on every show/refresh so the window

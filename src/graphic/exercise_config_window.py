@@ -26,7 +26,7 @@ from graphic.device_target import DeviceTargetBar, await_send_confirmation, rest
 from models.types import ExerciseEvent, PersonProfile
 
 
-class ExerciseConfigWindow(QWidget):
+class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Add/remove recurring-daily exercise bouts for whichever person is currently active.
 
     Only the Roy/Parker and Deichmann models actually react to exercise —

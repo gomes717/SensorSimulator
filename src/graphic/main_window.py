@@ -54,7 +54,7 @@ from models.engine import SimulationEngine
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Top-level window: toolbar, user treeview, glucose graph, food/exercise graph, selector bar.
 
     The treeview and glucose graph are populated live from :class:`BleMessageLog`

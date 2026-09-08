@@ -34,8 +34,8 @@ from PyQt6.QtWidgets import (
 from models.types import PersonProfile
 
 matplotlib.use("QtAgg")
+from matplotlib.backends.backend_qt import NavigationToolbar2QT
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 
 from models import app_settings, cgm_metrics, dexcom_csv, food_log_csv
@@ -45,7 +45,7 @@ _WINDOW_HOURS = 24.0
 _SLIDER_STEPS = 1000  # slider resolution over the movable range
 
 
-class CsvAnalysisWindow(QWidget):
+class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Load a CGM CSV, slide a 24 h window over it, and show that window's metrics."""
 
     def __init__(

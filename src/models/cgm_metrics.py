@@ -59,7 +59,9 @@ def compute(
     tar1 = sum(1 for v in vals if tar1_above < v <= tar2_above)
     tir = n - tbr2 - tbr1 - tar1 - tar2
 
-    pct = lambda c: c / n * 100.0
+    def pct(c: int) -> float:
+        return c / n * 100.0
+
     return GlucoseMetrics(
         n=n,
         mean=mean,

@@ -18,6 +18,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import itertools
 import json
 import os
 import subprocess
@@ -33,18 +35,18 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 os.chdir(_ROOT)
 
-from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PyQt6.QtCore import Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QDialog
 
-import graphic.main_window as mw  # noqa: E402
-from api import protocol  # noqa: E402
-from graphic.instant_event_dialog import (  # noqa: E402
+import graphic.main_window as mw
+from api import protocol
+from graphic.instant_event_dialog import (
     PisaInstantDialog,
 )
-from models import cambridge  # noqa: E402
-from models.types import ModelId, PersonProfile  # noqa: E402
-from services.ble_session import BleSession  # noqa: E402
+from models import cambridge
+from models.types import ModelId, PersonProfile
+from services.ble_session import BleSession
 
 DEFAULT_BOARD = "D0:3F:4D:E2:7C:9B"
 SERIAL_PORT = "COM10"
@@ -71,10 +73,8 @@ class Stream:
         with self._lock:
             self._buf.append(rec)
             self.last_add = time.monotonic()
-            try:
+            with contextlib.suppress(ValueError):
                 self._fh.write(rec + "\n")
-            except ValueError:
-                pass
 
     def fresh(self, max_age: float = 20.0) -> bool:
         """True if a line arrived within max_age seconds (serial tap alive)."""
@@ -85,10 +85,8 @@ class Stream:
             return list(self._buf)[-n:]
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._fh.close()
-        except Exception:
-            pass
 
 
 class Tee:
@@ -125,7 +123,7 @@ _PS_SERIAL = (
 def _kill_stray_serial_readers(port: str) -> None:
     """Kill leftover PowerShell SerialPort readers (from a crashed prior run)
     still holding *port* open, so a fresh SerialTap can attach."""
-    try:
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         subprocess.run(
             [
                 "powershell",
@@ -133,13 +131,11 @@ def _kill_stray_serial_readers(port: str) -> None:
                 "-Command",
                 "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
                 f"Where-Object {{ $_.CommandLine -like '*SerialPort*{port}*' }} | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",  # noqa: E501
             ],
             capture_output=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
 
 
 class SerialTap:
@@ -201,19 +197,15 @@ class SerialTap:
                 old = self._proc
                 if self._spawn():
                     if old:
-                        try:
+                        with contextlib.suppress(OSError):
                             old.terminate()
-                        except OSError:
-                            pass
                     time.sleep(3)
 
     def stop(self) -> None:
         self._stop = True
         if self._proc:
-            try:
+            with contextlib.suppress(OSError):
                 self._proc.terminate()
-            except OSError:
-                pass
 
 
 def _list_com_ports() -> list[str]:
@@ -317,10 +309,8 @@ class Ctx:
 
     def stop_sessions(self) -> None:
         if self.w._bluetooth_window is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self.w._bluetooth_window.stop_all_sessions()
-            except Exception:
-                pass
         self.sessions.clear()
 
     # -- serial helpers -------------------------------------------------
@@ -410,10 +400,8 @@ class Case:
         (self.dir / "serial.slice.log").write_text(
             "\n".join(self.ctx.serial.tail(500)), encoding="utf-8"
         )
-        try:
+        with contextlib.suppress(Exception):
             self.ctx.w.grab().save(str(self.dir / "screenshot.png"))
-        except Exception:
-            pass
 
         tb_text = None
         if et is None:
@@ -724,7 +712,7 @@ def _switch_profile(ctx, c, dexcom: bool):
     stream = dexcom_stream if dexcom else sig_stream
     n0 = len(stream(ctx))
     c.wait_until(lambda: len(stream(ctx)) >= n0 + 3, 45, f"{label} glucose notifications")
-    return [g for g in stream(ctx)[n0:]]
+    return list(stream(ctx)[n0:])
 
 
 def s16_comm_profile(ctx: Ctx):
@@ -968,7 +956,7 @@ def s7_instant_food_no_reset(ctx: Ctx):
             if v is not None:
                 after.append(v)
         c.measure("after", after)
-        mono = all(b >= a - 0.1 for a, b in zip(after, after[1:]))
+        mono = all(b >= a - 0.1 for a, b in itertools.pairwise(after))
         no_backjump = bool(after) and after[0] >= base - 1.0  # not reset to ~0
         kept_climbing = bool(after) and after[-1] >= base + 2.0  # advanced ≥2 sim-min
         c.assert_(
@@ -1130,7 +1118,7 @@ def run_once(args) -> int:
     serial_ok = bool(tap and tap.available)
     print(f"e2e run {run_id}  board={board or '(none)'}  serial={'ok' if serial_ok else 'no'}")
 
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841  (keep the QApplication alive)
     w = mw.MainWindow()
     w.show()
     pump(400)
@@ -1227,7 +1215,7 @@ def run_once(args) -> int:
     for _cid, _suite, verdict, _note in ctx.results:
         counts[verdict] = counts.get(verdict, 0) + 1
     lines = [f"# e2e {run_id}", "", "  ".join(f"{v}:{n}" for v, n in sorted(counts.items())), ""]
-    for cid, suite, verdict, note in ctx.results:
+    for cid, _suite, verdict, note in ctx.results:
         lines.append(f"- {verdict:8} {cid:9} {note}")
     (run_dir / "SUMMARY.md").write_text("\n".join(lines), encoding="utf-8")
     ctx.close()

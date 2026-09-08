@@ -39,7 +39,7 @@ def read_egv(path: str | Path) -> list[tuple[datetime, float]]:
     kind), so callers can show a clear message.
     """
     out: list[tuple[datetime, float]] = []
-    with open(path, encoding="utf-8-sig", newline="") as fh:
+    with Path(path).open(encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None or _GLUCOSE_COL not in reader.fieldnames:
             raise ValueError("Not a Dexcom CGM export (missing glucose column).")
@@ -95,5 +95,5 @@ def resample(
         while idx < len(ordered) and ordered[idx][0].timestamp() <= grid_ts:
             last = ordered[idx][1]
             idx += 1
-        out.append(int(round(last)))
+        out.append(round(last))
     return out

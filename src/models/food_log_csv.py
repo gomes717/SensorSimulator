@@ -56,7 +56,7 @@ def read_food_log(path: str | Path) -> list[tuple[datetime, float]]:
     Raises ``ValueError`` if the file has no recognizable rows (wrong CSV kind).
     """
     totals: dict[datetime, float] = {}
-    with open(path, encoding="utf-8-sig", newline="") as fh:
+    with Path(path).open(encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None or _CARB_COL not in reader.fieldnames:
             raise ValueError("Not a Food Log export (missing total_carb column).")

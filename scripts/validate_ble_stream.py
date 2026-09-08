@@ -27,7 +27,7 @@ Examples
       --received capture.csv
 
   # live, board is a CSV-backed patient from data/profiles.json
-  python scripts/validate_ble_stream.py live --address AA:BB:CC:DD:EE:FF --profile "CSV Patient" --minutes 10
+  python scripts/validate_ble_stream.py live --address <addr> --profile <name> --minutes 10
 
 Capture file format (one reading per line): ``time_offset_min,glucose_mg_dl``
 """
@@ -35,6 +35,7 @@ Capture file format (one reading per line): ``time_offset_min,glucose_mg_dl``
 from __future__ import annotations
 
 import argparse
+import contextlib
 import statistics
 import sys
 from datetime import datetime
@@ -43,8 +44,8 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(_SRC))
 
-from models import dexcom_csv, engine, profile_store  # noqa: E402
-from models.types import PersonProfile  # noqa: E402
+from models import dexcom_csv, engine, profile_store
+from models.types import PersonProfile
 
 CSV_TOLERANCE_MG_DL = 1.0
 MODEL_WINDOW = 12  # samples for the moving-average model comparison
@@ -169,10 +170,8 @@ async def collect_live(address: str, minutes: float) -> list[tuple[float, float]
     async with BleakClient(address) as client:
         await client.start_notify(CGM_MEAS, on_notify)
         print(f"  collecting for {minutes} min…  (Ctrl-C to stop early)")
-        try:
+        with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
             await asyncio.sleep(minutes * 60)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
         await client.stop_notify(CGM_MEAS)
     return got
 

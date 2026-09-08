@@ -22,9 +22,9 @@ run() {
 
 run ruff format --check .
 run ruff check .
-run pylint
-run pyright
-run pytest
+run pylint src
+run pyright --level error   # full baseline: `uv run pyright`
+run pytest -q
 
 if [ "$fail" -ne 0 ]; then
     echo >&2

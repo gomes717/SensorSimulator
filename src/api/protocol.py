@@ -263,8 +263,8 @@ def build_glucose_track(values_mg_dl: list[float]) -> bytes:
 
     Values are rounded and clamped to int16 range; the firmware reads them back
     2 bytes at a time during playback (see csv_glucose_lookup)."""
-    clamped = [max(-32768, min(32767, int(round(v)))) for v in values_mg_dl]
-    return struct.pack("<%dh" % len(clamped), *clamped)
+    clamped = [max(-32768, min(32767, round(v))) for v in values_mg_dl]
+    return struct.pack(f"<{len(clamped)}h", *clamped)
 
 
 def build_foodlog_track(events: list[tuple[int, float]]) -> bytes:

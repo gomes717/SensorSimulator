@@ -191,7 +191,7 @@ def scenario_A_csv_on_board(w, board_addr):
     wait_until(lambda: len(w._graph_y) >= 4, 40000, ">=4 CGM points from board")
     ok, note = graph_ok(w, min_points=4)
     # CSV values must not be the model's flat 100 line
-    flat = len(set(round(v) for v in w._graph_y)) <= 1 if w._graph_y else True
+    flat = len({round(v) for v in w._graph_y}) <= 1 if w._graph_y else True
     ok = ok and not flat
     shot(w, "A_csv_on_board")
     QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
@@ -299,9 +299,10 @@ def scenario_C_model_food(w):
         rise = (max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
         mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
         ok = carbs_peak > 0.0 and rise > 2.0 and mean_ok
+        mean_txt = w._stat_value_labels["mean"].text()
         return (
             ok,
-            f"carbs_peak={carbs_peak:.2f} glucose_rise={rise:.1f} mean={w._stat_value_labels['mean'].text()}",
+            f"carbs_peak={carbs_peak:.2f} glucose_rise={rise:.1f} mean={mean_txt}",
         )
 
     person = PersonProfile(
@@ -328,9 +329,10 @@ def scenario_D_model_exercise(w):
         moved = abs(max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
         mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
         ok = ex_peak > 0.0 and mean_ok
+        mean_txt = w._stat_value_labels["mean"].text()
         return (
             ok,
-            f"exercise_peak={ex_peak:.1f} glucose_delta={moved:.1f} mean={w._stat_value_labels['mean'].text()}",
+            f"exercise_peak={ex_peak:.1f} glucose_delta={moved:.1f} mean={mean_txt}",
         )
 
     person = PersonProfile(

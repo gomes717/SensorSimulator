@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import sys
 from datetime import UTC, datetime
@@ -49,14 +50,14 @@ CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.MODE_CONFIG_UUID: "mode",  # read + write
     ble_uuids.FOOD_EVENT_UUID: "food",  # write-only, appends one event
     ble_uuids.EXERCISE_EVENT_UUID: "exercise",  # write-only, appends one event
-    ble_uuids.FOOD_INSTANT_UUID: "food_instant",  # write-only, one-shot, does not reset the board
-    ble_uuids.EXERCISE_INSTANT_UUID: "exercise_instant",  # write-only, one-shot, does not reset the board
-    ble_uuids.PISA_INSTANT_UUID: "pisa_instant",  # write-only, one-shot, does not reset the board
+    ble_uuids.FOOD_INSTANT_UUID: "food_instant",  # write-only, one-shot; no board reset
+    ble_uuids.EXERCISE_INSTANT_UUID: "exercise_instant",  # write-only, one-shot; no board reset
+    ble_uuids.PISA_INSTANT_UUID: "pisa_instant",  # write-only, one-shot; no board reset
     ble_uuids.CGMS_ONLY_UUID: "cgms_only",  # read + write, not persisted on the board
     ble_uuids.DATA_SOURCE_UUID: "data_source",  # read + write, persisted (model vs CSV)
     ble_uuids.SPEED_UUID: "speed",  # read + write, persisted (x1..x1000 multiplier)
     ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted (SIG CGMS vs Dexcom)
-    ble_uuids.SENSOR_SELECT_UUID: "sensor_select",  # read + write, not persisted (per-slot config cursor)
+    ble_uuids.SENSOR_SELECT_UUID: "sensor_select",  # read + write, not persisted; per-slot cursor
     ble_uuids.CSV_CONTROL_UUID: "csv_control",  # write + notify, chunked CSV upload control
     ble_uuids.CSV_DATA_UUID: "csv_data",  # write-only, CSV upload data chunks
     ble_uuids.FOOD_EVENTS_READBACK_UUID: "food_list",  # read-only, full list
@@ -292,13 +293,11 @@ class BleSession(QThread):
                     and socp_instance != self._own_instance_index
                 ):
                     continue
-                try:
+                with contextlib.suppress(Exception):
                     await client.write_gatt_char(
                         socp_characteristic,
                         bytes([SOCP_WRITE_CGM_COMMUNICATION_INTERVAL, FAST_COMM_INTERVAL_SECONDS]),
                     )
-                except Exception:  # pylint: disable=broad-except
-                    pass
 
             self.connected.emit(self._address, subscribed_count, notify_count, last_error)
 
@@ -464,12 +463,10 @@ class BleSession(QThread):
         except Exception as exc:  # pylint: disable=broad-except
             ctrl = self._config_characteristics.get("csv_control")
             if ctrl is not None and self._client is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await self._client.write_gatt_char(
                         ctrl, protocol.encode_csv_abort(), response=True
                     )
-                except Exception:  # pylint: disable=broad-except
-                    pass
             self.csv_upload_finished.emit(self._address, False, str(exc))
 
     # ------------------------------------------------------------------

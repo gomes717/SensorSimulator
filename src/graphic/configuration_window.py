@@ -45,7 +45,7 @@ _THRESHOLD_ROWS = (
 )
 
 
-class ConfigurationWindow(QWidget):
+class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Selectors, mode toggles, range thresholds and the per-person data source."""
 
     def __init__(self, main, on_thresholds_changed: Callable[[], None], parent=None) -> None:

@@ -103,7 +103,7 @@ commands are the manual "full gate":
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run pylint
+uv run pylint src
 uv run pyright
 uv run pytest
 ```

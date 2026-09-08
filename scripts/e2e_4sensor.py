@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -34,7 +35,7 @@ sys.path.insert(0, str(_ROOT / "src"))
 os.chdir(_ROOT)
 
 # Reuse the single-sensor harness's capture + case machinery verbatim.
-from e2e import (  # noqa: E402
+from e2e import (
     SERIAL_PORT,
     Case,
     Ctx,
@@ -46,13 +47,13 @@ from e2e import (  # noqa: E402
     _Skip,
     pump,
 )
-from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
-import graphic.main_window as mw  # noqa: E402
-from api import protocol  # noqa: E402
-from graphic.board_layout_window import BoardLayoutWindow  # noqa: E402
-from models import (  # noqa: E402  # noqa: E402
+import graphic.main_window as mw
+from api import protocol
+from graphic.board_layout_window import BoardLayoutWindow
+from models import (
     cambridge,
     deichmann,
     dexcom_csv,
@@ -60,9 +61,9 @@ from models import (  # noqa: E402  # noqa: E402
     uva_padova,
 )
 from models import sensors as sensor_defaults
-from models.board_layout import BoardLayout  # noqa: E402
-from models.types import ModelId, PersonProfile, SensorId, SensorProfile  # noqa: E402
-from services.ble_session import BleSession  # noqa: E402
+from models.board_layout import BoardLayout
+from models.types import ModelId, PersonProfile, SensorId, SensorProfile
+from services.ble_session import BleSession
 
 DEXCOM_CSV = "dataset/Dexcom_001.csv"
 NAMES = [f"Nordic Glucose Sensor {i}" for i in range(1, 5)]
@@ -283,7 +284,7 @@ class FourCtx(Ctx):
                 timeout=40,
             )
         except Exception as exc:
-            raise _Skip(f"jlink reset failed: {exc}")
+            raise _Skip(f"jlink reset failed: {exc}") from exc
         self._scan = {}  # addresses are stable, but force a fresh discovery
 
     # -- speed (with settle) --------------------------------------
@@ -468,10 +469,8 @@ def f2_independent_streams(ctx: FourCtx):
                 if m.get("glucose_value") is not None and "Sensor 3" in (m.get("user_id") or "")
             ]
 
-        try:
+        with contextlib.suppress(Exception):
             c.wait_until(lambda: len(_s2_vals()) >= 2, 80, "slot-2 identity measurements")
-        except Exception:
-            pass
         vals = _s2_vals()
         if not vals:
             # WinRT is flaky about start_notify across 4 same-UUID CGMS
@@ -516,7 +515,7 @@ def f3_csv_slot(ctx: FourCtx):
 
         rows = dexcom_csv.read_egv(DEXCOM_CSV)
         samples = dexcom_csv.resample(rows, rows[0][0], dexcom_csv.DEFAULT_INTERVAL_S)
-        rowset = set(float(s) for s in samples[:60])
+        rowset = {float(s) for s in samples[:60]}
 
         line3 = ctx.wait_slot(3, lambda ln: ln["ds"] == 1, 40, "slot 3 ds=1 (CSV)")
         c.assert_(line3["ds"] == 1, "slot 3 on CSV playback")
@@ -1148,7 +1147,7 @@ def run_once(args) -> int:
     serial_ok = bool(tap and tap.available)
     print(f"e2e_4sensor {run_id}  board={board or '(none)'}  serial={'ok' if serial_ok else 'no'}")
 
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841  (keep the QApplication alive)
     w = mw.MainWindow()
     w.show()
     pump(400)
@@ -1263,7 +1262,6 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.loop > 1:
-        child = [a for a in sys.argv[1:] if a != "--loop" and not a.startswith("--loop")]
         skip = False
         clean = []
         for a in sys.argv[1:]:
