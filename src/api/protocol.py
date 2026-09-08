@@ -2,8 +2,10 @@
 
 Must match the firmware's struct sim_config layout (src/sim_config.h) and
 config_service.c write handlers exactly: little-endian, float32 params in the
-same order as each model's C parameter struct (see each models/*.py module's
-PARAM_NAMES, copied verbatim from the corresponding cgmsim/inc/*.h).
+same order as each model's C parameter struct. That order lives in one place —
+each ``models/<m>.py`` module's ``PARAM_NAMES`` — which this module references
+directly (``_MODEL_PARAM_NAMES`` below); it is pinned against the firmware
+structs by ``tests/test_param_order.py``.
 """
 
 from __future__ import annotations

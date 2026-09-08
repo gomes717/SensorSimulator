@@ -1,7 +1,7 @@
 """Shared data types for person/sensor profiles and food/exercise events.
 
 ``ModelId``/``SensorId`` values are the wire-format identifiers sent to the
-board (see src/protocol.py) — they must match the dispatch tables in the
+board (see src/api/protocol.py) — they must match the dispatch tables in the
 firmware's src/config_service.c exactly.
 """
 

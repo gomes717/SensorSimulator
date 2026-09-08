@@ -25,8 +25,11 @@ class CambridgeState:
     D2: float = 0.0
 
 
-# Field order matches CambridgeParams in cgmsim/inc/cgmsim_cambridge.h exactly —
-# this is also the wire order used by src/protocol.py's person-config encoding.
+# Single source of truth for this model's parameter order. api.protocol and
+# graphic.person_config_window both reference this list (no copies). Order must
+# match CambridgeParams in the firmware C struct
+# (firmware/peripheral_cgms/src/models/cgmsim_cambridge.h) — pinned by
+# tests/test_param_order.py against tests/param_order/cambridge.golden.
 PARAM_NAMES = [
     "BW",
     "VG",
