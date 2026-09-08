@@ -51,3 +51,31 @@ def test_custom_thresholds_shift_the_bands():
     tight = cgm_metrics.compute(vals, tbr1_below=90.0)  # 80 now counts as TBR1
     assert tight.tbr1_pct == pytest.approx(100.0)
     assert tight.tir_pct == pytest.approx(0.0)
+
+
+# --- issue 13: time in range (h:mm) ---------------------------------------
+
+
+def test_span_minutes_populates_time_fields():
+    # 8 readings, 6 in range, over a 24 h (1440 min) window
+    vals = [100.0] * 6 + [40.0, 300.0]
+    m = cgm_metrics.compute(vals, span_minutes=1440.0)
+    assert m.span_min == pytest.approx(1440.0)
+    assert m.tir_min == pytest.approx(1440.0 * 6 / 8)  # 1080 min = 18:00
+    assert m.tbr_min + m.tir_min + m.tar_min == pytest.approx(1440.0)
+    assert m.tbr2_min == pytest.approx(1440.0 / 8)  # the single <54 reading
+
+
+def test_time_fields_zero_without_span():
+    m = cgm_metrics.compute([100.0, 100.0])
+    assert m.span_min == 0.0
+    assert (m.tir_min, m.tbr_min, m.tar_min) == (0.0, 0.0, 0.0)
+    assert m.tir_pct == pytest.approx(100.0)  # pct still populated
+
+
+@pytest.mark.parametrize(
+    ("minutes", "text"),
+    [(0.0, "0:00"), (5.0, "0:05"), (65.0, "1:05"), (754.0, "12:34"), (1440.0, "24:00")],
+)
+def test_fmt_hm(minutes, text):
+    assert cgm_metrics.fmt_hm(minutes) == text

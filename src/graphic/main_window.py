@@ -475,8 +475,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         return bar
 
     def _build_stats_panel(self) -> QGroupBox:
-        """Live TIR/TBR/TAR, mean and variance for the currently plotted glucose series."""
-        group = QGroupBox("Range metrics (current view)")
+        """Live TIR/TBR/TAR (as time, h:mm), mean and variance for the plotted series."""
+        group = QGroupBox("Time in range — current view (h:mm)")
         grid = QGridLayout(group)
         self._stat_value_labels: dict[str, QLabel] = {}
         cells = (
@@ -503,28 +503,38 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         return group
 
     def _update_stats_panel(self) -> None:
-        """Recompute the range-metrics panel from the glucose series *currently in view*."""
+        """Recompute the range-metrics panel from the glucose series *currently in view*.
+
+        TIR/TBR/TAR are shown as time in each band (h:mm) over the visible
+        window, not a percentage (issue 13).
+        """
         series = self._in_view(self._graph_x, self._graph_y) or self._in_view(
             self._expected_x, self._expected_y
         )
+        span_min = None
+        if self._visible_xlim is not None:
+            lo, hi = self._visible_xlim
+            span_min = max(0.0, (hi - lo) / 60.0)
         m = cgm_metrics.compute(
             series,
             tbr2_below=self._thresholds["tbr2_below"],
             tbr1_below=self._thresholds["tbr1_below"],
             tar1_above=self._thresholds["tar1_above"],
             tar2_above=self._thresholds["tar2_above"],
+            span_minutes=span_min,
         )
         if m.n == 0:
             for val in self._stat_value_labels.values():
                 val.setText("—")
             return
-        self._stat_value_labels["tir"].setText(f"{m.tir_pct:.0f}%")
-        self._stat_value_labels["tbr"].setText(f"{m.tbr_pct:.0f}%")
-        self._stat_value_labels["tbr1"].setText(f"{m.tbr1_pct:.0f}%")
-        self._stat_value_labels["tbr2"].setText(f"{m.tbr2_pct:.0f}%")
-        self._stat_value_labels["tar"].setText(f"{m.tar_pct:.0f}%")
-        self._stat_value_labels["tar1"].setText(f"{m.tar1_pct:.0f}%")
-        self._stat_value_labels["tar2"].setText(f"{m.tar2_pct:.0f}%")
+        fmt = cgm_metrics.fmt_hm
+        self._stat_value_labels["tir"].setText(fmt(m.tir_min))
+        self._stat_value_labels["tbr"].setText(fmt(m.tbr_min))
+        self._stat_value_labels["tbr1"].setText(fmt(m.tbr1_min))
+        self._stat_value_labels["tbr2"].setText(fmt(m.tbr2_min))
+        self._stat_value_labels["tar"].setText(fmt(m.tar_min))
+        self._stat_value_labels["tar1"].setText(fmt(m.tar1_min))
+        self._stat_value_labels["tar2"].setText(fmt(m.tar2_min))
         self._stat_value_labels["mean"].setText(f"{m.mean:.0f}")
         self._stat_value_labels["variance"].setText(f"{m.variance:.0f}")
 

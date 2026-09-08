@@ -197,9 +197,9 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
             ("variance", "Variance"),
             ("sd", "Std. deviation"),
             ("cv", "CV (%)"),
-            ("tir", "TIR (%)"),
-            ("tbr", "TBR (%)  [TBR1 / TBR2]"),
-            ("tar", "TAR (%)  [TAR1 / TAR2]"),
+            ("tir", "TIR (h:mm)"),
+            ("tbr", "TBR (h:mm)  [TBR1 / TBR2]"),
+            ("tar", "TAR (h:mm)  [TAR1 / TAR2]"),
         ):
             lbl = QLabel("—")
             self._stat_labels[key] = lbl
@@ -291,15 +291,21 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
             tbr1_below=thresholds["tbr1_below"],
             tar1_above=thresholds["tar1_above"],
             tar2_above=thresholds["tar2_above"],
+            span_minutes=(hi - lo) * 60.0,
         )
+        fmt = cgm_metrics.fmt_hm
         self._stat_labels["n"].setText(str(m.n))
         self._stat_labels["mean"].setText(f"{m.mean:.1f}")
         self._stat_labels["variance"].setText(f"{m.variance:.1f}")
         self._stat_labels["sd"].setText(f"{m.sd:.1f}")
         self._stat_labels["cv"].setText(f"{m.cv:.1f}")
-        self._stat_labels["tir"].setText(f"{m.tir_pct:.1f}")
-        self._stat_labels["tbr"].setText(f"{m.tbr_pct:.1f}   [{m.tbr1_pct:.1f} / {m.tbr2_pct:.1f}]")
-        self._stat_labels["tar"].setText(f"{m.tar_pct:.1f}   [{m.tar1_pct:.1f} / {m.tar2_pct:.1f}]")
+        self._stat_labels["tir"].setText(fmt(m.tir_min))
+        self._stat_labels["tbr"].setText(
+            f"{fmt(m.tbr_min)}   [{fmt(m.tbr1_min)} / {fmt(m.tbr2_min)}]"
+        )
+        self._stat_labels["tar"].setText(
+            f"{fmt(m.tar_min)}   [{fmt(m.tar1_min)} / {fmt(m.tar2_min)}]"
+        )
 
     # ------------------------------------------------------------------
     # Assign the selected 24 h window to a patient as their data source

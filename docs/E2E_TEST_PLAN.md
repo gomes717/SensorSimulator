@@ -293,7 +293,7 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 | ID | Do | Expect |
 |---|---|---|
 | S10-01 | rolling window = "Last 1 hour"; run long enough | `_visible_xlim` width ≤ 3600 s; "Entire run" restores full span; data arrays never trimmed |
-| S10-02 | range metrics track the **visible** window | TIR/TBR/TAR/mean/variance recomputed from `_in_view(...)` |
+| S10-02 | range metrics track the **visible** window | TIR/TBR/TAR shown as **time (h:mm)** over the visible span (`span_minutes` from `_visible_xlim`); mean/variance recomputed from `_in_view(...)` |
 | S10-03 | drive glucose < `tbr1_below` and > `tar1_above` | tree row shows `▼ LOW` / `▲ HIGH` badge (BLE path); received line recolors red/yellow/green by `_category` |
 | S10-04 | PISA-driven false low crosses `tbr1` | LOW badge appears even though the model is euglycemic (documents current behavior — see `docs/TODO.md` feature idea "model-line alerts") |
 | S10-05 | theme switch mid-run | graphs rebuild, PISA spans + range bands + data survive |

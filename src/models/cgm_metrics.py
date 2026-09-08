@@ -3,6 +3,11 @@
 Pure: no Qt, no I/O. Shared by the CSV Analysis window and the main window's
 live range-metrics panel. Band edges follow the common consensus targets
 (mg/dL): TBR2 <54, TBR1 54-70, TIR 70-180, TAR1 180-250, TAR2 >250.
+
+The range figures are reported as **time in each band** (issue 13). Pass
+``span_minutes`` — the wall/recording duration the values cover — and the
+``*_min`` fields are that fraction of it; ``fmt_hm`` renders them as ``h:mm``.
+The ``*_pct`` fields are kept as the underlying fraction.
 """
 
 from __future__ import annotations
@@ -17,8 +22,12 @@ DEFAULT_TAR2_ABOVE = 250.0
 
 
 @dataclass
-class GlucoseMetrics:
-    """Summary of one glucose series. Percentages are 0-100 and sum to ~100."""
+class GlucoseMetrics:  # pylint: disable=too-many-instance-attributes  # plain data record
+    """Summary of one glucose series.
+
+    ``*_pct`` are 0-100 and sum to ~100. ``*_min`` are minutes in each band
+    (0.0 unless ``compute`` got a ``span_minutes``); ``span_min`` is the total.
+    """
 
     n: int
     mean: float
@@ -32,6 +41,20 @@ class GlucoseMetrics:
     tar_pct: float
     tar1_pct: float
     tar2_pct: float
+    span_min: float = 0.0
+    tir_min: float = 0.0
+    tbr_min: float = 0.0
+    tbr1_min: float = 0.0
+    tbr2_min: float = 0.0
+    tar_min: float = 0.0
+    tar1_min: float = 0.0
+    tar2_min: float = 0.0
+
+
+def fmt_hm(minutes: float) -> str:
+    """Render a duration in minutes as ``h:mm`` (e.g. 754.0 -> ``12:34``)."""
+    total = max(0, round(minutes))
+    return f"{total // 60}:{total % 60:02d}"
 
 
 def compute(
@@ -41,8 +64,13 @@ def compute(
     tbr1_below: float = DEFAULT_TBR1_BELOW,
     tar1_above: float = DEFAULT_TAR1_ABOVE,
     tar2_above: float = DEFAULT_TAR2_ABOVE,
+    span_minutes: float | None = None,
 ) -> GlucoseMetrics:
-    """Return range/spread metrics for *values*. Empty input yields all-zero metrics."""
+    """Return range/spread metrics for *values*. Empty input yields all-zero metrics.
+
+    *span_minutes* is the total duration the values cover; when given, the
+    ``*_min`` fields are populated (each band's fraction of that span).
+    """
     vals = [float(v) for v in values]
     n = len(vals)
     if n == 0:
@@ -62,6 +90,11 @@ def compute(
     def pct(c: int) -> float:
         return c / n * 100.0
 
+    span = float(span_minutes) if span_minutes and span_minutes > 0.0 else 0.0
+
+    def mins(c: int) -> float:
+        return c / n * span
+
     return GlucoseMetrics(
         n=n,
         mean=mean,
@@ -75,4 +108,12 @@ def compute(
         tar_pct=pct(tar1 + tar2),
         tar1_pct=pct(tar1),
         tar2_pct=pct(tar2),
+        span_min=span,
+        tir_min=mins(tir),
+        tbr_min=mins(tbr1 + tbr2),
+        tbr1_min=mins(tbr1),
+        tbr2_min=mins(tbr2),
+        tar_min=mins(tar1 + tar2),
+        tar1_min=mins(tar1),
+        tar2_min=mins(tar2),
     )

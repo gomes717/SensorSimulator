@@ -137,7 +137,10 @@ without creating a dependency on the GUI or BLE stack.
 - `cgm_metrics.py` — pure `compute()` of the clinical range metrics
   (TIR/TBR1/TBR2/TAR1/TAR2, mean, population variance, SD, CV) for a list
   of glucose values; shared by the CSV Analysis window and the main
-  window's live metrics panel.
+  window's live metrics panel. TIR/TBR/TAR are reported as **time in each
+  band** (`*_min` fields, rendered `h:mm` by `fmt_hm`): pass `span_minutes`
+  (the CSV window's real duration, or the live view's wall-clock span). The
+  `*_pct` fractions are kept underneath.
 - `dexcom_csv.py` — pure stdlib reader for Dexcom Clarity CGM exports
   (`dataset/Dexcom_*.csv`), returning the EGV `(timestamp, glucose)` rows.
 
