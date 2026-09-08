@@ -13,6 +13,7 @@ from __future__ import annotations
 import struct
 import zlib
 from collections.abc import Iterator
+from datetime import datetime
 
 from models import cambridge, deichmann, royparker, uva_padova
 from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId
@@ -275,6 +276,41 @@ def build_foodlog_track(events: list[tuple[int, float]]) -> bytes:
     for offset_s, carbs_g in sorted(events):
         out += struct.pack("<If", int(offset_s), float(carbs_g))
     return bytes(out)
+
+
+def build_csv_uploads(
+    samples: list[int],
+    interval_s: int,
+    foodlog: list[tuple[int, float]],
+    start_iso: str,
+) -> list[dict]:
+    """The `start_csv_upload` / board-layout `csv.uploads` list for one CSV window.
+
+    One glucose track, plus a food-log track when *foodlog* is non-empty. Both
+    the Configuration "Send CSV to Board" path and BoardLayoutWindow build this
+    the same way — keep it in one place (issue 19).
+    """
+    base_epoch = int(datetime.fromisoformat(start_iso).timestamp())
+    uploads: list[dict] = [
+        {
+            "track": CSV_TRACK_GLUCOSE,
+            "blob": build_glucose_track([float(s) for s in samples]),
+            "row_count": len(samples),
+            "base_epoch_s": base_epoch,
+            "interval_s": interval_s,
+        }
+    ]
+    if foodlog:
+        uploads.append(
+            {
+                "track": CSV_TRACK_FOODLOG,
+                "blob": build_foodlog_track(foodlog),
+                "row_count": len(foodlog),
+                "base_epoch_s": base_epoch,
+                "interval_s": 0,
+            }
+        )
+    return uploads
 
 
 def encode_csv_begin(

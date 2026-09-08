@@ -67,3 +67,23 @@ def test_param_count_fits_the_firmware_buffer():
     # MAX_MODEL_PARAMS / MAX_SENSOR_PARAMS in the firmware's sim_config.h
     assert max(len(m.PARAM_NAMES) for m in _MODEL_MODULE.values()) <= protocol.MAX_MODEL_PARAMS
     assert max(len(protocol.sensor_param_names(s)) for s in SensorId) <= protocol.MAX_SENSOR_PARAMS
+
+
+@pytest.mark.parametrize(
+    ("name", "slot"),
+    [
+        ("Nordic Glucose Sensor 1", 0),
+        ("Nordic Glucose Sensor 4", 3),
+        ("Nordic Glucose Sensor", None),
+        ("Nordic Glucose Sensor 9", None),
+        ("", None),
+    ],
+)
+def test_ble_session_and_board_layout_agree_on_slot_parse(name, slot):
+    # issue 19: BleSession uses board_layout.slot_of — one source
+    from models import board_layout as bl
+    from services.ble_session import BleSession
+
+    assert bl.slot_of(name) == slot
+    s = BleSession("AA:BB", name, None)
+    assert s._own_instance_index == slot

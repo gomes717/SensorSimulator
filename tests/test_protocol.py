@@ -148,3 +148,19 @@ def test_decoders_tolerate_short_input(bad):
         protocol.decode_dexcom_glucose,
     ):
         dec(bad)
+
+
+def test_build_csv_uploads_shapes_both_tracks():
+    ups = protocol.build_csv_uploads(
+        [100, 110, 120], 300, [(0, 30.0), (3600, 45.0)], "2020-01-01T00:00:00"
+    )
+    assert [u["track"] for u in ups] == [protocol.CSV_TRACK_GLUCOSE, protocol.CSV_TRACK_FOODLOG]
+    assert ups[0]["row_count"] == 3
+    assert ups[0]["interval_s"] == 300
+    assert ups[1]["row_count"] == 2
+    assert ups[0]["base_epoch_s"] == ups[1]["base_epoch_s"]  # one epoch for both
+
+
+def test_build_csv_uploads_omits_foodlog_when_empty():
+    ups = protocol.build_csv_uploads([100, 110], 300, [], "2020-01-01T00:00:00")
+    assert len(ups) == 1 and ups[0]["track"] == protocol.CSV_TRACK_GLUCOSE

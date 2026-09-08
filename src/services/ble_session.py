@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import sys
 from datetime import UTC, datetime
 
@@ -12,6 +11,7 @@ from bleak import BleakClient
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from api import ble_uuids, protocol
+from models import board_layout
 
 # Standard Bluetooth SIG "Continuous Glucose Monitoring" service characteristics
 # (used e.g. by Nordic's peripheral_cgms sample). Recognised specially so the
@@ -172,9 +172,8 @@ class BleSession(QThread):
         # firmware numbers its identities/adv names from 1 ("... Sensor 1" is
         # the first sensor) while the CGMS service instances and the board's
         # per-slot config cursor are 0-based, so drop one here to match.
-        match = re.search(r"(\d+)\s*$", name or "")
-        idx = int(match.group(1)) - 1 if match else None
-        self._own_instance_index = idx if (idx is not None and idx >= 0) else None
+        # One canonical "advertised name -> 0-based slot" — see models/board_layout.
+        self._own_instance_index = board_layout.slot_of(name or "")
         # A numbered identity is one of the multi-sensor firmware's per-slot
         # identities, which run with CONFIG_APP_CGMS_NO_AUTH (Windows cannot
         # complete LE-SC against a peripheral's non-default identities — see the

@@ -14,7 +14,6 @@ shared config service.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
@@ -256,27 +255,11 @@ class BoardLayoutWindow(QWidget):
                 if not samples or not person.csv_window_start_iso:
                     errors.append(f"Slot {i + 1} ({person.name}): CSV window not set")
                     continue
-                base_epoch = int(datetime.fromisoformat(person.csv_window_start_iso).timestamp())
-                uploads = [
-                    {
-                        "track": protocol.CSV_TRACK_GLUCOSE,
-                        "blob": protocol.build_glucose_track([float(s) for s in samples]),
-                        "row_count": len(samples),
-                        "base_epoch_s": base_epoch,
-                        "interval_s": interval_s,
-                    }
-                ]
-                if foodlog:
-                    uploads.append(
-                        {
-                            "track": protocol.CSV_TRACK_FOODLOG,
-                            "blob": protocol.build_foodlog_track(foodlog),
-                            "row_count": len(foodlog),
-                            "base_epoch_s": base_epoch,
-                            "interval_s": 0,
-                        }
+                csv_entry = {
+                    "uploads": protocol.build_csv_uploads(
+                        samples, interval_s, foodlog, person.csv_window_start_iso
                     )
-                csv_entry = {"uploads": uploads}
+                }
 
             slots.append({"slot": i, "writes": writes, "csv": csv_entry})
         return (slots, errors) if not errors else ([], errors)

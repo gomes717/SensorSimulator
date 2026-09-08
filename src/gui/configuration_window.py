@@ -345,28 +345,9 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             address = names[name]
         session = sessions[address]
 
-        from datetime import datetime
-
-        base_epoch = int(datetime.fromisoformat(person.csv_window_start_iso).timestamp())
-        uploads = [
-            {
-                "track": protocol.CSV_TRACK_GLUCOSE,
-                "blob": protocol.build_glucose_track([float(s) for s in samples]),
-                "row_count": len(samples),
-                "base_epoch_s": base_epoch,
-                "interval_s": interval_s,
-            }
-        ]
-        if foodlog:
-            uploads.append(
-                {
-                    "track": protocol.CSV_TRACK_FOODLOG,
-                    "blob": protocol.build_foodlog_track(foodlog),
-                    "row_count": len(foodlog),
-                    "base_epoch_s": base_epoch,
-                    "interval_s": 0,
-                }
-            )
+        uploads = protocol.build_csv_uploads(
+            samples, interval_s, foodlog, person.csv_window_start_iso
+        )
 
         try:
             session.csv_upload_progress.disconnect(self._on_csv_progress)

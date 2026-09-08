@@ -28,14 +28,13 @@ stream.
 
 ## Guard rails (from the grill)
 
-- **Drop-dead date: TWO WEEKS BEFORE THE DEFENSE DRAFT IS DUE — fill the concrete
-  date here: __________.** If xDrip+ is not reading the board end-to-end by then,
-  ship issue 09's baseline reframe, move this to "future work", spend no more
-  time.
+- **Drop-dead date: 2026-09-15 (defense).** If xDrip+ is not reading the board
+  end-to-end by then, ship issue 09's baseline reframe (already done), move this
+  to "future work", spend no more time.
 - **Track A always wins.** The moment this contends for time with any Phase 1
   correctness item, this yields.
-- Precondition: a spare **Android device running xDrip+** is available. If not,
-  this issue is dead on arrival — do issue 09 only.
+- Precondition **met**: user has an Android device (confirmed 2026-09-08).
+  xDrip+ still to be installed / put in "G6 native" mode.
 
 ## Open question
 
