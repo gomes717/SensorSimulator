@@ -8,13 +8,8 @@ from datetime import UTC, datetime
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
-    QDialog,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -36,31 +31,25 @@ from gui.exercise_config_window import ExerciseConfigWindow
 from gui.fault_panel import FaultPanel
 from gui.food_config_window import FoodConfigWindow
 from gui.glucose_graph import GlucoseGraph
-from gui.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
+from gui.instant_events import InstantEvents
 from gui.person_config_window import PersonConfigWindow
+from gui.range_stats import RangeStatsPanel
 from gui.scenario_window import ScenarioWindow
 from gui.sensor_config_window import SensorConfigWindow
 from gui.user_tree import UserTree
 from gui.view_config_window import ViewConfigWindow
-from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
+from models import app_settings, board_layout, cambridge, profile_store
 from models import sensors as sensor_defaults
 from models.engine import EnginePool
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
 
 
 class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  # see issue 18
-    """Top-level window: toolbar, user treeview, glucose graph, food/exercise graph, selector bar.
-
-    The treeview and glucose graph are populated live from :class:`BleMessageLog`
-    for whichever device is selected, exactly as before. On top of that, an
-    "active person" profile (chosen in the bottom bar) drives a
-    :class:`SimulationEngine` running the same physiological model purely in
-    Python (no sensor noise) as a dashed "expected" line overlaid on the solid
-    "received" line — or, in Model Only mode, as the sole line, with no BLE
-    device required at all. The food/exercise graph below the main graph shows
-    carb intake rate and exercise intensity: from the board's own Food/Exercise
-    Status notifications when connected, or from the same local engine in
-    Model Only mode.
+    """Top-level window. Owns the app state (profiles, thresholds, run state, the
+    per-user history) and wires together the extracted pieces: :class:`UserTree`
+    (sensor list), :class:`GlucoseGraph` (the two plots), :class:`ConfigController`
+    (⇄ the Configuration window), :class:`BoardLink` (board writes),
+    :class:`EnginePool` (the local "expected" model) and :class:`InstantEvents`.
     """
 
     def __init__(self) -> None:
@@ -92,35 +81,27 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         self._person_profiles, self._sensor_profiles = profile_store.load()
         self._seed_default_profiles()
-        # slot -> (person name, sensor name) mapping for the multi-sensor board;
-        # persisted to data/board_layout.json, applied via the Board Layout window.
+        # slot -> (person, sensor) for the multi-sensor board (data/board_layout.json).
         self._board_layout = board_layout.load()
         self._active_person: PersonProfile | None = None
         self._active_sensor: SensorProfile | None = None
-        # Continuous simulation-speed multiplier (x1..x1000); replaces the old
-        # on/off Fast mode. Applied to the engine's dt_min and sent to the board.
+        # Continuous sim-speed multiplier x1..x1000; applied to dt_min + sent to the board.
         self._speed_mult = float(app_settings.load_pref("speed_mult", 1.0))
-        # Rolling view: show only the last N wall-clock seconds of the graphs
-        # (0 = entire run). Chosen in the View window, persisted.
+        # Rolling view: show only the last N wall-clock seconds (0 = entire run).
         self._view_window_s = float(app_settings.load_pref("view_window_s", 3600.0))
         self._model_only = False
         self._cgms_only = False
-        # One SimulationEngine per occupied board slot (issue 04). A single
-        # slot 0 when there's no multi-sensor layout / in Model Only mode.
+        # One SimulationEngine per occupied slot (issue 04); slot 0 alone otherwise.
         self._engines = EnginePool(self)
         self._engines.expected_reading.connect(self._on_expected_reading)
-        # True while the pool is driving >1 slot: expected lines are then kept
-        # per user in self._history["ex_g*"], not in the single self._expected_*.
+        # True while the pool drives >1 slot: expected lines then live per-user
+        # in self._history["ex_g*"], not the single graph.expected_* buffer.
         self._per_slot_expected = False
         self._run_state = "stopped"  # "stopped" | "running" | "paused"
 
-        # Glucose range thresholds (mg/dL) for the graph bands + metrics panels;
-        # edited in the Configuration window, persisted to data/settings.json.
+        # Range thresholds (mg/dL) for the graph bands + the alert badges + metrics.
         self._thresholds = app_settings.load()
-        # The Configuration window hosts the selector / mode / threshold widgets;
-        # MainWindow owns the state. They talk only through this controller (a
-        # typed signal surface, issue 18) — neither reaches the other's privates.
-        # Built eagerly (hidden) so its combos exist for the notify_profiles_changed()
+        # Built eagerly (hidden) so its combos exist for notify_profiles_changed()
         # at the end of __init__, once the graphs the first selection touches are up.
         self._controller = ConfigController(
             self._person_profiles,
@@ -147,10 +128,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self.tree.user_selected.connect(self._on_user_selected)
         self._ble_log.device_disconnected.connect(self.tree.mark_device_offline)
         self._selected_user: str | None = None
-        # The two stacked matplotlib panels (issue 18). It keeps the fixed
-        # graph_t0 x-axis origin, the plot buffers and every draw decision;
-        # MainWindow keeps the per-user history and points the panel's live
-        # buffers at the selected user's lists (see _bind_selected_history).
+        # The two stacked plots (issue 18): GlucoseGraph keeps the fixed graph_t0
+        # x-axis origin, the plot buffers and every draw decision.
         self._graph = GlucoseGraph(
             self._thresholds,
             self._view_window_s,
@@ -159,14 +138,16 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             fe_title=self._fe_graph_title,
         )
 
-        # Per-user received history, all sharing the one graph_t0 that is
-        # (re)anchored at Start. On a multi-sensor board every slot streams from
-        # the same board clock and the same Start, so one shared origin is
-        # correct — switching the selected tree row just rebinds the live
-        # buffers to that user's lists (see _bind_selected_history), it does not
-        # wipe or replay anything. Keys are user_id (tree row id).
+        # Per-user received history, all sharing the one graph_t0 (re)anchored at
+        # Start; switching the selected row just rebinds the graph's live buffers
+        # onto a user's lists (see _bind_selected_history). Keyed by user_id.
         # {user_id: {"gx","gy","fx","fc","fe","ex_gx","ex_gy": list[float]}}
         self._history: dict[str, dict[str, list[float]]] = {}
+
+        # One-shot "insert now" events → engine pool + board + graph shading (issue 18).
+        self._events = InstantEvents(
+            self._engines, self._board, self._graph, self._board_layout, lambda: self._speed_mult
+        )
 
         self._bottom = self._build_bottom_bar()
 
@@ -180,13 +161,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         splitter.addWidget(self.tree)
         splitter.addWidget(right_splitter)
         splitter.setSizes([300, 800])
-        # setSizes() above is only an initial hint sized to the resize(1100, 750)
-        # call below; without a real minimum the tree has nothing stopping it from
-        # being squeezed to a sliver when the actual window is narrower than that
-        # (different DPI scaling, smaller display, not maximized) — the graph
-        # canvases on the right have their own effective minimum, so all the
-        # deficit lands on the tree. Give the tree a floor and make the graph
-        # side absorb slack instead.
+        # setSizes() is only a hint; give the tree a real floor + no stretch so a
+        # narrow window squeezes the graph side, not the tree, down to a sliver.
         self.tree.setMinimumWidth(220)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -250,6 +226,10 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _offline_users(self) -> set:
         return self.tree._offline
 
+    @property
+    def _stat_value_labels(self) -> dict:
+        return self._stats_panel.labels
+
     def _seed_default_profiles(self) -> None:
         """First run (no saved profiles yet): add one default person/sensor.
 
@@ -284,35 +264,29 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # Builder helpers
     # ------------------------------------------------------------------
 
+    _TOOLBAR = (
+        ("view_btn", "View", "_open_view_config"),
+        ("csv_analysis_btn", "CSV Analysis", "_open_csv_analysis"),
+        ("configuration_btn", "Configuration", "_open_configuration"),
+        ("faults_btn", "Faults", "_open_faults"),
+        ("scenario_btn", "Scenario", "_open_scenario"),
+        ("bluetooth_btn", "Connect Bluetooth", "_open_bluetooth"),
+        ("debug_btn", "Debug", "_open_debug"),
+    )
+
     def _setup_toolbar(self) -> None:
-        """Create the top toolbar with right-aligned Bluetooth and Debug buttons."""
+        """Create the top toolbar — all buttons right-aligned past a stretch spacer."""
         toolbar = QToolBar()
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
-        self.view_btn = QPushButton("View")
-        self.view_btn.clicked.connect(self._open_view_config)
-        toolbar.addWidget(self.view_btn)
-        self.csv_analysis_btn = QPushButton("CSV Analysis")
-        self.csv_analysis_btn.clicked.connect(self._open_csv_analysis)
-        toolbar.addWidget(self.csv_analysis_btn)
-        self.configuration_btn = QPushButton("Configuration")
-        self.configuration_btn.clicked.connect(self._open_configuration)
-        toolbar.addWidget(self.configuration_btn)
-        self.faults_btn = QPushButton("Faults")
-        self.faults_btn.clicked.connect(self._open_faults)
-        toolbar.addWidget(self.faults_btn)
-        self.scenario_btn = QPushButton("Scenario")
-        self.scenario_btn.clicked.connect(self._open_scenario)
-        toolbar.addWidget(self.scenario_btn)
-        self.bluetooth_btn = QPushButton("Connect Bluetooth")
-        self.bluetooth_btn.clicked.connect(self._open_bluetooth)
-        toolbar.addWidget(self.bluetooth_btn)
-        self.debug_btn = QPushButton("Debug")
-        self.debug_btn.clicked.connect(self._open_debug)
-        toolbar.addWidget(self.debug_btn)
+        for attr, label, handler in self._TOOLBAR:
+            btn = QPushButton(label)
+            btn.clicked.connect(getattr(self, handler))
+            toolbar.addWidget(btn)
+            setattr(self, attr, btn)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _build_bottom_bar(self) -> QWidget:
@@ -354,72 +328,19 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         controls_row.addStretch(1)
         outer.addLayout(controls_row)
 
-        outer.addWidget(self._build_stats_panel())
-
+        self._stats_panel = RangeStatsPanel()
+        outer.addWidget(self._stats_panel)
         return bar
 
-    def _build_stats_panel(self) -> QGroupBox:
-        """Live TIR/TBR/TAR (as time, h:mm), mean and variance for the plotted series."""
-        group = QGroupBox("Time in range — current view (h:mm)")
-        grid = QGridLayout(group)
-        self._stat_value_labels: dict[str, QLabel] = {}
-        cells = (
-            ("tir", "TIR"),
-            ("tbr", "TBR"),
-            ("tbr1", "TBR1"),
-            ("tbr2", "TBR2"),
-            ("tar", "TAR"),
-            ("tar1", "TAR1"),
-            ("tar2", "TAR2"),
-            ("mean", "Mean"),
-            ("variance", "Variance"),
-        )
-        for i, (key, caption) in enumerate(cells):
-            row, col = divmod(i, 5)
-            box = QVBoxLayout()
-            cap = QLabel(caption)
-            cap.setStyleSheet("font-size: 10px;")
-            val = QLabel("—")
-            self._stat_value_labels[key] = val
-            box.addWidget(cap)
-            box.addWidget(val)
-            grid.addLayout(box, row, col)
-        return group
-
     def _update_stats_panel(self) -> None:
-        """Recompute the range-metrics panel from the glucose series *currently in view*.
-
-        TIR/TBR/TAR are shown as time in each band (h:mm) over the visible
-        window, not a percentage (issue 13).
-        """
+        """Feed the range-metrics panel the glucose series *currently in view*."""
         g, b = self._graph, self._graph.buf
         series = g.in_view(b.graph_x, b.graph_y) or g.in_view(b.expected_x, b.expected_y)
         span_min = None
         if g.visible_xlim is not None:
             lo, hi = g.visible_xlim
             span_min = max(0.0, (hi - lo) / 60.0)
-        m = cgm_metrics.compute(
-            series,
-            tbr2_below=self._thresholds["tbr2_below"],
-            tbr1_below=self._thresholds["tbr1_below"],
-            tar1_above=self._thresholds["tar1_above"],
-            tar2_above=self._thresholds["tar2_above"],
-            span_minutes=span_min,
-        )
-        if m.n == 0:
-            for val in self._stat_value_labels.values():
-                val.setText("—")
-            return
-        fmt = cgm_metrics.fmt_hm
-        self._stat_value_labels["tir"].setText(fmt(m.tir_min))
-        self._stat_value_labels["tbr"].setText(fmt(m.tbr_min))
-        self._stat_value_labels["tbr1"].setText(fmt(m.tbr1_min))
-        self._stat_value_labels["tbr2"].setText(fmt(m.tbr2_min))
-        self._stat_value_labels["tar"].setText(fmt(m.tar_min))
-        self._stat_value_labels["tar1"].setText(fmt(m.tar1_min))
-        self._stat_value_labels["tar2"].setText(fmt(m.tar2_min))
-        self._stat_value_labels["mean"].setText(f"{m.mean:.0f}")
-        self._stat_value_labels["variance"].setText(f"{m.variance:.0f}")
+        self._stats_panel.refresh(series, span_min, self._thresholds)
 
     # ------------------------------------------------------------------
     # Window management
@@ -596,109 +517,23 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._restart_engine()
 
     def _multi_slot_count(self) -> int:
-        """4 if a connected identity is one slot of a multi-sensor board (its
-        advertised name is numbered), else 1 — passed to the instant-event
-        dialogs so they show a Slot picker only when it means something."""
+        """4 if a connected identity is one slot of a multi-sensor board, else 1."""
         return 4 if self._board.multi_slot() else 1
 
-    def _instant_slot_choices(self) -> list[tuple[int | None, str]]:
-        """(value, label) for the instant-event dialogs' Target combo — empty
-        (no combo) unless a multi-sensor board is connected, then "All sensors"
-        plus one entry per slot named from the board layout (issue 04)."""
-        if self._multi_slot_count() <= 1:
-            return []
-        out: list[tuple[int | None, str]] = [(None, "All sensors")]
-        for i in range(board_layout.MAX_SLOTS):
-            person = self._board_layout.slots[i].person
-            out.append((i, f"Sensor {i + 1} — {person}" if person else f"Sensor {i + 1}"))
-        return out
-
-    def _inject_instant_food(self, slot: int | None, duration_min: int, carbs_g: float) -> None:
-        """One-shot carb bolus: into the local engine(s) and, if connected, the board."""
-        self._engines.add_instant_food(slot, duration_min, carbs_g)
-        self._board.send_instant(
-            "food_instant", protocol.encode_food_instant(duration_min, carbs_g), slot
-        )
-
-    def _inject_instant_exercise(
-        self, slot: int | None, duration_min: int, intensity_pct: float
-    ) -> None:
-        """One-shot exercise bout: into the local engine(s) and, if connected, the board."""
-        self._engines.add_instant_exercise(slot, duration_min, intensity_pct)
-        self._board.send_instant(
-            "exercise_instant", protocol.encode_exercise_instant(duration_min, intensity_pct), slot
-        )
-
+    # One-shot "insert now" events live in gui/instant_events.py (issue 18);
+    # these thin wrappers keep the toolbar buttons, FaultPanel and the hardware
+    # harnesses calling the same names.
     def _open_insert_food(self) -> None:
-        """Prompt for a one-shot carb bolus and inject it into the running simulation now.
-
-        Unlike Food…'s "Send to Board" (which edits the recurring-daily
-        schedule and, like every other config write, resets the board's
-        sim clock/model state), this uses the food_instant characteristic —
-        applied on top of whatever's already running, no reset. See
-        PROTOCOL_SPEC.md's "Instant food/exercise events" section.
-        """
-        if self._engines.is_empty() and not self._board.connected():
-            QMessageBox.information(
-                self, "Insert Food Now", "Nothing running to insert into — start a run first."
-            )
-            return
-        dialog = FoodInstantDialog(self, slot_choices=self._instant_slot_choices())
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        carbs_g, duration_min = dialog.values()
-        self._inject_instant_food(dialog.selected_slot(), duration_min, carbs_g)
+        self._events.prompt_food(self)
 
     def _open_insert_exercise(self) -> None:
-        """Prompt for a one-shot exercise bout and inject it into the running simulation now.
-
-        Same non-disruptive semantics as _open_insert_food, via the
-        exercise_instant characteristic.
-        """
-        if self._engines.is_empty() and not self._board.connected():
-            QMessageBox.information(
-                self, "Insert Exercise Now", "Nothing running to insert into — start a run first."
-            )
-            return
-        dialog = ExerciseInstantDialog(self, slot_choices=self._instant_slot_choices())
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        duration_min, intensity_pct = dialog.values()
-        self._inject_instant_exercise(dialog.selected_slot(), duration_min, intensity_pct)
+        self._events.prompt_exercise(self)
 
     def _open_insert_pisa(self) -> None:
-        """Prompt for a one-shot PISA fault and inject it now (via inject_fault)."""
-        if self._engines.is_empty() and not self._board.connected():
-            QMessageBox.information(
-                self, "Insert PISA Now", "Nothing running to insert into — start a run first."
-            )
-            return
-        dialog = PisaInstantDialog(self, slot_choices=self._instant_slot_choices())
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self.inject_fault("pisa", dialog.values(), slot=dialog.selected_slot())
+        self._events.prompt_pisa(self)
 
     def inject_fault(self, kind: str, values: tuple, slot: int | None = None) -> None:
-        """Inject a sensor fault into the running simulation without resetting it.
-
-        The extensible entry point behind both the "Insert PISA Now…" button and
-        the Faults panel (gui/fault_panel.py). Only ``"pisa"`` is wired for
-        now — a transient false low: the board/engine multiply the sensor
-        reading by ``1 - depth*sin(pi*elapsed/duration)`` while active, leaving
-        the underlying glucose untouched; the interval is shaded on the graph.
-        """
-        if kind != "pisa":
-            raise ValueError(f"unknown fault kind {kind!r}")
-        duration_min, depth_frac = values
-        self._engines.add_instant_pisa(slot, duration_min, depth_frac)
-        self._board.send_instant(
-            "pisa_instant", protocol.encode_pisa_instant(duration_min, depth_frac), slot
-        )
-        # Shade the affected interval: duration is simulated minutes; the graph
-        # x-axis is wall-clock seconds, so scale by the current speed multiplier.
-        t0 = self._graph.elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
-        self._graph.add_pisa_span(t0, t0 + duration_min * 60.0 / self._speed_mult)
-        self._graph.redraw_glucose()
+        self._events.inject_fault(kind, values, slot)
 
     # ------------------------------------------------------------------
     # Scenario runner dispatch (gui/scenario_window.py)
@@ -747,7 +582,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             carbs_g = float(args.get("carbs_g", 50))
             duration_min = int(args.get("duration_min", 15))
             slot = args.get("slot")
-            self._inject_instant_food(slot, duration_min, carbs_g)
+            self._events.inject_food(slot, duration_min, carbs_g)
             return f"insert_food {carbs_g:g} g / {duration_min} min" + (
                 f" @slot {slot}" if slot is not None else ""
             )
@@ -756,7 +591,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             duration_min = int(args.get("duration_min", 30))
             intensity_pct = float(args.get("intensity_pct", 50))
             slot = args.get("slot")
-            self._inject_instant_exercise(slot, duration_min, intensity_pct)
+            self._events.inject_exercise(slot, duration_min, intensity_pct)
             return f"insert_exercise {duration_min} min / {intensity_pct:g} %" + (
                 f" @slot {slot}" if slot is not None else ""
             )
@@ -852,14 +687,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._board.broadcast("cgms_only", protocol.encode_cgms_only(enabled))
 
     def _set_locked_for_cgms_only(self, locked: bool) -> None:
-        """Enable/disable every control that would send a now-rejected config write.
-
-        While CGMS Only is active the board refuses every person/sensor/
-        mode/food/exercise/instant-event write (see PROTOCOL_SPEC.md), and
-        the app runs no local model — so all of the "extra features" that
-        would touch either are simply unavailable until it's turned off
-        again. The Configuration window locks its own controls off this
-        signal; here we only lock the ones MainWindow owns.
+        """Disable every control that would send a now-rejected config write. The
+        Configuration window locks its own off this signal; here just MainWindow's.
         """
         self._controller.set_controls_locked(locked)
         for widget in (
@@ -872,19 +701,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             widget.setEnabled(not locked)
 
     def _on_cgms_only_toggled(self, checked: bool) -> None:
-        """Switch into/out of CGMS-only mode.
+        """Switch into/out of CGMS-only mode (see PROTOCOL_SPEC.md).
 
-        On: locks every config-sending control, discards the local model
-        entirely (no "expected" line — this is a pure passive CGM stream
-        viewer), and tells every connected board to stream nothing but
-        standard CGM Measurement notifications. Does not reset the board —
-        whatever's currently running just keeps running under the new
-        restrictions.
-
-        Off: tells the board to reset and stop, waiting for an explicit
-        Start (same as PROTOCOL_SPEC.md's run-state STOPPED), and unlocks
-        the app again. Checking CGMS Only again after this picks up right
-        back where it left off — restricted streaming, simulation running.
+        On: lock every config-sending control, drop the local model (pure passive
+        CGM viewer, no "expected" line), tell every board to stream only standard
+        CGM Measurements — without resetting it. Off: reset+stop the board, unlock.
         """
         self._cgms_only = checked
         if checked:
@@ -910,15 +731,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # ------------------------------------------------------------------
 
     def _reset_graph_view(self) -> None:
-        """Clear every graph and re-anchor the shared timeline at t=0.
-
-        Called by every genuine "restart" action: Start, Stop, switching the
-        active person/sensor/mode, toggling Model Only, or editing/saving a
-        profile. A single shared reset point is what keeps the received and
-        expected lines aligned on the same time origin. This also drops the
-        per-user history (self._history) — a restart begins a new run for
-        everyone. Switching the selected tree row does NOT come through here
-        (see _on_user_selected); it only rebinds to that user's kept history.
+        """Clear every graph, drop all per-user history, and re-anchor the shared
+        timeline at t=0. Every genuine restart (Start/Stop, switch person/sensor/
+        mode, save a profile) goes through here — the one shared reset point that
+        keeps the received and expected lines on the same origin. A row switch
+        does not (see _on_user_selected); it only rebinds to kept history.
         """
         self._graph.reset(datetime.now(UTC))
         self._history = {}
@@ -1093,25 +910,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # ------------------------------------------------------------------
 
     def _on_new_message(self, msg: dict) -> None:
-        """Update the treeview row and graphs for the message's user, if relevant.
+        """Record + plot a decoded BLE notification (the row itself is UserTree's).
 
-        Graph appends are gated on self._run_state == "running": the board
-        keeps sending Food/Exercise Status notifications (and CGM
-        measurements, while a session is active) regardless of run state, so
-        without this gate a Stop/Pause would get immediately undone by the
-        next notification refilling the just-cleared/frozen graphs. In CGMS
-        Only mode there's no Start/Stop to gate on at all (the board manages
-        its own run state autonomously), so plotting is keyed on
-        self._cgms_only instead. Ignored entirely in Model Only mode, since
-        the graphs are driven by the local engine there instead of BLE
-        traffic. The treeview row itself still updates unconditionally —
-        it's just a live status readout.
-
-        Every connected sensor's stream is recorded to self._history while
-        recording, not only the selected one's, so switching the tree row
-        shows that sensor's full history since Start instead of an empty
-        graph. Only the selected user's buffers get redrawn (they are the
-        lists _bind_selected_history aliased onto self._graph_x / etc.).
+        ``recording`` gates the history appends: the board keeps sending
+        notifications regardless of run state, so without it a Stop/Pause would
+        be undone by the next one. CGMS-only has no Start/Stop so it keys on
+        self._cgms_only; Model Only ignores BLE entirely (the engine drives the
+        plots). Every sensor's stream is recorded while recording, not just the
+        selected one's, but only the selected user's buffers get redrawn.
         """
         user_id = msg.get("user_id")
         recording = not self._model_only and (self._cgms_only or self._run_state == "running")
