@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QCloseEvent, QColor
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
     QGridLayout,
@@ -19,15 +19,12 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QToolBar,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
-from gui.avatar import avatar_icon
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_layout_window import BoardLayoutWindow
 from gui.board_link import BoardLink
@@ -43,6 +40,7 @@ from gui.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, P
 from gui.person_config_window import PersonConfigWindow
 from gui.scenario_window import ScenarioWindow
 from gui.sensor_config_window import SensorConfigWindow
+from gui.user_tree import UserTree
 from gui.view_config_window import ViewConfigWindow
 from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
 from models import sensors as sensor_defaults
@@ -90,7 +88,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         )
         self._ble_log = BleMessageLog(self)
         self._ble_log.new_message.connect(self._on_new_message)
-        self._ble_log.device_disconnected.connect(self._on_device_disconnected)
+        # device_disconnected is wired to the sensor list once it exists, below.
 
         self._person_profiles, self._sensor_profiles = profile_store.load()
         self._seed_default_profiles()
@@ -142,17 +140,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         c.thresholds_saved.connect(self._on_thresholds_changed)
         c.data_source_edited.connect(self._on_profiles_changed)
         self._configuration_window = ConfigurationWindow(c, self._ensure_bluetooth_window)
-        # user_id -> stable small integer shown next to the avatar in the tree
-        self._user_ids: dict[str, int] = {}
 
-        self._user_items: dict[str, QTreeWidgetItem] = {}
-        # user_id -> BLE address, and the set of user_ids whose device has
-        # disconnected (their tree row is marked offline until a message with
-        # the same dev_id arrives again). See issue 06.
-        self._user_dev: dict[str, str] = {}
-        self._offline_users: set[str] = set()
-        self.tree = self._build_tree()
-
+        # The left-hand sensor list owns its own rows + offline state (issue 18)
+        # and reports the selected user_id back.
+        self.tree = UserTree(self._thresholds)
+        self.tree.user_selected.connect(self._on_user_selected)
+        self._ble_log.device_disconnected.connect(self.tree.mark_device_offline)
         self._selected_user: str | None = None
         # The two stacked matplotlib panels (issue 18). It keeps the fixed
         # graph_t0 x-axis origin, the plot buffers and every draw decision;
@@ -247,6 +240,16 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _in_view(self, xs: list[float], ys: list[float]) -> list[float]:
         return self._graph.in_view(xs, ys)
 
+    # Sensor-list state now lives on self.tree (issue 18); these keep the
+    # issue-06 regression test + scripts/e2e_4sensor.py reading it as before.
+    @property
+    def _user_items(self) -> dict:
+        return self.tree._items
+
+    @property
+    def _offline_users(self) -> set:
+        return self.tree._offline
+
     def _seed_default_profiles(self) -> None:
         """First run (no saved profiles yet): add one default person/sensor.
 
@@ -311,14 +314,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self.debug_btn.clicked.connect(self._open_debug)
         toolbar.addWidget(self.debug_btn)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
-
-    def _build_tree(self) -> QTreeWidget:
-        """Create and return the user treeview (starts empty, populated on first message)."""
-        tree = QTreeWidget()
-        tree.setHeaderLabels(["User", "Glucose"])
-        tree.header().setStretchLastSection(True)
-        tree.currentItemChanged.connect(self._on_user_selected)
-        return tree
 
     def _build_bottom_bar(self) -> QWidget:
         """Create the run controls (Start/Pause, Stop, Insert Now) and the live
@@ -501,6 +496,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """Reload thresholds after a Configuration-window save and redraw the bands/metrics."""
         self._thresholds = app_settings.load()
         self._graph.set_thresholds(self._thresholds)
+        self.tree.set_thresholds(self._thresholds)
 
     def _open_editor(self, which: str) -> None:
         """Route a ConfigController.editor_requested to the right config window."""
@@ -1121,26 +1117,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         recording = not self._model_only and (self._cgms_only or self._run_state == "running")
         selected = user_id is not None and user_id == self._selected_user
 
-        if user_id is not None:
-            dev_id = msg.get("dev_id")
-            if dev_id is not None:
-                self._user_dev[user_id] = dev_id
-            if user_id in self._offline_users:  # a message means it's back
-                self._offline_users.discard(user_id)
-                self._set_row_offline(user_id, offline=False)
+        self.tree.note_message(msg)
 
-        if "glucose_value" in msg:
-            glucose = msg["glucose_value"]
-            item = self._ensure_user_item(user_id)
-            item.setText(1, f"{glucose:.2f}")
-            self._update_user_alert(item, user_id, glucose)
-
-            if recording and user_id is not None:
-                h = self._hist(user_id)
-                h["gx"].append(self._graph.elapsed_seconds(msg["timestamp"]))
-                h["gy"].append(glucose)
-                if selected:
-                    self._graph.redraw_glucose()
+        if "glucose_value" in msg and recording and user_id is not None:
+            h = self._hist(user_id)
+            h["gx"].append(self._graph.elapsed_seconds(msg["timestamp"]))
+            h["gy"].append(msg["glucose_value"])
+            if selected:
+                self._graph.redraw_glucose()
 
         if recording and user_id is not None and "carbs_g_per_min" in msg:
             h = self._hist(user_id)
@@ -1150,71 +1134,16 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             if selected:
                 self._graph.redraw_food_ex()
 
-    def _ensure_user_item(self, user_id: str) -> QTreeWidgetItem:
-        """Return the tree row for *user_id*, creating it with an ID + avatar on first sight."""
-        item = self._user_items.get(user_id)
-        if item is not None:
-            return item
-        uid = self._user_ids.setdefault(user_id, len(self._user_ids) + 1)
-        item = QTreeWidgetItem([f"#{uid}  {user_id}", "—"])
-        item.setIcon(0, avatar_icon(user_id, user_id))
-        item.setData(0, Qt.ItemDataRole.UserRole, user_id)
-        self.tree.addTopLevelItem(item)
-        self._user_items[user_id] = item
-        # Auto-select the first sensor to appear so its graph shows without an
-        # extra click; later rows don't steal the selection.
-        if self._selected_user is None:
-            self.tree.setCurrentItem(item)
-        return item
-
-    def _update_user_alert(self, item: QTreeWidgetItem, user_id: str, glucose: float) -> None:
-        """Show a LOW/HIGH badge beside the user's name when out of the target range."""
-        uid = self._user_ids.get(user_id, 0)
-        base = f"#{uid}  {user_id}"
-        if glucose < self._thresholds["tbr1_below"]:
-            item.setText(0, f"{base}   ▼ LOW")
-            item.setForeground(0, QBrush(QColor("#c0392b")))
-        elif glucose > self._thresholds["tar1_above"]:
-            item.setText(0, f"{base}   ▲ HIGH")
-            item.setForeground(0, QBrush(QColor("#e67e22")))
-        else:
-            item.setText(0, base)
-            item.setForeground(0, QBrush())
-
-    def _set_row_offline(self, user_id: str, *, offline: bool) -> None:
-        """Mark (or clear) the tree row for *user_id* as disconnected."""
-        item = self._user_items.get(user_id)
-        if item is None:
-            return
-        uid = self._user_ids.get(user_id, 0)
-        base = f"#{uid}  {user_id}"
-        if offline:
-            item.setText(0, f"{base}   ⚊ offline")
-            item.setForeground(0, QBrush(QColor("#7f8c8d")))
-            item.setText(1, "—")
-        else:
-            item.setText(0, base)
-            item.setForeground(0, QBrush())
-
-    def _on_device_disconnected(self, address: str) -> None:
-        """A BLE session ended — mark every tree row fed by that device offline (issue 06)."""
-        for user_id, dev_id in self._user_dev.items():
-            if dev_id == address:
-                self._offline_users.add(user_id)
-                self._set_row_offline(user_id, offline=True)
-
-    def _on_user_selected(self, current: QTreeWidgetItem | None, _prev) -> None:
+    def _on_user_selected(self, user_id: str) -> None:
         """Switch which device's history is plotted, keeping every user's data.
 
         Every connected sensor's received stream is recorded to self._history
         from Start onward (see _on_new_message), all against the one shared
-        self._graph_t0. Selecting a row just rebinds the plot buffers to that
-        user's kept lists and redraws — no reset, no loss, no timeline drift,
-        since the origin never moves between Start actions.
+        graph_t0. Selecting a row just rebinds the plot buffers to that user's
+        kept lists and redraws — no reset, no loss, no timeline drift, since the
+        origin never moves between Start actions.
         """
-        if current is None:
-            return
-        self._selected_user = current.data(0, Qt.ItemDataRole.UserRole) or current.text(0)
+        self._selected_user = user_id
         self._bind_selected_history()
         self._graph.redraw_glucose()
         self._graph.redraw_food_ex()
