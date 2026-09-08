@@ -1,6 +1,7 @@
 # Architectural debt: MainWindow god object + window/state seam leaks
 
-Status: (see below)
+Status: **done** (2026-09-08) — main_window.py 1583→939, 8 deep modules extracted,
+full gate green. Only the typed-`new_message` record remains, deferred by grill Q9.
 Track: B
 Phase: 3 attempt
 Blocked by: —
@@ -76,11 +77,29 @@ Two more extractions + a prose trim:
 (`ruff` / `pylint` 10.00 incl. `C0302` / `pyright` / 125 tests) **passes with no
 `--no-verify`**. `ui_smoke --no-board C,D,E,F` 4/4 PASS, identical numbers.
 
-Status: **substantially done.** The god object is now a coordinator wiring
-`UserTree` + `GlucoseGraph` + `RangeStatsPanel` + `ConfigController` + `BoardLink`
-+ `EnginePool` + `InstantEvents`. Left for a future pass (not blocking): the
-`_scenario_dispatch` interpreter (carries the `src/gui/*` `C901` ignore) and the
-loosely-typed `new_message` dict still lack their own seam.
+## 2026-09-08 update 5 — ScenarioDispatch; DONE
+
+- `gui/scenario_dispatch.py` — `ScenarioDispatch` maps a scenario step
+  `(kind, args) -> log line` to a MainWindow action + `InstantEvents` via a
+  `{kind: handler}` table (was the 60-line `if/elif` chain, complexity 12).
+  `MainWindow._scenario_dispatch` is now a one-line delegator (kept for
+  `scripts/e2e.py` S17). `tests/test_scenario_dispatch.py` — 5 pins.
+- **No `C901` hits anywhere in `src/gui/`** now — dropped `C901` from the
+  `src/gui/*.py` per-file-ignore (only `PLR0915` remains, for two ~65-statement
+  Qt `__init__` builders).
+
+**`main_window.py`: 1583 → 939 lines** (−644, −41%). 130 tests, full gate green.
+
+Status: **DONE** for the scope of this issue. The god object is now a
+coordinator that wires `UserTree` + `GlucoseGraph` + `RangeStatsPanel` +
+`ConfigController` + `BoardLink` + `EnginePool` + `InstantEvents` +
+`ScenarioDispatch`, each a deep module behind a small interface.
+
+Not done, **by earlier decision** (grill Q9 — "extraction #1 only"): the
+loosely-typed `new_message` dict still has no schema/typed record. It threads
+`ble_session` → `ble_message_log` → `main_window` / `debug_window` by string key;
+giving it a dataclass is a BLE-core change deferred out of scope, not an
+oversight. Left as the last item on the future-maintainer map below.
 
 ---
 
