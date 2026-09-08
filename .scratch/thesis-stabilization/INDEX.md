@@ -39,6 +39,6 @@ See `spec.md` for framing and decisions.
 
 | # | Title |
 |---|---|
-| 18 | MainWindow god object + seam leaks | **partial** — BoardLink + dedups + ConfigController seam (ConfigWindow↔MainWindow decoupled, 7 tests); graph extraction to get under C0302 still open |
+| 18 | MainWindow god object + seam leaks | **partial** — BoardLink + ConfigController seam + GlucoseGraph extracted (1583→1263); ~3 more mechanical splits to clear the C0302 1000-line gate |
 | 19 | Shallow modules + split responsibilities | **partial** (05ae500) — name→slot + CSV-upload dedup'd |
 | 20 | No app-level test coverage below "launch the app" | **partial** (743b5f6) — BleSession decode seam + 113 tests |

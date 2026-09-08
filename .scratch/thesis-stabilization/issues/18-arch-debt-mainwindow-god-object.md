@@ -38,10 +38,41 @@ BLE stack recovered (scanner sees 3/4 identities). Did the `ConfigurationWindow`
   person combo + speed slider + model toggle through the new seam). `ui_smoke B`
   (single-sensor board) FAILs identically on master — board is in 4-sensor mode.
 
-**`main_window.py` is still 1583 lines** — this was a *seam* extraction, not a
-size cut. The remaining issue-18 work to get under the new `C0302` ceiling is the
-graph/plot extraction (`_build_graph` / `_redraw_graph` / `_build_food_exercise_graph`
-/ `_apply_range_bands` / `_rebuild_graphs` ≈ 400 lines → a `GlucoseGraph` widget).
+## 2026-09-08 update 3 — GlucoseGraph extracted
+
+- New `gui/glucose_graph.py` — `GlucoseGraph` owns both matplotlib canvases,
+  the plot buffers (`_Buffers` dataclass) and every draw decision (figure build,
+  theming, range bands, per-category recolour, rolling-window time-axis sync,
+  y-limit fitting, PISA shading, redraw). Artists bundled into `_GlucosePlot` /
+  `_FoodExPlot`. Interface: `elapsed_seconds` / `reset` / `bind_buffers` /
+  `set_thresholds` / `set_view_window` / `set_glucose_title` / `add_pisa_span` /
+  `rebuild_for_theme` / `redraw_glucose` / `redraw_food_ex` / `in_view`.
+- `MainWindow` keeps the per-user `_history` and aliases the panel's live
+  buffers via `bind_buffers`. Title branching is now one `_set_graph_title`.
+  Read-only compat properties (`_graph_x/_y`, `_expected_*`, `_pisa_*`,
+  `_visible_xlim`, `_in_view`) keep `scripts/e2e.py` + `scripts/ui_smoke.py`
+  unchanged. `test_fe_graph_title.py` moved to the new API.
+- Also collapsed the 12 `_open_*` window methods to `_lazy_window` + `_raise`.
+
+**`main_window.py`: 1583 → 1263 lines** (−320). Verified: full gate green
+*except the intentional `C0302`* (1263 > 1000); `ui_smoke --no-board C,D,E,F`
+4/4 PASS with identical numbers (PISA shading, range recolour, rolling window,
+stats panel all intact).
+
+## Remaining to clear C0302 (≈263 lines over)
+
+Line-driven, not design-driven — each is a mechanical "move a cohesive cluster
+out". Best done as a focused pass with a **single-sensor board flashed** so
+`ui_smoke A/B` can verify the BLE paths too:
+
+1. `UserTree(QTreeWidget)` — `_build_tree` / `_ensure_user_item` /
+   `_update_user_alert` / `_set_row_offline` / `_on_device_disconnected` + the
+   `_user_items/_user_ids/_user_dev/_offline_users` dicts + the tree half of
+   `_on_new_message`. ≈ −80.
+2. `ScenarioRunner` — `_scenario_dispatch` (also clears its `C901`) +
+   `inject_fault` + `_inject_instant_*` + `_open_insert_*` +
+   `_instant_slot_choices` + `_multi_slot_count`. ≈ −140.
+3. Trim `__init__` / fold the stats panel into a small widget. ≈ −50.
 
 ---
 
