@@ -597,3 +597,9 @@ against these):
    S, Sparacino G, Cobelli C. "Modeling the glucose sensor error." *IEEE
    Transactions on Biomedical Engineering*, 61(3):620–629, 2014.
    [doi:10.1109/TBME.2013.2284023](https://pubmed.ncbi.nlm.nih.gov/24108706/)
+7. **Compression artifact / "compression low"** (background for the PISA
+   fault event — not a model implemented here) — Facchinetti A, Del Favero S,
+   Sparacino G, Cobelli C. "Modeling transient disconnections and compression
+   artifacts of continuous glucose sensors." *Diabetes Technology &
+   Therapeutics*, 18(4):264–272, 2016.
+   [doi:10.1089/dia.2015.0250](https://doi.org/10.1089/dia.2015.0250)

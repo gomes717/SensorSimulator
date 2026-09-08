@@ -36,6 +36,14 @@
 - [ ] Melhorar o E2E, que deixou passar muitos erros.
 - [ ] Arrumar o modelo rodando na aplicação: hoje roda um único modelo para todos os usuários; deve haver um modelo por usuário.
 - [ ] Arrumar a organização de pastas (`api`, `core`, `gui`, `services`, `models`, `utils`).
-- [ ] Arrumar o PISA — parece não estar funcionando.
+- [x] Arrumar o PISA — parece não estar funcionando. **Investigado (2026-09-08,
+  issue 02):** PISA está correto — verificado no motor da aplicação (teste
+  unitário + `ui_smoke` cenário E) e no firmware a x1 (novo caso E2E **S7-04**:
+  rampa suave 101→61→recupera). A percepção de "não funciona" vem da velocidade:
+  o decaimento de um evento pontual usa o `dt_min` cheio, então acima de ~x10 um
+  episódio de vários minutos termina em 1–3 ticks do modelo e a cadência BLE
+  (~2–5 s) mal o amostra — um único blip ou nada. O S7-03 antigo mascarava isso
+  por só testar o Model Only. Correção de fundo (tornar eventos pontuais
+  visíveis em alta velocidade) fica no item do multiplicador de tempo abaixo.
 - [ ] Adicionar métrica global na janela de CSV Analysis.
 - [ ] Tirar o "slot" das janelas de configuração — usar o nome do usuário ou qual sensor se quer configurar.

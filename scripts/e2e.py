@@ -654,6 +654,61 @@ def s7_pisa(ctx: Ctx):
         w._configuration_window.model_only_check.setChecked(False)
 
 
+def s7_pisa_firmware(ctx: Ctx):
+    """PISA on the actual firmware (S7-03 only covers the Model Only engine).
+
+    Must run at x1: an instant event's decay uses the full dt_min, so at a high
+    speed multiplier the whole bout completes in 1-2 model ticks and the ~5 s
+    BLE cadence barely samples it — which is what "PISA seems not to work"
+    (issue 02) actually was. See issue 03.
+    """
+    with Case(ctx, "S7-04", "pisa_false_low_firmware", "S7") as c:
+        sess = ctx.require_board()
+        sess.queue_write("data_source", protocol.encode_data_source(False))
+        # Force x1 and WAIT for the apply (S7-03 left the board at x60; a speed
+        # write resets the sim clock + clears instant events, so a PISA fired
+        # too soon would be wiped). reset_sync fires when apply lands.
+        rs = {"n": 0}
+        sess.reset_sync.connect(lambda _a: rs.__setitem__("n", rs["n"] + 1))
+        n_rs = rs["n"]
+        sess.queue_write("speed", protocol.encode_speed(1.0))
+        sess.queue_write("run_state", protocol.encode_run_state(1))
+        c.wait_until(lambda: rs["n"] > n_rs, 15, "speed apply (reset_sync)")
+        pump(1500)
+        n0 = len(cgm_stream(ctx))
+        c.wait_until(lambda: len(cgm_stream(ctx)) >= n0 + 3, 30, "baseline samples")
+        base_vals = [g for _, g in cgm_stream(ctx)[n0:]]
+        base = sum(base_vals[-3:]) / min(3, len(base_vals))
+        c.measure("baseline", round(base, 1))
+
+        c.step("inject firmware PISA 60% / 3 min at x1")
+        m0 = len(cgm_stream(ctx))
+        sess.queue_write("pisa_instant", protocol.encode_pisa_instant(3, 0.60))
+        # 3 min bout at x1 -> midpoint at ~90 s; ~5 s BLE cadence -> collect
+        # through the trough and into the recovery (~40 samples / ~200 s).
+        c.wait_until(lambda: len(cgm_stream(ctx)) >= m0 + 32, 260, ">=32 post-event samples")
+        post = [g for _, g in cgm_stream(ctx)[m0:]]
+        trough = min(post)
+        c.measure("trough", round(trough, 1))
+        c.measure("post", [round(x, 1) for x in post[:20]])
+
+        # 60% depth -> factor ~0.40 at the exact midpoint; sampling won't hit it
+        # dead-on, so allow a generous margin but still require a real dip.
+        c.assert_(
+            trough <= base * 0.70,
+            "dips well below baseline near the midpoint",
+            f"{base:.0f}->{trough:.0f}",
+        )
+        below = [x for x in post if x < base - 5.0]
+        c.assert_(
+            len(below) >= 6,
+            "the dip is a multi-sample ramp, not a one-sample blip",
+            f"{len(below)} samples below baseline",
+        )
+        c.assert_(post[-1] > trough + 3.0, "recovers toward baseline after the bout")
+        sess.queue_write("run_state", protocol.encode_run_state(0))
+
+
 def s8_csv(ctx: Ctx):
     with Case(ctx, "S8-02", "csv_playback_exact", "S8") as c:
         sess = ctx.require_board()
@@ -1072,7 +1127,7 @@ SUITES: dict[str, list] = {
     "S4": [s4_run_state],
     "S5": [s5_speed],
     "S6": [s6_steady_state],
-    "S7": [s7_instant_food_no_reset, s7_pisa],
+    "S7": [s7_instant_food_no_reset, s7_pisa, s7_pisa_firmware],
     "S8": [s8_csv, s8_bad_crc],
     "S9": [s9_cgms_only],
     "S10": [s10_window],
