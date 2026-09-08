@@ -8,6 +8,11 @@ minute). No sensor noise is applied here — this is the noiseless "true" glucos
 that the on-device sensor model itself samples from, so it also carries no
 insulin-bolus dosing beyond each model's own constant steady-state basal (the
 app only lets the user configure the model/sensor/food/exercise, not a pump).
+
+The per-tick simulation logic lives in :class:`ModelStepper`, which has no
+threads, no sleeping and no wall clock — :class:`SimulationEngine` drives it once
+per real second, tests drive it step by step (see
+``.scratch/thesis-stabilization/issues/01-extract-engine-step-seam.md``).
 """
 
 from __future__ import annotations
@@ -138,40 +143,107 @@ _ADAPTERS: dict[ModelId, _ModelAdapter] = {
 }
 
 
-class SimulationEngine(QThread):
-    """Steps one PersonProfile's model once per wall-clock second and emits readings."""
+@dataclass
+class TickResult:
+    """One tick's output — the payload of ``SimulationEngine.expected_reading``."""
 
-    # ISO timestamp, glucose_mg_dl, carbs_g_per_min (0 outside a rate-fed meal window,
-    # or the equivalent instantaneous rate for a firing impulse-fed meal), exercise_pct
-    expected_reading = pyqtSignal(str, float, float, float)
+    timestamp: str
+    glucose: float
+    carbs_rate: float
+    exercise_pct: float
 
-    def __init__(self, profile: PersonProfile, speed_mult: float, parent=None) -> None:
-        """Store the profile + speed multiplier to run; call start() to begin ticking.
 
-        *speed_mult* (x1..x1000) scales simulated time per 1 Hz tick exactly as
-        on the MCU: dt_min = (1/60) * speed_mult.
+@dataclass
+class _CsvReplay:
+    """Per-run state for the CSV data source."""
 
-        Call set_paused(True) before start() to have a freshly (re)created
-        engine sit ready-but-idle until the app's Start button resumes it,
-        keeping the local clock in lockstep with the board's own run-state
-        (see PROTOCOL_SPEC.md's "Run state" section).
-        """
-        super().__init__(parent)
+    samples: list[int]
+    interval_s: int
+    span_s: int
+    foodlog: list[tuple[int, float]]
+    pending: list[tuple[int, float]]  # (offset_s, carbs_g), consumed as the clock passes
+    active_meals: list[dict[str, float]]
+
+
+@dataclass
+class _ModelRun:
+    """Per-run state for the physiological model data source."""
+
+    adapter: _ModelAdapter
+    params: dict[str, float]
+    state: Any
+    basal: float
+    last_fired_day: dict[int, int]
+
+
+class ModelStepper:
+    """One profile's simulation, advanced one tick at a time.
+
+    No threads, no sleeping, no wall clock: ``tick(dt_min, now_iso)`` runs exactly
+    one iteration of the old ``_run_model`` / ``_run_csv`` loop body and advances
+    the sim clock by ``dt_min``. ``SimulationEngine`` calls it once per real
+    second; tests call it directly with an injected ``dt_min`` and timestamp.
+
+    ``data_source == "csv"`` with a readable window replays that window verbatim
+    (the food log surfaced report-only on the carbs channel); otherwise the
+    physiological model runs. Instant food/exercise/PISA events are injected via
+    the thread-safe ``add_instant_*`` methods and consumed on the next tick, the
+    same as the firmware's instant-event slots.
+    """
+
+    def __init__(self, profile: PersonProfile) -> None:
         self._profile = profile
-        self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
-        self._paused = False
+        self.sim_clock_min = 0.0
+
         # Instant (one-shot, non-recurring) food/exercise/PISA events injected
-        # mid-run — mirrors the firmware's model_thread instant-event slots (see
-        # PROTOCOL_SPEC.md). Guarded by a plain lock since those are called from
-        # the GUI thread while run() below executes on this QThread.
+        # mid-run. Guarded by a plain lock since add_instant_* is called from the
+        # GUI thread while tick() runs on the SimulationEngine QThread.
         self._instant_lock = threading.Lock()
         self._instant_food: list[dict[str, Any]] = []
         self._instant_exercise: list[dict[str, Any]] = []
         self._instant_pisa: list[dict[str, Any]] = []
 
-    def stop(self) -> None:
-        """Request the tick loop to end after its current iteration."""
-        self.requestInterruption()
+        self._mode = "model"
+        self._csv: _CsvReplay | None = None
+        self._model: _ModelRun | None = None
+
+        if getattr(profile, "data_source", "model") == "csv":
+            samples, interval_s, foodlog = load_csv_window(profile)
+            if samples:
+                self._mode = "csv"
+                self._csv = _CsvReplay(
+                    samples=samples,
+                    interval_s=interval_s,
+                    span_s=max(1, len(samples) * interval_s),
+                    foodlog=foodlog,
+                    pending=sorted(foodlog),
+                    active_meals=[],
+                )
+            # else: no usable window — fall through to the model so the
+            # "expected" line still shows something.
+
+        if self._mode == "model":
+            adapter = _ADAPTERS[profile.model_id]
+            params = {**adapter.default_params(), **profile.params}
+            basal = (
+                profile.basal_u_per_h
+                if profile.basal_u_per_h is not None
+                else adapter.basal_u_per_h(params)
+            )
+            self._model = _ModelRun(
+                adapter=adapter,
+                params=params,
+                state=adapter.init_state(params),
+                basal=basal,
+                last_fired_day={},
+            )
+
+    @property
+    def mode(self) -> str:
+        """``"model"`` or ``"csv"`` — resolved once at construction."""
+        return self._mode
+
+    # -- instant events (thread-safe) ------------------------------------
 
     def add_instant_food(self, duration_min: float, carbs_g: float) -> None:
         """Start an instant carb bolus right now, without resetting the simulation.
@@ -234,6 +306,180 @@ class SimulationEngine(QThread):
         self._instant_pisa = still_active
         return max(0.0, factor)
 
+    # -- stepping ------------------------------------------------------
+
+    def tick(self, dt_min: float, now_iso: str) -> TickResult:
+        """Advance the simulation by one tick of *dt_min* simulated minutes.
+
+        *now_iso* is the wall-clock timestamp to stamp on the reading (the driver
+        passes ``datetime.now(UTC)``; tests pass a fixed value).
+        """
+        if self._mode == "csv":
+            return self._tick_csv(dt_min, now_iso)
+        return self._tick_model(dt_min, now_iso)
+
+    def _tick_csv(self, dt_min: float, now_iso: str) -> TickResult:
+        c = self._csv
+        assert c is not None
+        samples = c.samples
+
+        t_s = self.sim_clock_min * 60.0
+        loop_s = t_s % c.span_s
+
+        row = int(loop_s / c.interval_s) % len(samples)
+        glucose = float(samples[row])
+
+        # Food log (report-only): start a 30-min spread when the clock reaches a
+        # meal; also fold in "Insert Food Now" instant events.
+        while c.pending and c.pending[0][0] <= loop_s:
+            _, carbs_g = c.pending.pop(0)
+            c.active_meals.append(
+                {
+                    "remaining_min": CSV_FOODLOG_SPREAD_MIN,
+                    "rate": carbs_g / CSV_FOODLOG_SPREAD_MIN,
+                }
+            )
+        if not c.pending and loop_s < dt_min * 60.0:
+            c.pending = sorted(c.foodlog)  # window looped — re-arm
+
+        with self._instant_lock:
+            for inst in self._instant_food:
+                dur = max(inst["duration_min"], 1.0)
+                c.active_meals.append({"remaining_min": dur, "rate": inst["carbs_g"] / dur})
+            self._instant_food = []  # CSV mode: report-only, one hand-off
+            glucose *= self._pisa_factor(dt_min)  # PISA attenuates the sensor, CSV or not
+
+        carbs_rate = 0.0
+        still_active = []
+        for meal in c.active_meals:
+            carbs_rate += meal["rate"]
+            meal["remaining_min"] -= dt_min
+            if meal["remaining_min"] > 0.0:
+                still_active.append(meal)
+        c.active_meals = still_active
+
+        print(
+            f"[engine:csv] t_sim={self.sim_clock_min:.2f}min row={row} glucose={glucose:.1f} "
+            f"carbs={carbs_rate:.3f}"
+        )
+        self.sim_clock_min += dt_min
+        return TickResult(now_iso, glucose, carbs_rate, 0.0)
+
+    def _tick_model(self, dt_min: float, now_iso: str) -> TickResult:
+        m = self._model
+        assert m is not None
+        adapter = m.adapter
+        params = m.params
+        time_of_day = self.sim_clock_min % 1440.0
+        day_index = int(self.sim_clock_min // 1440.0)
+
+        carbs = 0.0
+        for i, ev in enumerate(self._profile.food_events):
+            if adapter.rate_fed:
+                if _in_daily_window(time_of_day, ev.time_of_day_min, ev.duration_min):
+                    carbs += ev.carbs_g / ev.duration_min
+            elif m.last_fired_day.get(i) != day_index and _in_daily_window(
+                time_of_day, ev.time_of_day_min, dt_min
+            ):
+                carbs += ev.carbs_g
+                m.last_fired_day[i] = day_index
+
+        exercise_pct = 0.0
+        hr_bpm = params.get("HRb", 80.0)
+        for ev in self._profile.exercise_events:
+            if _in_daily_window(time_of_day, ev.time_of_day_min, ev.duration_min):
+                exercise_pct = ev.intensity_pct
+                hr_bpm = params.get("HRb", 80.0) + ev.intensity_pct / 100.0 * 80.0
+
+        with self._instant_lock:
+            still_active_food = []
+            for inst in self._instant_food:
+                if adapter.rate_fed:
+                    carbs += inst["carbs_g"] / inst["duration_min"]
+                elif not inst["delivered"]:
+                    carbs += inst["carbs_g"]
+                    inst["delivered"] = True
+                inst["remaining_min"] -= dt_min
+                if inst["remaining_min"] > 0.0:
+                    still_active_food.append(inst)
+            self._instant_food = still_active_food
+
+            still_active_exercise = []
+            for inst in self._instant_exercise:
+                if inst["intensity_pct"] > exercise_pct:
+                    exercise_pct = inst["intensity_pct"]
+                    hr_bpm = params.get("HRb", 80.0) + inst["intensity_pct"] / 100.0 * 80.0
+                inst["remaining_min"] -= dt_min
+                if inst["remaining_min"] > 0.0:
+                    still_active_exercise.append(inst)
+            self._instant_exercise = still_active_exercise
+
+            pisa_factor = self._pisa_factor(dt_min)
+
+        adapter.step(
+            m.state,
+            params,
+            carbs,
+            m.basal,
+            exercise_pct,
+            hr_bpm,
+            self.sim_clock_min,
+            dt_min,
+        )
+        glucose = adapter.glucose_mg_dl(m.state, params) * pisa_factor
+
+        # For the food/exercise graph: rate-fed models already carry a g/min rate;
+        # impulse-fed models deliver the whole meal on one tick, so express that
+        # tick's delivery as an equivalent rate too, for a comparable plot.
+        carbs_rate = carbs if adapter.rate_fed else (carbs / dt_min if carbs > 0.0 else 0.0)
+
+        print(
+            f"[engine] t_sim={self.sim_clock_min:.2f}min dt={dt_min:.4f} "
+            f"glucose={glucose:.2f} carbs={carbs_rate:.3f} ex={exercise_pct:.1f}"
+        )
+        self.sim_clock_min += dt_min
+        return TickResult(now_iso, glucose, carbs_rate, exercise_pct)
+
+
+class SimulationEngine(QThread):
+    """Drives a :class:`ModelStepper` once per wall-clock second and emits readings."""
+
+    # ISO timestamp, glucose_mg_dl, carbs_g_per_min (0 outside a rate-fed meal window,
+    # or the equivalent instantaneous rate for a firing impulse-fed meal), exercise_pct
+    expected_reading = pyqtSignal(str, float, float, float)
+
+    def __init__(self, profile: PersonProfile, speed_mult: float, parent=None) -> None:
+        """Store the profile + speed multiplier to run; call start() to begin ticking.
+
+        *speed_mult* (x1..x1000) scales simulated time per 1 Hz tick exactly as
+        on the MCU: dt_min = (1/60) * speed_mult.
+
+        Call set_paused(True) before start() to have a freshly (re)created
+        engine sit ready-but-idle until the app's Start button resumes it,
+        keeping the local clock in lockstep with the board's own run-state
+        (see PROTOCOL_SPEC.md's "Run state" section).
+        """
+        super().__init__(parent)
+        self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
+        self._paused = False
+        self._stepper = ModelStepper(profile)
+
+    def stop(self) -> None:
+        """Request the tick loop to end after its current iteration."""
+        self.requestInterruption()
+
+    def add_instant_food(self, duration_min: float, carbs_g: float) -> None:
+        """Inject an instant carb bolus now (thread-safe) — see ModelStepper.add_instant_food."""
+        self._stepper.add_instant_food(duration_min, carbs_g)
+
+    def add_instant_exercise(self, duration_min: float, intensity_pct: float) -> None:
+        """Inject an instant exercise bout now (thread-safe)."""
+        self._stepper.add_instant_exercise(duration_min, intensity_pct)
+
+    def add_instant_pisa(self, duration_min: float, depth_frac: float) -> None:
+        """Inject a transient PISA attenuation now (thread-safe)."""
+        self._stepper.add_instant_pisa(duration_min, depth_frac)
+
     def pause(self) -> None:
         """Freeze the simulation clock and model state in place until resume()."""
         self._paused = True
@@ -249,34 +495,8 @@ class SimulationEngine(QThread):
     def run(self) -> None:
         """Tick once per wall-clock second until stop() is called.
 
-        Runs the profile's physiological model, or — when
-        ``profile.data_source == "csv"`` and a readable window is assigned —
-        replays that recorded 24 h window verbatim instead (mirroring the
-        firmware's CSV data-source branch), with the food log surfaced
-        report-only on the carbs channel.
+        Timing only: the per-tick simulation lives in :class:`ModelStepper`.
         """
-        if getattr(self._profile, "data_source", "model") == "csv":
-            samples, interval_s, foodlog = load_csv_window(self._profile)
-            if samples:
-                self._run_csv(samples, interval_s, foodlog)
-                return
-            # No usable window assigned — fall through to the model so the
-            # "expected" line still shows something.
-
-        self._run_model()
-
-    def _run_csv(
-        self,
-        samples: list[int],
-        interval_s: int,
-        foodlog: list[tuple[int, float]],
-    ) -> None:
-        """Replay a resampled CSV window row-per-tick, looping at the end."""
-        span_s = max(1, len(samples) * interval_s)
-        sim_clock_min = 0.0
-        pending = sorted(foodlog)  # (offset_s, carbs_g), consumed as the clock passes
-        active_meals: list[dict[str, float]] = []
-
         while not self.isInterruptionRequested():
             if self._paused:
                 self.msleep(100)
@@ -284,134 +504,9 @@ class SimulationEngine(QThread):
 
             tick_start = time.monotonic()
             dt_min = (1.0 / 60.0) * self._speed_mult
-            t_s = sim_clock_min * 60.0
-            loop_s = t_s % span_s
+            now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+            res = self._stepper.tick(dt_min, now_iso)
+            self.expected_reading.emit(res.timestamp, res.glucose, res.carbs_rate, res.exercise_pct)
 
-            row = int(loop_s / interval_s) % len(samples)
-            glucose = float(samples[row])
-
-            # Food log (report-only): start a 30-min spread when the clock
-            # reaches a meal; also fold in "Insert Food Now" instant events.
-            while pending and pending[0][0] <= loop_s:
-                _, carbs_g = pending.pop(0)
-                active_meals.append(
-                    {
-                        "remaining_min": CSV_FOODLOG_SPREAD_MIN,
-                        "rate": carbs_g / CSV_FOODLOG_SPREAD_MIN,
-                    }
-                )
-            if not pending and loop_s < dt_min * 60.0:
-                pending = sorted(foodlog)  # window looped — re-arm
-
-            with self._instant_lock:
-                for inst in self._instant_food:
-                    dur = max(inst["duration_min"], 1.0)
-                    active_meals.append({"remaining_min": dur, "rate": inst["carbs_g"] / dur})
-                self._instant_food = []  # CSV mode: report-only, one hand-off
-                glucose *= self._pisa_factor(dt_min)  # PISA attenuates the sensor, CSV or not
-
-            carbs_rate = 0.0
-            still_active = []
-            for meal in active_meals:
-                carbs_rate += meal["rate"]
-                meal["remaining_min"] -= dt_min
-                if meal["remaining_min"] > 0.0:
-                    still_active.append(meal)
-            active_meals = still_active
-
-            timestamp = datetime.now(UTC).isoformat(timespec="seconds")
-            self.expected_reading.emit(timestamp, glucose, carbs_rate, 0.0)
-            print(
-                f"[engine:csv] t_sim={sim_clock_min:.2f}min row={row} glucose={glucose:.1f} "
-                f"carbs={carbs_rate:.3f}"
-            )
-
-            sim_clock_min += dt_min
-            elapsed = time.monotonic() - tick_start
-            self.msleep(max(0, int(1000 - elapsed * 1000)))
-
-    def _run_model(self) -> None:
-        """Tick the model once per wall-clock second until stop() is called."""
-        adapter = _ADAPTERS[self._profile.model_id]
-        params = {**adapter.default_params(), **self._profile.params}
-        state = adapter.init_state(params)
-        basal = (
-            self._profile.basal_u_per_h
-            if self._profile.basal_u_per_h is not None
-            else adapter.basal_u_per_h(params)
-        )
-
-        sim_clock_min = 0.0
-        last_fired_day: dict[int, int] = {}
-
-        while not self.isInterruptionRequested():
-            if self._paused:
-                self.msleep(100)
-                continue
-
-            tick_start = time.monotonic()
-            dt_min = (1.0 / 60.0) * self._speed_mult
-            time_of_day = sim_clock_min % 1440.0
-            day_index = int(sim_clock_min // 1440.0)
-
-            carbs = 0.0
-            for i, ev in enumerate(self._profile.food_events):
-                if adapter.rate_fed:
-                    if _in_daily_window(time_of_day, ev.time_of_day_min, ev.duration_min):
-                        carbs += ev.carbs_g / ev.duration_min
-                elif last_fired_day.get(i) != day_index and _in_daily_window(
-                    time_of_day, ev.time_of_day_min, dt_min
-                ):
-                    carbs += ev.carbs_g
-                    last_fired_day[i] = day_index
-
-            exercise_pct = 0.0
-            hr_bpm = params.get("HRb", 80.0)
-            for ev in self._profile.exercise_events:
-                if _in_daily_window(time_of_day, ev.time_of_day_min, ev.duration_min):
-                    exercise_pct = ev.intensity_pct
-                    hr_bpm = params.get("HRb", 80.0) + ev.intensity_pct / 100.0 * 80.0
-
-            with self._instant_lock:
-                still_active_food = []
-                for inst in self._instant_food:
-                    if adapter.rate_fed:
-                        carbs += inst["carbs_g"] / inst["duration_min"]
-                    elif not inst["delivered"]:
-                        carbs += inst["carbs_g"]
-                        inst["delivered"] = True
-                    inst["remaining_min"] -= dt_min
-                    if inst["remaining_min"] > 0.0:
-                        still_active_food.append(inst)
-                self._instant_food = still_active_food
-
-                still_active_exercise = []
-                for inst in self._instant_exercise:
-                    if inst["intensity_pct"] > exercise_pct:
-                        exercise_pct = inst["intensity_pct"]
-                        hr_bpm = params.get("HRb", 80.0) + inst["intensity_pct"] / 100.0 * 80.0
-                    inst["remaining_min"] -= dt_min
-                    if inst["remaining_min"] > 0.0:
-                        still_active_exercise.append(inst)
-                self._instant_exercise = still_active_exercise
-
-                pisa_factor = self._pisa_factor(dt_min)
-
-            adapter.step(state, params, carbs, basal, exercise_pct, hr_bpm, sim_clock_min, dt_min)
-            glucose = adapter.glucose_mg_dl(state, params) * pisa_factor
-
-            # For the food/exercise graph: rate-fed models already carry a g/min rate;
-            # impulse-fed models deliver the whole meal on one tick, so express that
-            # tick's delivery as an equivalent rate too, for a comparable plot.
-            carbs_rate = carbs if adapter.rate_fed else (carbs / dt_min if carbs > 0.0 else 0.0)
-
-            timestamp = datetime.now(UTC).isoformat(timespec="seconds")
-            self.expected_reading.emit(timestamp, glucose, carbs_rate, exercise_pct)
-            print(
-                f"[engine] t_sim={sim_clock_min:.2f}min dt={dt_min:.4f} x{self._speed_mult:g} "
-                f"glucose={glucose:.2f} carbs={carbs_rate:.3f} ex={exercise_pct:.1f}"
-            )
-
-            sim_clock_min += dt_min
             elapsed = time.monotonic() - tick_start
             self.msleep(max(0, int(1000 - elapsed * 1000)))
