@@ -1,18 +1,17 @@
-"""Configuration window: the Person/Sensor selectors, their config buttons and the
-mode toggles that used to sit in the main window's bottom bar, plus the glucose
-range thresholds editor and a per-person data-source (model vs CSV region) choice.
+"""Configuration window: the Person/Sensor selectors, their config buttons, the
+mode toggles that used to sit in the main window's bottom bar, and the glucose
+range thresholds editor.
 
 Simulation / BLE state lives on :class:`MainWindow`; this window only hosts the
-widgets. It talks to the app through a :class:`ConfigController` (a typed signal
-surface, issue 18) and one injected ``bluetooth_provider`` callable for the CSV
-upload path — it no longer takes ``MainWindow`` or reaches its private members.
-The main window keeps Start/Pause/Stop and the Insert Food/Exercise Now buttons.
+widgets and talks to the app through a :class:`ConfigController` (a typed signal
+surface, issue 18) — it no longer takes ``MainWindow`` or reaches its private
+members. The per-person data source (model vs CSV region) moved to the Person
+Configuration window (issue 16), next to the model it replaces.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -22,23 +21,17 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
-    QMessageBox,
     QPushButton,
-    QRadioButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from api import protocol
 from gui.config_controller import ConfigController
-from gui.device_target import restart_board
-from models import app_settings, food_log_csv
-from models.engine import load_csv_window
-from models.types import PersonProfile
+from models import app_settings
 
 _THRESHOLD_ROWS = (
     ("tbr2_below", "TBR2 below (mg/dL)"),
@@ -49,30 +42,32 @@ _THRESHOLD_ROWS = (
 
 
 class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
-    """Selectors, mode toggles, range thresholds and the per-person data source."""
+    """Selectors, config buttons, mode toggles and the glucose range thresholds."""
 
-    def __init__(
-        self,
-        controller: ConfigController,
-        bluetooth_provider: Callable[[], object],
-        parent=None,
-    ) -> None:
+    def __init__(self, controller: ConfigController, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Configuration")
-        self.resize(460, 520)
+        self.resize(460, 540)
         self._c = controller
-        self._bluetooth_provider = bluetooth_provider
         # Set while the window is repopulating a combo / re-syncing a widget from
         # a controller signal, so the widget's own change handler does not echo
         # the change straight back to the app.
         self._syncing = False
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._build_selectors_group())
-        layout.addWidget(self._build_modes_group())
-        layout.addWidget(self._build_thresholds_group())
-        layout.addWidget(self._build_data_source_group())
-        layout.addStretch(1)
+        # Everything sits in a scroll area so a short / low-DPI window never
+        # clips the lower groups (issue 16).
+        body = QWidget()
+        inner = QVBoxLayout(body)
+        inner.addWidget(self._build_selectors_group())
+        inner.addWidget(self._build_modes_group())
+        inner.addWidget(self._build_thresholds_group())
+        inner.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
         # The combos are left empty here on purpose: MainWindow builds this
         # window before its graphs exist, then fires profiles_changed once the
@@ -85,7 +80,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         controller.comm_profile_display_changed.connect(self._show_comm_profile)
         controller.model_only_display_changed.connect(self._show_model_only)
         controller.controls_locked.connect(self._set_controls_locked)
-        controller.data_source_display_changed.connect(self._load_data_source)
 
     # ------------------------------------------------------------------
     # Selectors + config buttons
@@ -141,7 +135,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         if self._syncing:
             return
         self._c.person_selected.emit(self.person_combo.currentData())
-        self._load_data_source()
 
     def _on_sensor_combo_changed(self, _index: int) -> None:
         if self._syncing:
@@ -157,7 +150,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
     def _repopulate_combos(self) -> None:
         self._repopulate_one(self.person_combo, self._c.person_profiles, self._c.active_person)
         self._repopulate_one(self.sensor_combo, self._c.sensor_profiles, self._c.active_sensor)
-        self._load_data_source()
 
     def _repopulate_one(self, combo: QComboBox, profiles: list, active) -> None:
         """Rebuild *combo* from *profiles*, keeping the current selection if it
@@ -333,145 +325,3 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
     def _save_thresholds(self) -> None:
         app_settings.save({key: spin.value() for key, spin in self._threshold_spins.items()})
         self._c.thresholds_saved.emit()
-
-    # ------------------------------------------------------------------
-    # Per-person data source (model vs CSV region)
-    # ------------------------------------------------------------------
-
-    def _build_data_source_group(self) -> QGroupBox:
-        group = QGroupBox("Data source for selected person")
-        box = QVBoxLayout(group)
-        self._src_model_radio = QRadioButton("Physiological model (parameters)")
-        self._src_csv_radio = QRadioButton("CSV region (24 h window)")
-        self._src_model_radio.toggled.connect(self._save_data_source)
-        box.addWidget(self._src_model_radio)
-        box.addWidget(self._src_csv_radio)
-        self._csv_path_label = QLabel("—")
-        self._csv_path_label.setWordWrap(True)
-        box.addWidget(self._csv_path_label)
-        hint = QLabel(
-            "Pick the CSV file and 24 h window in the CSV Analysis window, "
-            "then assign it to this patient there."
-        )
-        hint.setWordWrap(True)
-        hint.setEnabled(False)
-        box.addWidget(hint)
-
-        send_row = QHBoxLayout()
-        self._send_csv_btn = QPushButton("Send CSV to Board")
-        self._send_csv_btn.clicked.connect(self._send_csv_to_board)
-        send_row.addWidget(self._send_csv_btn)
-        self._send_csv_status = QLabel("")
-        self._send_csv_status.setWordWrap(True)
-        send_row.addWidget(self._send_csv_status, 1)
-        box.addLayout(send_row)
-        return group
-
-    def _current_person(self) -> PersonProfile | None:
-        return self.person_combo.currentData()
-
-    def reload_data_source(self) -> None:
-        """Back-compat alias kept for callers outside this window."""
-        self._load_data_source()
-
-    def _load_data_source(self) -> None:
-        person = self._current_person()
-        enabled = person is not None
-        for w in (self._src_model_radio, self._src_csv_radio):
-            w.setEnabled(enabled)
-        if person is None:
-            self._send_csv_btn.setEnabled(False)
-            return
-        self._src_model_radio.blockSignals(True)
-        self._src_csv_radio.blockSignals(True)
-        is_csv = getattr(person, "data_source", "model") == "csv"
-        self._src_csv_radio.setChecked(is_csv)
-        self._src_model_radio.setChecked(not is_csv)
-        self._src_model_radio.blockSignals(False)
-        self._src_csv_radio.blockSignals(False)
-
-        lines = [person.csv_path or "— no CSV region assigned —"]
-        if getattr(person, "csv_window_start_iso", None):
-            lines.append(f"window start: {person.csv_window_start_iso}")
-        food_log = getattr(person, "food_log_path", None)
-        if not food_log and person.csv_path:
-            food_log = food_log_csv.matching_food_log_path(person.csv_path)
-        if food_log:
-            lines.append(f"food log (auto): {food_log}")
-        self._csv_path_label.setText("\n".join(lines))
-        self._send_csv_btn.setEnabled(is_csv and bool(person.csv_path))
-
-    def _save_data_source(self) -> None:
-        person = self._current_person()
-        if person is None or self._syncing:
-            return
-        person.data_source = "csv" if self._src_csv_radio.isChecked() else "model"
-        self._c.data_source_edited.emit()
-        self._load_data_source()
-
-    def _send_csv_to_board(self) -> None:
-        """Build the glucose + food-log tracks for the selected CSV patient and
-        upload them to a connected board, then set its data source to CSV."""
-        person = self._current_person()
-        if person is None or getattr(person, "data_source", "model") != "csv":
-            QMessageBox.information(self, "Send CSV", "Select a CSV-backed patient first.")
-            return
-
-        samples, interval_s, foodlog = load_csv_window(person)
-        if not samples:
-            QMessageBox.warning(
-                self,
-                "Send CSV",
-                "Could not build the 24 h window — re-assign it in CSV Analysis.",
-            )
-            return
-
-        bt_window = self._bluetooth_provider()
-        sessions = bt_window.sessions()
-        if not sessions:
-            QMessageBox.warning(self, "Send CSV", "No connected board.")
-            return
-        if len(sessions) == 1:
-            address = next(iter(sessions))
-        else:
-            names = {bt_window.display_name(a): a for a in sessions}
-            name, ok = QInputDialog.getItem(
-                self, "Send CSV", "Target board:", list(names), 0, False
-            )
-            if not ok:
-                return
-            address = names[name]
-        session = sessions[address]
-
-        uploads = protocol.build_csv_uploads(
-            samples, interval_s, foodlog, person.csv_window_start_iso
-        )
-
-        try:
-            session.csv_upload_progress.disconnect(self._on_csv_progress)
-            session.csv_upload_finished.disconnect(self._on_csv_finished)
-        except TypeError:
-            pass
-        session.csv_upload_progress.connect(self._on_csv_progress)
-        session.csv_upload_finished.connect(self._on_csv_finished)
-
-        self._send_csv_status.setText("Uploading CSV…")
-        self._send_csv_btn.setEnabled(False)
-        session.start_csv_upload(uploads)
-        # Switch the board to CSV playback once the bytes are in (see
-        # _on_csv_finished); also remember which session for that write.
-        self._csv_upload_session = session
-
-    def _on_csv_progress(self, _address: str, sent: int, total: int) -> None:
-        self._send_csv_status.setText(f"Uploading CSV… {sent}/{total} B")
-
-    def _on_csv_finished(self, _address: str, ok: bool, message: str) -> None:
-        self._send_csv_btn.setEnabled(True)
-        if ok:
-            session = getattr(self, "_csv_upload_session", None)
-            if session is not None:
-                session.queue_write("data_source", protocol.encode_data_source(True))
-                restart_board(session)
-            self._send_csv_status.setText(f"✓ {message} — board set to CSV playback")
-        else:
-            self._send_csv_status.setText(f"⚠ Upload failed: {message}")

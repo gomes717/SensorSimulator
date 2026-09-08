@@ -120,8 +120,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         c.comm_profile_toggled.connect(self._on_comm_profile_toggled)
         c.editor_requested.connect(self._open_editor)
         c.thresholds_saved.connect(self._on_thresholds_changed)
-        c.data_source_edited.connect(self._on_profiles_changed)
-        self._configuration_window = ConfigurationWindow(c, self._ensure_bluetooth_window)
+        self._configuration_window = ConfigurationWindow(c)
 
         # The left-hand sensor list owns its own rows + offline state (issue 18)
         # and reports the selected user_id back.

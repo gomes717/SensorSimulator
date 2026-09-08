@@ -33,7 +33,6 @@ class ConfigController(QObject):
     comm_profile_toggled = pyqtSignal(bool)  # True = Dexcom-style
     editor_requested = pyqtSignal(str)  # "person"|"food"|"exercise"|"sensor"|"board_layout"
     thresholds_saved = pyqtSignal()
-    data_source_edited = pyqtSignal()  # the active person's model/CSV choice was toggled here
 
     # -- app -> widget ----------------------------------------------------
     profiles_changed = pyqtSignal()  # the profile lists changed: repopulate the combos
@@ -41,7 +40,6 @@ class ConfigController(QObject):
     comm_profile_display_changed = pyqtSignal(bool)
     model_only_display_changed = pyqtSignal(bool)
     controls_locked = pyqtSignal(bool)  # CGMS-only: disable every config-sending control
-    data_source_display_changed = pyqtSignal()  # re-sync the data-source group from the profile
 
     def __init__(
         self,
@@ -86,6 +84,3 @@ class ConfigController(QObject):
 
     def set_controls_locked(self, locked: bool) -> None:
         self.controls_locked.emit(bool(locked))
-
-    def refresh_data_source_display(self) -> None:
-        self.data_source_display_changed.emit()

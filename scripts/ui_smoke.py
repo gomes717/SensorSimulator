@@ -163,20 +163,26 @@ def scenario_A_csv_on_board(w, board_addr):
     pump(300)
     print(f"    assigned: {cw._assign_status.text()}")
 
-    cfg = w._configuration_window
-    QTest.mouseClick(w.configuration_btn, Qt.MouseButton.LeftButton)
+    # Data source + Send CSV now live in the Person Configuration window (issue 16).
+    w._open_person_config()
+    pcw = w._person_config_window
     pump(200)
-    if not cfg._src_csv_radio.isChecked():
-        record("A CSV-on-board", False, "config window did not switch to CSV")
+    row = next(i for i in range(pcw._list.count()) if pcw._list.item(i).text() == "CSV Test")
+    pcw._list.setCurrentRow(row)
+    pump(200)
+    if not pcw._src_csv_radio.isChecked():
+        record("A CSV-on-board", False, "person config did not switch to CSV")
         return
 
     # Send CSV to the board
     up = {"done": False, "ok": False, "msg": ""}
     sess.csv_upload_finished.connect(lambda _a, ok, m: up.update(done=True, ok=ok, msg=m))
-    cfg._send_csv_to_board()
+    pcw._send_csv_to_board()
     if not wait_until(lambda: up["done"], 30000, "CSV upload finished"):
         record("A CSV-on-board", False, "CSV upload never finished")
         return
+
+    cfg = w._configuration_window
     print(f"    upload: ok={up['ok']} {up['msg']}")
     if not up["ok"]:
         record("A CSV-on-board", False, f"upload failed: {up['msg']}")

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from api import protocol
 from gui.bluetooth_window import BluetoothWindow
+from gui.data_source_group import DataSourceGroup
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
 from models import cambridge, deichmann, royparker, uva_padova
 from models.types import ModelId, PersonProfile
@@ -103,21 +104,17 @@ class PersonConfigWindow(QWidget):
         form_top.addRow("Model:", self._model_combo)
         right_layout.addLayout(form_top)
 
+        self._ds = DataSourceGroup(
+            self._current_person, self._on_change, lambda: self._target_bar.begin()
+        )
+        right_layout.addWidget(self._ds)
+
         self._params_group = QGroupBox("Model parameters")
         self._params_form = QFormLayout(self._params_group)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._params_group)
         right_layout.addWidget(scroll, 1)
-
-        self._csv_note = QLabel(
-            "This patient replays a recorded CSV window — the physiological "
-            "model and its parameters are not used. Change the data source in "
-            "the Configuration window to edit the model."
-        )
-        self._csv_note.setWordWrap(True)
-        self._csv_note.setVisible(False)
-        right_layout.addWidget(self._csv_note)
 
         buttons = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -195,14 +192,16 @@ class PersonConfigWindow(QWidget):
         self._model_combo.blockSignals(False)
         self._rebuild_param_form(profile.model_id, profile.params)
         self._apply_data_source_lock(profile)
+        self._ds.refresh()
 
     def reload(self) -> None:
-        """Re-read the current profile (e.g. after its data source changed in the
-        Configuration window) so the model form lock stays in sync. Public for
-        MainWindow to call."""
+        """Re-read the current profile (e.g. after its data source / CSV window
+        changed in CSV Analysis) so the form + data-source group stay in sync.
+        Public for MainWindow to call."""
         self._reload_list()
         if self._current_index is not None:
             self._apply_data_source_lock(self._profiles[self._current_index])
+        self._ds.refresh()
 
     def _apply_data_source_lock(self, profile: PersonProfile | None) -> None:
         """Grey out the physiological-model editor when *profile* is CSV-backed —
@@ -211,15 +210,19 @@ class PersonConfigWindow(QWidget):
         tip = (
             "Disabled: this patient replays a recorded CSV window. The "
             "physiological model and its parameters are not used for a "
-            "CSV-backed patient — set the data source back to the model in the "
-            "Configuration window to edit these."
+            "CSV-backed patient — switch the data source back to the model "
+            "above to edit these."
             if is_csv
             else ""
         )
         for w in (self._model_combo, self._params_group, self._send_btn, self._read_btn):
             w.setEnabled(not is_csv)
             w.setToolTip(tip)
-        self._csv_note.setVisible(is_csv)
+
+    def _current_person(self):
+        if self._current_index is None:
+            return None
+        return self._profiles[self._current_index]
 
     # ------------------------------------------------------------------
     # Parameter form
@@ -229,6 +232,7 @@ class PersonConfigWindow(QWidget):
         self._name_edit.clear()
         self._rebuild_param_form(ModelId.CAMBRIDGE, {})
         self._apply_data_source_lock(None)
+        self._ds.refresh()
 
     def _on_model_changed(self) -> None:
         """Rebuild the parameter form with the newly selected model's defaults."""

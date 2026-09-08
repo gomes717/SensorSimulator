@@ -65,7 +65,7 @@ def test_profiles_changed_populates_and_defaults_to_first():
     c, _st, seen = _wire(
         persons=[alice, bob], sensors=[SensorProfile(name="S1", sensor_id=SensorId.IDEAL)]
     )
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
 
     c.notify_profiles_changed()
 
@@ -78,7 +78,7 @@ def test_profiles_changed_populates_and_defaults_to_first():
 def test_user_combo_change_emits_selection():
     alice, bob = _person("Alice"), _person("Bob")
     c, st, seen = _wire(persons=[alice, bob])
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
     c.notify_profiles_changed()
     st.active_person = alice
     seen["person"].clear()
@@ -91,7 +91,7 @@ def test_user_combo_change_emits_selection():
 def test_repopulate_keeps_selection_and_stays_silent():
     alice, bob = _person("Alice"), _person("Bob")
     c, st, seen = _wire(persons=[alice, bob])
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
     c.notify_profiles_changed()
     st.active_person = alice
     seen["person"].clear()
@@ -104,7 +104,7 @@ def test_repopulate_keeps_selection_and_stays_silent():
 
 def test_mode_toggles_and_editor_buttons_reach_the_app():
     c, _st, seen = _wire()
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
 
     win.model_only_check.setChecked(True)
     win.cgms_only_check.setChecked(True)
@@ -120,7 +120,7 @@ def test_mode_toggles_and_editor_buttons_reach_the_app():
 
 def test_speed_display_from_app_does_not_echo():
     c, _st, seen = _wire()
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
 
     c.set_speed_display(60.0)
 
@@ -130,7 +130,7 @@ def test_speed_display_from_app_does_not_echo():
 
 def test_speed_slider_move_requests_change():
     c, _st, seen = _wire()
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
 
     win.speed_spin.setValue(30)
 
@@ -139,7 +139,7 @@ def test_speed_slider_move_requests_change():
 
 def test_controls_locked_disables_config_sending_widgets():
     c, _st, _seen = _wire()
-    win = ConfigurationWindow(c, lambda: None)
+    win = ConfigurationWindow(c)
 
     c.set_controls_locked(True)
     assert not win.speed_slider.isEnabled()
