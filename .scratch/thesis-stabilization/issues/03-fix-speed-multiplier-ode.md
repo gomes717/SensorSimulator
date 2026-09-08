@@ -25,7 +25,7 @@ The firmware already sub-steps (`MODEL_SUBSTEP_MAX_MIN = 1.0` in
 A Speed write still goes through `apply_config_locked` (resets `sim_clock`,
 clears instant events). Making speed a live "hot" scalar needs a firmware
 change on both `config_service.c` and the app's `_on_speed_changed` (which
-calls `_restart_engine`). Not done — noted in `docs/TODO.md`.
+calls `_restart_engine`). Not done - noted in `docs/TODO.md`.
 
 ---
 
