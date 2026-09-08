@@ -25,7 +25,7 @@ def app():
 
 @pytest.fixture
 def win(app):
-    import graphic.main_window as mw
+    import gui.main_window as mw
 
     w = mw.MainWindow()
     yield w
@@ -52,7 +52,7 @@ def test_title_says_report_only_for_a_csv_person(win):
 def test_csv_analysis_has_whole_and_selected_panels(app):
     import datetime
 
-    from graphic.csv_analysis_window import CsvAnalysisWindow
+    from gui.csv_analysis_window import CsvAnalysisWindow
 
     c = CsvAnalysisWindow([], None)
     n = 48 * 12  # 48 h at 5 min

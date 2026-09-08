@@ -33,21 +33,21 @@ from matplotlib.figure import Figure
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
-from graphic.avatar import avatar_icon
-from graphic.bluetooth_window import BluetoothWindow
-from graphic.board_layout_window import BoardLayoutWindow
-from graphic.configuration_window import ConfigurationWindow
-from graphic.csv_analysis_window import CsvAnalysisWindow
-from graphic.debug_window import DebugWindow
-from graphic.device_target import restart_board
-from graphic.exercise_config_window import ExerciseConfigWindow
-from graphic.fault_panel import FaultPanel
-from graphic.food_config_window import FoodConfigWindow
-from graphic.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
-from graphic.person_config_window import PersonConfigWindow
-from graphic.scenario_window import ScenarioWindow
-from graphic.sensor_config_window import SensorConfigWindow
-from graphic.view_config_window import ViewConfigWindow
+from gui.avatar import avatar_icon
+from gui.bluetooth_window import BluetoothWindow
+from gui.board_layout_window import BoardLayoutWindow
+from gui.configuration_window import ConfigurationWindow
+from gui.csv_analysis_window import CsvAnalysisWindow
+from gui.debug_window import DebugWindow
+from gui.device_target import restart_board
+from gui.exercise_config_window import ExerciseConfigWindow
+from gui.fault_panel import FaultPanel
+from gui.food_config_window import FoodConfigWindow
+from gui.instant_event_dialog import ExerciseInstantDialog, FoodInstantDialog, PisaInstantDialog
+from gui.person_config_window import PersonConfigWindow
+from gui.scenario_window import ScenarioWindow
+from gui.sensor_config_window import SensorConfigWindow
+from gui.view_config_window import ViewConfigWindow
 from models import app_settings, board_layout, cambridge, cgm_metrics, profile_store
 from models import sensors as sensor_defaults
 from models.engine import EnginePool
@@ -833,7 +833,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """Inject a sensor fault into the running simulation without resetting it.
 
         The extensible entry point behind both the "Insert PISA Now…" button and
-        the Faults panel (graphic/fault_panel.py). Only ``"pisa"`` is wired for
+        the Faults panel (gui/fault_panel.py). Only ``"pisa"`` is wired for
         now — a transient false low: the board/engine multiply the sensor
         reading by ``1 - depth*sin(pi*elapsed/duration)`` while active, leaving
         the underlying glucose untouched; the interval is shaded on the graph.
@@ -852,7 +852,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._redraw_graph()
 
     # ------------------------------------------------------------------
-    # Scenario runner dispatch (graphic/scenario_window.py)
+    # Scenario runner dispatch (gui/scenario_window.py)
     # ------------------------------------------------------------------
 
     def _scenario_dispatch(self, kind: str, args: dict) -> str:

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from graphic.instant_event_dialog import PisaInstantDialog
+from gui.instant_event_dialog import PisaInstantDialog
 
 # kind -> {label, desc, dialog, kind}. `MainWindow.inject_fault(kind, values)` does the work.
 FAULTS: dict[str, dict] = {

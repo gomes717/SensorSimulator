@@ -49,7 +49,7 @@ interval, plus a way to get them out.
 expected vs received side by side for the whole run (not just the visible
 window) and a "Copy / Save CSV" button. Reuse the thresholds from
 `app_settings`.
-**Touches.** `models/cgm_metrics.py`, a new `graphic/metrics_window.py`,
+**Touches.** `models/cgm_metrics.py`, a new `gui/metrics_window.py`,
 `main_window` toolbar button. **Value.** Directly feeds the thesis.
 
 ### 2. Model-line LOW/HIGH alerts + deep-red marker  *(gap found 2026-09)*
@@ -83,7 +83,7 @@ a print stylesheet) containing: the config used (person/sensor/events/speed/data
 source), the glucose + food/exercise graphs, the metrics table (#1), and the
 list of injected events with timestamps. Works from a live run or a recording
 (#3).
-**Touches.** new `graphic/report.py`, reuses the figure builders. **Value.**
+**Touches.** new `gui/report.py`, reuses the figure builders. **Value.**
 High for thesis write-up.
 
 ### 5. Multi-sensor on one board — N independent slots  *(Phase 1 + 2 done, HW-verified — 2026-09)*
@@ -105,7 +105,7 @@ Builds `=1` (real security) and `=4`, RAM 47 %. App Phase 1:
 `SENSOR_SELECT_UUID`, `encode/decode_sensor_select`, per-slot Food/Exercise
 Status (`u8 slot` prefix), trailing-digit → 0-based `_own_instance_index`. See
 `PROTOCOL_SPEC.md` §7.
-**Done (Phase 2, app — HW-verified 2026-09).** `graphic/board_layout_window.py`
+**Done (Phase 2, app — HW-verified 2026-09).** `gui/board_layout_window.py`
 (opened from Configuration → "Board layout"): a Person + Sensor combo per slot,
 persisted to `data/board_layout.json` (`models/board_layout.py`). "Send layout
 to Board" → `BleSession.send_board_layout(slots)`: per slot, writes Sensor
@@ -215,7 +215,7 @@ Interoperability demo; only worth it if the thesis calls it out.
 ### 17. Scheduled scenario runner  *(done 2026-09)*
 JSON files of timed actions (`scenarios/*.json`) fired on a wall-clock timeline
 from the **Scenario** window (`models/scenario.py` +
-`graphic/scenario_window.py`); `MainWindow._scenario_dispatch` maps `kind` →
+`gui/scenario_window.py`); `MainWindow._scenario_dispatch` maps `kind` →
 speed / run_state / person / data_source / comm_profile / insert_food /
 insert_exercise / inject_fault. Shipped: `demo_pisa`, `cambridge_meal`,
 `deichmann_exercise`, `royparker_exercise`, `alerts_low_high`, `speed_sweep`,
@@ -223,7 +223,7 @@ insert_exercise / inject_fault. Shipped: `demo_pisa`, `cambridge_meal`,
 **Next.** A `preset` action (needs #12), sim-time-based schedule option.
 
 ### 18. Fault-injection panel  *(scaffold done 2026-09)*
-`graphic/fault_panel.py`'s `FAULTS` registry + `MainWindow.inject_fault(kind,
+`gui/fault_panel.py`'s `FAULTS` registry + `MainWindow.inject_fault(kind,
 values)` + a "Faults" toolbar window. **PISA** (compression low) is the one
 wired fault. **Next.** Signal dropout (no notify for N min), pressure spike,
 stuck sensor (value frozen), Dexcom "???" gap — each = a `FAULTS` entry + a
@@ -243,7 +243,7 @@ resumed after a long stop sees its recurring daily schedule at the advanced
 wall-time (may skip a meal window). App: a per-slot Start/Stop in the Board
 Layout window (2 writes each: `sensor_select` + `run_state`).
 **Touches.** `model_thread.{c,h}`, `comm_thread.c` (route `run_state` per slot),
-`graphic/board_layout_window.py`. **Effort.** ~40–60 firmware lines + a few app.
+`gui/board_layout_window.py`. **Effort.** ~40–60 firmware lines + a few app.
 **Value.** "Bring sensor N online mid-run" demos; realistic staggered sensor
 starts.
 
@@ -273,7 +273,7 @@ no `model_thread_apply_config()` call, no `reset_sync`. `DATA_SOURCE` /
 **Effort.** S. **Value.** Removes a real gotcha; makes speed changes feel live.
 
 ### 22. "Target slot" selector + patient names in the UI  *(done + HW-verified 2026-09)*
-**Done.** `DeviceTargetBar` (`graphic/device_target.py`) gained a **"Slot: [0–3]"**
+**Done.** `DeviceTargetBar` (`gui/device_target.py`) gained a **"Slot: [0–3]"**
 combo, shown only when the target is a numbered multi-sensor identity
 (`BleSession.slot_index is not None` — a single-sensor board also carries the
 `sensor_select` char, so that alone isn't the signal). `.begin()` (used by all
@@ -308,7 +308,7 @@ expected, %), plus a Clarke or Parkes/Consensus Error Grid — bin each
 (expected, received) pair into zones A–E and report the % per zone. A "Accuracy"
 tab in the metrics window (#1) with the MARD number and the grid scatter
 (matplotlib). Works from a live run or a recording (#3). **Touches.**
-`cgm_metrics.py`, `graphic/metrics_window.py`. **Value.** The single most
+`cgm_metrics.py`, `gui/metrics_window.py`. **Value.** The single most
 expected number/figure in a CGM-sensor thesis.
 
 ### 24. Sensor-noise-model comparison sweep

@@ -41,7 +41,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
 # Residual style debt in the MainWindow god object + its satellite windows —
 # see .scratch/thesis-stabilization/issues/18-arch-debt-mainwindow-god-object.md.
 # Clear these as those windows get deepened; do not add rules here for new code.
-"src/graphic/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501"]
+"src/gui/*.py" = ["RUF012", "SIM105", "B905", "C408", "RUF001", "E501"]
 # The hardware harnesses bootstrap sys.path before importing app modules, keep
 # long-lived log handles open for the run, and use os.path freely.
 "scripts/*.py" = ["E402", "SIM115", "PTH123", "PTH110", "PTH118"]
@@ -86,7 +86,7 @@ exclude = ["**/__pycache__", ".venv", "firmware", "cgmsim", "build"]
 # into private state — issue 18); their noisy reports are warnings, not errors,
 # so the gate stays green while the debt is still visible.
 [[tool.pyright.executionEnvironments]]
-root = "src/graphic"
+root = "src/gui"
 reportOptionalMemberAccess = "warning"
 reportOptionalSubscript = "warning"
 reportOptionalOperand = "warning"

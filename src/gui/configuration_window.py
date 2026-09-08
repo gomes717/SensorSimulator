@@ -392,7 +392,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             session = getattr(self, "_csv_upload_session", None)
             if session is not None:
                 session.queue_write("data_source", protocol.encode_data_source(True))
-                from graphic.device_target import restart_board
+                from gui.device_target import restart_board
 
                 restart_board(session)
             self._send_csv_status.setText(f"✓ {message} — board set to CSV playback")

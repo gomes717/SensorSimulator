@@ -31,15 +31,15 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `services/bluetooth_scanner.py` | `BluetoothScanThread` — BLE discovery |
 | `services/windows_ble_pairing.py` | Windows-specific passkey pairing helper (local-imported by `services/ble_session.py`) |
 | `core/ble_message_log.py` | Central append-only message log shared by Debug/graph |
-| `graphic/main_window.py` | Toolbar, user treeview, glucose graph (received solid + expected dashed), food/exercise graph, Person/Sensor selector bar, Fast-mode + Model-Only toggles |
-| `graphic/bluetooth_window.py` | Device list, multi-device connect/disconnect, `sessions()`/`display_name()` accessors used by config windows |
-| `graphic/debug_window.py`, `graphic/message_detail_window.py` | Raw message inspection |
-| `graphic/device_target.py` | `DeviceTargetBar` — shared "target device" combo used by all 4 config windows |
-| `graphic/person_config_window.py` | Manage `PersonProfile`s: model + params, Save/Send/Read |
-| `graphic/sensor_config_window.py` | Manage `SensorProfile`s: noise model + params, Save/Send/Read |
-| `graphic/food_config_window.py` | Recurring-daily meal schedule for the active person, Save/Send/Read |
-| `graphic/exercise_config_window.py` | Recurring-daily exercise schedule for the active person, Save/Send/Read |
-| `graphic/instant_event_dialog.py` | "Insert Food/Exercise Now" dialogs — one-shot events injected into an already-running simulation without resetting it (§2's instant characteristics) |
+| `gui/main_window.py` | Toolbar, user treeview, glucose graph (received solid + expected dashed), food/exercise graph, Person/Sensor selector bar, Fast-mode + Model-Only toggles |
+| `gui/bluetooth_window.py` | Device list, multi-device connect/disconnect, `sessions()`/`display_name()` accessors used by config windows |
+| `gui/debug_window.py`, `gui/message_detail_window.py` | Raw message inspection |
+| `gui/device_target.py` | `DeviceTargetBar` — shared "target device" combo used by all 4 config windows |
+| `gui/person_config_window.py` | Manage `PersonProfile`s: model + params, Save/Send/Read |
+| `gui/sensor_config_window.py` | Manage `SensorProfile`s: noise model + params, Save/Send/Read |
+| `gui/food_config_window.py` | Recurring-daily meal schedule for the active person, Save/Send/Read |
+| `gui/exercise_config_window.py` | Recurring-daily exercise schedule for the active person, Save/Send/Read |
+| `gui/instant_event_dialog.py` | "Insert Food/Exercise Now" dialogs — one-shot events injected into an already-running simulation without resetting it (§2's instant characteristics) |
 | `models/types.py` | `ModelId`, `SensorId`, `PersonProfile`, `SensorProfile`, `FoodEvent`, `ExerciseEvent` |
 | `models/{cambridge,uva_padova,royparker,deichmann}.py` | Pure-Python ports of `cgmsim/src/cgmsim_*.c`, numerically identical |
 | `models/sensors.py` | Default params only for the 3 sensor types (noise math is on-device only) |
@@ -193,7 +193,7 @@ align the board's simulation clock with its own local `SimulationEngine` for
 a fair "expected vs received" comparison. The MCU is never blocked waiting
 for it.
 
-The app's Start/Pause/Resume/Stop bar (`graphic/main_window.py`) drives both sides:
+The app's Start/Pause/Resume/Stop bar (`gui/main_window.py`) drives both sides:
 - **Start** (from stopped, `_start_run`): (re)creates the local engine,
   anchors `self._graph_t0` to right now, and resumes it, then writes `0`
   (stopped/reset) then `1` (running) to every connected board. Both sides'
@@ -233,7 +233,7 @@ counter; only its **arrival time** matters, the value itself is diagnostic
 only.
 
 One consumer on the app side: **"Did my write actually land?" feedback**
-(`graphic/device_target.py`'s `await_send_confirmation`, used by all four config
+(`gui/device_target.py`'s `await_send_confirmation`, used by all four config
 windows' Send to Board buttons): shows "Sending to board…" then "✓ Applied
 on board" on the next reset_sync arrival, or a timeout warning if none
 comes. Not perfectly attributed when several writes are in flight at once
@@ -286,7 +286,7 @@ on-device model right now (post schedule-evaluation), at the same cadence as
 CGM measurement pushes (every `measurement_interval` seconds, currently 5).
 Ground truth from the MCU, distinct from the app's own local schedule
 evaluation (used only in Model-Only/no-device mode) — see
-`graphic/main_window.py`'s `_on_new_message`/`_on_expected_reading` split.
+`gui/main_window.py`'s `_on_new_message`/`_on_expected_reading` split.
 
 `services/ble_session.py` keeps only the notification whose `slot` matches the
 connected identity's own sensor index (parsed from the advertised name's
@@ -304,7 +304,7 @@ event vs. the whole list). `count` (capped at 32) followed by that many
 
 Added 2026-08-18 for injecting a one-shot event into an **already-running**
 simulation from the app's "Insert Food Now…"/"Insert Exercise Now…" buttons
-(`graphic/instant_event_dialog.py`), as opposed to the recurring-daily Food/Exercise
+(`gui/instant_event_dialog.py`), as opposed to the recurring-daily Food/Exercise
 event characteristics above. The critical difference: **every other write
 characteristic in this service — person, sensor, mode, food/exercise event,
 or a run-state `STOPPED` — causes the firmware to reinitialize model/sensor
@@ -486,7 +486,7 @@ Semantics of the two transitions (`model_thread_set_cgms_only()`):
   stopped if nothing else happened in between, or wherever a subsequent
   Start left it) — "enable" itself never resets, per above.
 
-App side (`graphic/main_window.py`'s `_on_cgms_only_toggled`): the CGMS
+App side (`gui/main_window.py`'s `_on_cgms_only_toggled`): the CGMS
 Only checkbox is the trigger, not the Start button — checking it locks
 every control that would send a now-rejected write (Person/Sensor/Food/
 Exercise Configure, Fast mode, Model Only, Start/Pause/Stop, Insert Food/
@@ -731,7 +731,7 @@ pairing, and *attempting* it wedges the Windows BLE stack into a
 connect/disconnect storm).
 
 **App — board layout (Phase 2, done 2026-09).** The **Board Layout** window
-(`graphic/board_layout_window.py`, opened from Configuration → "Board layout")
+(`gui/board_layout_window.py`, opened from Configuration → "Board layout")
 assigns a saved Person + Sensor profile to each of the 4 slots, persisted to
 `data/board_layout.json` (`models/board_layout.py`). "Send layout to Board"
 calls `BleSession.send_board_layout(slots)`: over one connection to any

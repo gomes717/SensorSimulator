@@ -30,7 +30,7 @@ displays the incoming readings, and — as a correctness check — runs the
 │         PC — SensorSimulator app      │   BLE   │        nRF54L15 DK — peripheral_cgms       │
 │              (Python / PyQt6)         │◄═══════►│           (C / Zephyr RTOS)                 │
 │                                        │  N BLE  │                                              │
-│  graphic/  — windows & dialogs (UI)   │identity │  main.c        — N BLE identities + adv     │
+│  gui/  — windows & dialogs (UI)   │identity │  main.c        — N BLE identities + adv     │
 │  services/ — BLE session/scan/pairing │  links  │                  sets + CGMS instances       │
 │  api/      — BLE wire-format contract │         │  comm_thread   — BLE push (per slot),       │
 │  core/     — shared message log       │         │                  config queue, flash        │
@@ -93,7 +93,7 @@ model math end to end:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (graphic/)
+    participant App as App (gui/)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -124,7 +124,7 @@ landed. On a multi-sensor board the write targets whichever slot the
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (graphic/*_config_window.py)
+    participant App as App (gui/*_config_window.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -159,7 +159,7 @@ GATT read/response, no notify, no reset (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SP
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (graphic/*_config_window.py)
+    participant App as App (gui/*_config_window.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
 
@@ -175,7 +175,7 @@ sequenceDiagram
 ### 4.4 Instant food/exercise events
 
 One more write deliberately skips the reset flow in §4.2: "Insert Food
-Now…"/"Insert Exercise Now…" (`graphic/instant_event_dialog.py`) injects a
+Now…"/"Insert Exercise Now…" (`gui/instant_event_dialog.py`) injects a
 one-shot event into an already-running simulation without resetting
 `sim_clock_min` or model state, so there's no `reset_sync` round-trip for
 it:
@@ -183,7 +183,7 @@ it:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (graphic/)
+    participant App as App (gui/)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -210,7 +210,7 @@ resets either.
 
 ### 4.5 Board layout push (multi-sensor)
 
-The **Board Layout** window (`graphic/board_layout_window.py`, opened from
+The **Board Layout** window (`gui/board_layout_window.py`, opened from
 Configuration → "Board layout") assigns a saved Person + Sensor profile to
 each of the N slots and pushes the whole thing in one action.
 `BleSession.send_board_layout()` runs it as a single coroutine over **one**
@@ -220,7 +220,7 @@ firmware's config queue keeps up:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant BLW as graphic/board_layout_window.py
+    participant BLW as gui/board_layout_window.py
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -294,7 +294,7 @@ explicit Start afterward rather than auto-resuming. See `PROTOCOL_SPEC.md`'s
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (graphic/main_window.py)
+    participant App as App (gui/main_window.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -332,7 +332,7 @@ sequenceDiagram
 | Sensor count | build-time only — `CONFIG_APP_SENSOR_COUNT`; `sim_config_load_from_flash()` force-overrides the flash value so it always matches the running build |
 | Profile persistence (app) | `models/profile_store.py` → `data/profiles.json`; slot→patient map in `models/board_layout.py` → `data/board_layout.json` |
 | Per-identity demux | `services/ble_session.py` — parses the advertised name's trailing digit to a 0-based `_own_instance_index`, filters CGM Measurement + Food/Exercise Status to that slot, and sets `_require_pairing = False` for numbered identities |
-| UI | `graphic/` (app only — firmware has no display beyond one status LED) |
+| UI | `gui/` (app only — firmware has no display beyond one status LED) |
 
 ## 9. Multi-sensor: N independent slots
 

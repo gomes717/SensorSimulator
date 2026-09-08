@@ -23,7 +23,7 @@ Scope: `src/`, `scripts/`, `tests/`. Not `firmware/` or `cgmsim/` (C).
 - `PL*` is left to pylint; `D` (pydocstyle) is intentionally **off** — the dense
   "explain the why" docstring style is deliberate.
 - Line length 100. `target-version = "py312"`.
-- Residual violations in `src/graphic/` are `per-file-ignores`d with a pointer to
+- Residual violations in `src/gui/` are `per-file-ignores`d with a pointer to
   issue 18 (the `MainWindow` god object); don't add new ignores elsewhere.
 
 ## Format — ruff format
@@ -47,7 +47,7 @@ Scope: `src/`, `scripts/`, `tests/`. Not `firmware/` or `cgmsim/` (C).
 - `uv run pyright` — `standard` mode, `pythonVersion = "3.12"`.
 - `src/models/` and `src/api/` are held to full `standard` and must be
   **error-free** — a new error there fails the gate.
-- `src/graphic/` and `src/services/` have a baseline of pre-existing issues
+- `src/gui/` and `src/services/` have a baseline of pre-existing issues
   (bleak's loose typing, the god object reaching into private state — issue 18);
   their noisy reports are `executionEnvironments`-downgraded to **warning**, so
   the gate is green while the debt stays visible (~50 warnings today).

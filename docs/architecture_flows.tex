@@ -74,7 +74,7 @@ local alimenta a linha ``esperada''.
 \begin{lstlisting}[language=mermaid,caption={Fluxo de desenvolvimento: do clique em Start ao streaming contínuo.},label={lst:fluxo-dev}]
 sequenceDiagram
     participant U as Usuario
-    participant App as App (graphic/)
+    participant App as App (gui/)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -188,7 +188,7 @@ idêntica.
 \begin{lstlisting}[language=mermaid,caption={Fluxo de eventos pontuais: injeção sem reinício em uma simulação em andamento.},label={lst:fluxo-pontual}]
 sequenceDiagram
     participant U as Usuario
-    participant App as App (graphic/)
+    participant App as App (gui/)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -222,7 +222,7 @@ igual a RUNNING.
 \begin{lstlisting}[language=mermaid,caption={Fluxo de envio de layout multi-sensor: um slot por vez, sobre uma única conexão.},label={lst:fluxo-layout}]
 sequenceDiagram
     participant U as Usuario
-    participant BLW as graphic/board_layout_window.py
+    participant BLW as gui/board_layout_window.py
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
@@ -263,7 +263,7 @@ diferente do comportamento autônomo padrão da placa, que retoma sozinha.
 \begin{lstlisting}[language=mermaid,caption={Fluxo do modo CGMS Only: a placa como fonte CGM-padrão isolada.},label={lst:fluxo-cgms-only}]
 sequenceDiagram
     participant U as Usuario
-    participant App as App (graphic/main_window.py)
+    participant App as App (gui/main_window.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)

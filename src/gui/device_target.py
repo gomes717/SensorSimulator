@@ -8,7 +8,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
 from api import protocol
-from graphic.bluetooth_window import BluetoothWindow
+from gui.bluetooth_window import BluetoothWindow
 from services.ble_session import BleSession
 
 SEND_CONFIRMATION_TIMEOUT_MS = 3000

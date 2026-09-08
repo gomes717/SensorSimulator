@@ -41,9 +41,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog
 
-import graphic.csv_analysis_window as cav
-import graphic.main_window as mw
-from graphic.instant_event_dialog import (
+import gui.csv_analysis_window as cav
+import gui.main_window as mw
+from gui.instant_event_dialog import (
     ExerciseInstantDialog,
     FoodInstantDialog,
     PisaInstantDialog,
@@ -222,7 +222,7 @@ def scenario_B_model_on_board(w, board_addr):
 
     # push person config to the board so it runs the same model
     from api import protocol
-    from graphic.device_target import restart_board
+    from gui.device_target import restart_board
 
     sess.queue_write("person", protocol.encode_person_config(person.model_id, person.params))
     sess.queue_write("data_source", protocol.encode_data_source(False))

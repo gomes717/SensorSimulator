@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from api import protocol
-from graphic.bluetooth_window import BluetoothWindow
+from gui.bluetooth_window import BluetoothWindow
 from models.board_layout import MAX_SLOTS, BoardLayout
 from models.engine import load_csv_window
 from models.types import PersonProfile, SensorProfile

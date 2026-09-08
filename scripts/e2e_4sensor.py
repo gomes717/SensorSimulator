@@ -50,9 +50,9 @@ from e2e import (
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-import graphic.main_window as mw
+import gui.main_window as mw
 from api import protocol
-from graphic.board_layout_window import BoardLayoutWindow
+from gui.board_layout_window import BoardLayoutWindow
 from models import (
     cambridge,
     deichmann,
@@ -984,7 +984,7 @@ def f13_instant_dialog_target_slot(ctx: FourCtx):
             raise _Skip("no serial console")
         from PyQt6.QtWidgets import QDialog
 
-        from graphic.instant_event_dialog import FoodInstantDialog
+        from gui.instant_event_dialog import FoodInstantDialog
 
         sess = ctx.cfg_session()
         _ensure_layout(ctx, c)

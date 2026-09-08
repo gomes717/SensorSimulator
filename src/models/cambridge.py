@@ -26,7 +26,7 @@ class CambridgeState:
 
 
 # Single source of truth for this model's parameter order. api.protocol and
-# graphic.person_config_window both reference this list (no copies). Order must
+# gui.person_config_window both reference this list (no copies). Order must
 # match CambridgeParams in the firmware C struct
 # (firmware/peripheral_cgms/src/models/cgmsim_cambridge.h) — pinned by
 # tests/test_param_order.py against tests/param_order/cambridge.golden.

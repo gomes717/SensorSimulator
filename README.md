@@ -66,7 +66,7 @@ SensorSimulator/
 │   ├── services/     # BLE I/O — sessions, scanning, pairing
 │   ├── core/         # Shared message log
 │   ├── models/       # Physiological models, sensor params, profile persistence
-│   ├── graphic/      # All windows/dialogs (the UI)
+│   ├── gui/          # All windows/dialogs (the UI)
 │   └── utils/        # Reserved for generic helpers
 ├── scenarios/        # JSON timed-action scripts for the Scenario window
 ├── scripts/          # e2e.py (single-sensor harness), e2e_4sensor.py (4-sensor harness),

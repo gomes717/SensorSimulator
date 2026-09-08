@@ -1,7 +1,7 @@
 """Issue 05: pin the model/sensor parameter order against the firmware C structs.
 
 `models/<m>.py::PARAM_NAMES` is the single source of truth on the Python side
-(`api.protocol` and `graphic.person_config_window` both reference it live, no
+(`api.protocol` and `gui.person_config_window` both reference it live, no
 copy). These tests guard the two things that can still silently drift:
 
 1. Python ``PARAM_NAMES`` vs the firmware C struct field order (golden files).

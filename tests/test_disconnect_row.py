@@ -27,7 +27,7 @@ def app():
 
 @pytest.fixture
 def win(app):
-    import graphic.main_window as mw
+    import gui.main_window as mw
 
     w = mw.MainWindow()
     w._cgms_only = True  # let glucose messages through the recording gate

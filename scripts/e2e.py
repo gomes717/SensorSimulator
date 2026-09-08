@@ -39,9 +39,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog
 
-import graphic.main_window as mw
+import gui.main_window as mw
 from api import protocol
-from graphic.instant_event_dialog import (
+from gui.instant_event_dialog import (
     PisaInstantDialog,
 )
 from models import cambridge

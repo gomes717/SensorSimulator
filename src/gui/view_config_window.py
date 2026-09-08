@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from graphic.theme import apply_theme
+from gui.theme import apply_theme
 from models import app_settings
 
 _THEME_LABELS = [("system", "System default"), ("light", "Light"), ("dark", "Dark")]

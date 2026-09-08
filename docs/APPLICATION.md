@@ -1,7 +1,7 @@
 # Application Architecture
 
 The desktop app (`src/`, PyQt6) is organized into six layers reflecting the
-`api → services → core → models → graphic` (+ `utils`) directory split — see
+`api → services → core → models → gui` (+ `utils`) directory split — see
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for how this fits into the whole
 system.
 
@@ -12,14 +12,14 @@ src/
 ├── services/       active BLE I/O — connections, scanning, pairing
 ├── core/           shared cross-cutting state (the message log)
 ├── models/          physiological simulation + profile persistence (no Qt widgets)
-├── graphic/         every window/dialog — the UI layer
+├── gui/         every window/dialog — the UI layer
 └── utils/          reserved for generic helpers (currently empty)
 ```
 
-The dependency direction is one-way: `graphic/` depends on everything below
+The dependency direction is one-way: `gui/` depends on everything below
 it; `services/` depends on `api/`; `models/` and `api/` depend on nothing
 else in the project. Nothing in `api/`, `services/`, `core/`, or `models/`
-imports from `graphic/` — the backend has no idea the UI exists, which is
+imports from `gui/` — the backend has no idea the UI exists, which is
 what makes `models/` reusable standalone (`cgmsim/` is the CLI-only sibling
 of the same model math) and lets Model Only mode run the full simulation
 with zero BLE/UI code in the hot path.
@@ -144,7 +144,7 @@ without creating a dependency on the GUI or BLE stack.
 - `dexcom_csv.py` — pure stdlib reader for Dexcom Clarity CGM exports
   (`dataset/Dexcom_*.csv`), returning the EGV `(timestamp, glucose)` rows.
 
-## 3. UI layer (`graphic/`)
+## 3. UI layer (`gui/`)
 
 `MainWindow` is the hub; every other window is created lazily (on first
 open, via `_open_*` methods) and kept as a `None`-until-opened attribute —

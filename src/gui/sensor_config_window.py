@@ -24,8 +24,8 @@ from PyQt6.QtWidgets import (
 )
 
 from api import protocol
-from graphic.bluetooth_window import BluetoothWindow
-from graphic.device_target import DeviceTargetBar, await_send_confirmation, restart_board
+from gui.bluetooth_window import BluetoothWindow
+from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
 from models import sensors
 from models.types import SensorId, SensorProfile
 

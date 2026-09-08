@@ -1,4 +1,4 @@
-"""Window for editing the active person's recurring-daily exercise schedule."""
+"""Window for editing the active person's recurring-daily meal schedule."""
 
 from __future__ import annotations
 
@@ -21,17 +21,17 @@ from PyQt6.QtWidgets import (
 )
 
 from api import protocol
-from graphic.bluetooth_window import BluetoothWindow
-from graphic.device_target import DeviceTargetBar, await_send_confirmation, restart_board
-from models.types import ExerciseEvent, PersonProfile
+from gui.bluetooth_window import BluetoothWindow
+from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
+from models.types import FoodEvent, PersonProfile
 
 
-class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
-    """Add/remove recurring-daily exercise bouts for whichever person is currently active.
+class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
+    """Add/remove recurring-daily meals for whichever person is currently active.
 
-    Only the Roy/Parker and Deichmann models actually react to exercise —
-    Cambridge and UVA/Padova have no exercise term, so entries here are simply
-    ignored for those models (see models/engine.py's per-model step adapters).
+    *get_active_person* is re-invoked on every show/refresh so the window
+    always edits whoever is selected in the main window's Person combo at
+    that moment, even if it changes while this window stays open.
     """
 
     def __init__(
@@ -41,9 +41,9 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         get_bluetooth_window: Callable[[], BluetoothWindow],
         parent=None,
     ) -> None:
-        """Build the exercise table, add-row form, and Save/Send controls."""
+        """Build the meal table, add-row form, and Save/Send controls."""
         super().__init__(parent)
-        self.setWindowTitle("Exercise Configuration")
+        self.setWindowTitle("Food Configuration")
         self.resize(480, 420)
 
         self._get_active_person = get_active_person
@@ -57,7 +57,7 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         layout.addWidget(self._target_bar)
 
         self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Time of day", "Duration (min)", "Intensity (%)"])
+        self._table.setHorizontalHeaderLabels(["Time of day", "Carbs (g)", "Spread over (min)"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -68,19 +68,19 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         layout.addWidget(self._table, 1)
 
         add_row = QHBoxLayout()
-        self._time_edit = QTimeEdit(QTime(18, 0))
+        self._time_edit = QTimeEdit(QTime(8, 0))
         add_row.addWidget(QLabel("Time:"))
         add_row.addWidget(self._time_edit)
+        self._carbs_spin = QDoubleSpinBox()
+        self._carbs_spin.setRange(0.0, 500.0)
+        self._carbs_spin.setValue(50.0)
+        add_row.addWidget(QLabel("Carbs (g):"))
+        add_row.addWidget(self._carbs_spin)
         self._duration_spin = QSpinBox()
-        self._duration_spin.setRange(1, 300)
-        self._duration_spin.setValue(30)
-        add_row.addWidget(QLabel("Duration (min):"))
+        self._duration_spin.setRange(1, 240)
+        self._duration_spin.setValue(15)
+        add_row.addWidget(QLabel("Spread over (min):"))
         add_row.addWidget(self._duration_spin)
-        self._intensity_spin = QDoubleSpinBox()
-        self._intensity_spin.setRange(0.0, 100.0)
-        self._intensity_spin.setValue(50.0)
-        add_row.addWidget(QLabel("Intensity (%):"))
-        add_row.addWidget(self._intensity_spin)
         self._add_btn = QPushButton("Add")
         self._add_btn.clicked.connect(self._add_event)
         add_row.addWidget(self._add_btn)
@@ -106,19 +106,19 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
 
         self._edit_widgets = [
             self._time_edit,
+            self._carbs_spin,
             self._duration_spin,
-            self._intensity_spin,
             self._add_btn,
             self._remove_btn,
             self._save_btn,
             self._send_btn,
             self._read_btn,
         ]
-        self._events: list[ExerciseEvent] = []
+        self._events: list[FoodEvent] = []
         self.refresh()
 
     def refresh(self) -> None:
-        """Reload the table from the currently active person's saved exercise events."""
+        """Reload the table from the currently active person's saved food events."""
         person = self._get_active_person()
         is_csv = person is not None and getattr(person, "data_source", "model") == "csv"
         if person is None:
@@ -126,15 +126,16 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
             self._events = []
         elif is_csv:
             self._active_label.setText(
-                f"{person.name} replays a recorded CSV — exercise schedule disabled."
+                f"{person.name} replays a recorded CSV — meal schedule disabled."
             )
-            self._events = list(person.exercise_events)
+            self._events = list(person.food_events)
         else:
-            self._active_label.setText(f"Editing exercise for: {person.name}")
-            self._events = list(person.exercise_events)
+            self._active_label.setText(f"Editing meals for: {person.name}")
+            self._events = list(person.food_events)
         tip = (
-            "Disabled: this patient replays a recorded CSV window. The recurring "
-            "exercise schedule is not used for a CSV-backed patient."
+            "Disabled: this patient replays a recorded CSV window, which already "
+            "carries its own meal history. The recurring meal schedule is not "
+            "used for a CSV-backed patient."
             if is_csv
             else ""
         )
@@ -154,16 +155,16 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         for row, ev in enumerate(self._events):
             time_str = f"{ev.time_of_day_min // 60:02d}:{ev.time_of_day_min % 60:02d}"
             self._table.setItem(row, 0, QTableWidgetItem(time_str))
-            self._table.setItem(row, 1, QTableWidgetItem(str(ev.duration_min)))
-            self._table.setItem(row, 2, QTableWidgetItem(f"{ev.intensity_pct:g}"))
+            self._table.setItem(row, 1, QTableWidgetItem(f"{ev.carbs_g:g}"))
+            self._table.setItem(row, 2, QTableWidgetItem(str(ev.duration_min)))
 
     def _add_event(self) -> None:
         time_of_day_min = self._time_edit.time().hour() * 60 + self._time_edit.time().minute()
         self._events.append(
-            ExerciseEvent(
+            FoodEvent(
                 time_of_day_min=time_of_day_min,
+                carbs_g=self._carbs_spin.value(),
                 duration_min=self._duration_spin.value(),
-                intensity_pct=self._intensity_spin.value(),
             )
         )
         self._events.sort(key=lambda e: e.time_of_day_min)
@@ -179,9 +180,9 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
     def _save(self) -> bool:
         person = self._get_active_person()
         if person is None:
-            QMessageBox.information(self, "Exercise Configuration", "No active person selected.")
+            QMessageBox.information(self, "Food Configuration", "No active person selected.")
             return False
-        person.exercise_events = list(self._events)
+        person.food_events = list(self._events)
         self._on_change()
         return True
 
@@ -190,22 +191,22 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
             return
         session = self._target_bar.begin()
         if session is None:
-            QMessageBox.warning(self, "Exercise Configuration", "No connected device selected.")
+            QMessageBox.warning(self, "Food Configuration", "No connected device selected.")
             return
-        session.queue_write("exercise", protocol.encode_clear_exercise())
+        session.queue_write("food", protocol.encode_clear_food())
         for ev in self._events:
-            session.queue_write("exercise", protocol.encode_exercise_event(ev))
+            session.queue_write("food", protocol.encode_food_event(ev))
         restart_board(session)
         await_send_confirmation(session, self._send_status)
 
     def _read_from_board(self) -> None:
-        """Request the board's currently stored exercise event list and load it into the active person."""
+        """Request the board's currently stored food event list and load it into the active person."""
         if self._get_active_person() is None:
-            QMessageBox.information(self, "Exercise Configuration", "No active person selected.")
+            QMessageBox.information(self, "Food Configuration", "No active person selected.")
             return
         session = self._target_bar.begin()
         if session is None:
-            QMessageBox.warning(self, "Exercise Configuration", "No connected device selected.")
+            QMessageBox.warning(self, "Food Configuration", "No connected device selected.")
             return
         if self._read_session is not None:
             try:
@@ -214,15 +215,15 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
                 pass
         self._read_session = session
         session.config_read.connect(self._on_config_read)
-        session.request_read("exercise_list")
+        session.request_read("food_list")
 
     def _on_config_read(self, _address: str, char_key: str, data: bytes) -> None:
-        """Load an Exercise Events Readback into the table (see person_config_window.py's
+        """Load a Food Events Readback into the table (see person_config_window.py's
         _on_config_read for why this deliberately skips self._on_change())."""
-        if char_key != "exercise_list":
+        if char_key != "food_list":
             return
-        self._events = protocol.decode_exercise_events(data)
+        self._events = protocol.decode_food_events(data)
         person = self._get_active_person()
         if person is not None:
-            person.exercise_events = list(self._events)
+            person.food_events = list(self._events)
         self._redraw_table()
