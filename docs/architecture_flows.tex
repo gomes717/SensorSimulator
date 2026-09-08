@@ -320,12 +320,19 @@ notifica uma mensagem de tempo real de 14~\textit{bytes}
 \texttt{FEBC} e o nome \texttt{DXCM01}. Não há J-PAKE, \textit{backfill} de
 24\,h nem fluxo de calibração. O multiplicador de velocidade, a reprodução de
 CSV e o modelo de falha PISA continuam todos valendo, pois moldam o valor de
-glicose antes de a \texttt{comm\_thread} escolher o perfil. A intenção é
-apenas oferecer um fluxo ``reconhecível como parecido com Dexcom'' para fins
-de demonstração, mantido atrás de uma opção e com o CGMS da SIG como padrão;
-compatibilidade completa com um transmissor real não é um objetivo deste
-trabalho.
-\guilherme{Se o perfil Dexcom não for demonstrado na banca, considerar mover esta subseção para um apêndice.}
+glicose antes de a \texttt{comm\_thread} escolher o perfil. O ponto que esta
+subseção sustenta é modesto e verificável: o firmware pode transmitir por
+\emph{dois} formatos de fio distintos --- o CGMS da SIG e este segundo formato
+não-SIG --- e a aplicação decodifica ambos, ou seja, o cliente não está preso
+a um único protocolo. A validação desse ponto é o teste \textbf{S16-01} da
+suíte E2E (força SIG, troca para o perfil Dexcom, volta para SIG, reconectando
+a cada passo; os dois fluxos decodificam para valores de glicose plausíveis).
+A mensagem de 14~\textit{bytes} está tabulada byte a byte em
+\texttt{PROTOCOL\_SPEC.md}. Um transmissor Dexcom real de consumidor
+\emph{não} lê este fluxo (esperaria o \textit{handshake} de autenticação e o
+\textit{layout} EGV real); tornar a placa legível por um aplicativo de terceiro
+que fale com Dexcom (via desafio AES do G6 + formato EGV real) é uma extensão
+de escopo maior, rastreada à parte e não coberta por esta versão.
 
 \subsection{Modelo de falha PISA}
 \label{sec:impl-pisa}
