@@ -211,6 +211,11 @@ class ModelStepper:
         self._instant_food: list[dict[str, Any]] = []
         self._instant_exercise: list[dict[str, Any]] = []
         self._instant_pisa: list[dict[str, Any]] = []
+        # When a board is connected, its Food/Exercise Status is the single
+        # source of truth for the meal/exercise input to the "expected" model —
+        # (carbs_g_per_min, exercise_pct), or None in Model Only mode where the
+        # profile's own recurring schedule drives instead.
+        self._board_food_ex: tuple[float, float] | None = None
 
         self._mode = "model"
         self._csv: _CsvReplay | None = None
@@ -300,6 +305,15 @@ class ModelStepper:
                     "depth": max(0.0, min(1.0, float(depth_frac))),
                 }
             )
+
+    def set_board_food_exercise(self, carbs_g_per_min: float, exercise_pct: float) -> None:
+        """Latest Food/Exercise Status from the connected board. While set, this
+        drives the model's meal + exercise input instead of the profile's own
+        recurring schedule — so the "expected" line reflects whatever the board
+        is actually doing (its schedule *and* any instant events), not a
+        possibly-stale local copy. Thread-safe."""
+        with self._instant_lock:
+            self._board_food_ex = (float(carbs_g_per_min), float(exercise_pct))
 
     def _pisa_factor(self, dt_min: float) -> float:
         """Combined attenuation of all active PISA bouts this tick; decays them."""
@@ -426,6 +440,15 @@ class ModelStepper:
             self._instant_exercise = still_active_exercise
 
             pisa_factor = self._pisa_factor(dt_min)
+            board_food_ex = self._board_food_ex
+
+        # A connected board's Food/Exercise Status wins: it already reflects the
+        # board's own schedule + any instant events, so the "expected" line
+        # tracks what the board is really doing regardless of the local profile.
+        if board_food_ex is not None:
+            ext_carbs_rate, exercise_pct = board_food_ex
+            carbs = ext_carbs_rate if adapter.rate_fed else ext_carbs_rate * dt_min
+            hr_bpm = params.get("HRb", 80.0) + exercise_pct / 100.0 * 80.0
 
         # Sub-step the ODE so a large dt_min can't make explicit Euler diverge —
         # mirrors the firmware's MODEL_SUBSTEP_MAX_MIN loop in model_thread.c.
@@ -498,6 +521,10 @@ class SimulationEngine(QThread):
     def add_instant_pisa(self, duration_min: float, depth_frac: float) -> None:
         """Inject a transient PISA attenuation now (thread-safe)."""
         self._stepper.add_instant_pisa(duration_min, depth_frac)
+
+    def set_board_food_exercise(self, carbs_g_per_min: float, exercise_pct: float) -> None:
+        """Feed the board's latest Food/Exercise Status to the model (thread-safe)."""
+        self._stepper.set_board_food_exercise(carbs_g_per_min, exercise_pct)
 
     def pause(self) -> None:
         """Freeze the simulation clock and model state in place until resume()."""
@@ -604,6 +631,14 @@ class EnginePool(QObject):
     def add_instant_pisa(self, slot: int | None, duration_min: float, depth_frac: float) -> None:
         for eng in self._targets(slot):
             eng.add_instant_pisa(duration_min, depth_frac)
+
+    def set_board_food_exercise(
+        self, slot: int, carbs_g_per_min: float, exercise_pct: float
+    ) -> None:
+        """Route one slot's Food/Exercise Status from the board into its engine."""
+        eng = self._engines.get(slot)
+        if eng is not None:
+            eng.set_board_food_exercise(carbs_g_per_min, exercise_pct)
 
     def _targets(self, slot: int | None) -> list[SimulationEngine]:
         if slot is None:

@@ -106,6 +106,30 @@ def test_instant_food_raises_then_decays_carbs_rate():
     assert all(r.carbs_rate == 0.0 for r in after)
 
 
+def test_board_food_exercise_overrides_the_local_schedule():
+    """A connected board's Food/Exercise Status drives the expected model — so a
+    stale local schedule can't make the two lines diverge (user report 2026-09-08)."""
+    # profile WITH a scheduled meal, but the board says "no food": no bump.
+    p = PersonProfile(
+        name="t",
+        model_id=ModelId.CAMBRIDGE,
+        food_events=[FoodEvent(time_of_day_min=0, carbs_g=80.0, duration_min=30)],
+    )
+    s = ModelStepper(p)
+    s.set_board_food_exercise(0.0, 0.0)
+    out = _steps(s, 90)
+    assert all(r.carbs_rate == 0.0 for r in out)
+    assert max(r.glucose for r in out) < 103.0  # schedule suppressed, line stays flat
+
+    # profile with NO meal, but the board reports 3 g/min: the line follows it.
+    s2 = ModelStepper(PersonProfile(name="t2", model_id=ModelId.CAMBRIDGE))
+    _steps(s2, 3)
+    s2.set_board_food_exercise(3.0, 0.0)
+    fed = _steps(s2, 40)
+    assert fed[0].carbs_rate == pytest.approx(3.0, abs=1e-6)
+    assert fed[-1].glucose > 115.0
+
+
 def test_scheduled_meal_bumps_glucose():
     p = PersonProfile(
         name="t",

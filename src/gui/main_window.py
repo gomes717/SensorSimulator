@@ -820,6 +820,18 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         expected line lands in the same self._history bucket."""
         return board_layout.device_label(board_layout.advert_name(slot), self._board_layout)
 
+    def _feed_board_food_exercise(self, user_id: str, carbs: float, exercise: float) -> None:
+        """Hand one sensor's board-reported Food/Exercise Status to its local
+        engine so the "expected" model follows the board's meal input."""
+        slots = self._engines.slots
+        if self._per_slot_expected:
+            for s in slots:
+                if self._slot_user_id(s) == user_id:
+                    self._engines.set_board_food_exercise(s, carbs, exercise)
+                    return
+        elif slots:  # one board -> the single engine
+            self._engines.set_board_food_exercise(slots[0], carbs, exercise)
+
     def _on_expected_reading(
         self, slot: int, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
     ) -> None:
@@ -873,10 +885,17 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
                 self._graph.redraw_glucose()
 
         if recording and user_id is not None and "carbs_g_per_min" in msg:
+            carbs = msg["carbs_g_per_min"]
+            exercise = msg.get("exercise_pct", 0.0)
             h = self._hist(user_id)
             h["fx"].append(self._graph.elapsed_seconds(msg["timestamp"]))
-            h["fc"].append(msg["carbs_g_per_min"])
-            h["fe"].append(msg.get("exercise_pct", 0.0))
+            h["fc"].append(carbs)
+            h["fe"].append(exercise)
+            # Drive the local "expected" model with the board's own food/exercise
+            # so the two lines only ever differ by sensor noise, never by a
+            # stale local schedule (the board's Food/Exercise Status already
+            # folds in its schedule + any instant events).
+            self._feed_board_food_exercise(user_id, carbs, exercise)
             if selected:
                 self._graph.redraw_food_ex()
 
