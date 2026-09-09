@@ -200,7 +200,7 @@ class ModelStepper:
     same as the firmware's instant-event slots.
     """
 
-    def __init__(self, profile: PersonProfile) -> None:
+    def __init__(self, profile: PersonProfile, *, allow_csv: bool = True) -> None:
         self._profile = profile
         self.sim_clock_min = 0.0
 
@@ -221,7 +221,12 @@ class ModelStepper:
         self._csv: _CsvReplay | None = None
         self._model: _ModelRun | None = None
 
-        if getattr(profile, "data_source", "model") == "csv":
+        # CSV replay is a Model Only feature: when a board is connected the
+        # "expected" line must stay a live model prediction of what the board is
+        # doing (fed by set_board_food_exercise), not a recording — otherwise
+        # picking "CSV region" in Person Config silently desyncs the two lines
+        # even though nothing was sent to the board (user report 2026-09-08).
+        if allow_csv and getattr(profile, "data_source", "model") == "csv":
             samples, interval_s, foodlog = load_csv_window(profile)
             if samples:
                 self._mode = "csv"
@@ -490,11 +495,15 @@ class SimulationEngine(QThread):
     # or the equivalent instantaneous rate for a firing impulse-fed meal), exercise_pct
     expected_reading = pyqtSignal(str, float, float, float)
 
-    def __init__(self, profile: PersonProfile, speed_mult: float, parent=None) -> None:
+    def __init__(
+        self, profile: PersonProfile, speed_mult: float, parent=None, *, allow_csv: bool = True
+    ) -> None:
         """Store the profile + speed multiplier to run; call start() to begin ticking.
 
         *speed_mult* (x1..x1000) scales simulated time per 1 Hz tick exactly as
-        on the MCU: dt_min = (1/60) * speed_mult.
+        on the MCU: dt_min = (1/60) * speed_mult. *allow_csv* False forces the
+        model even for a CSV-backed profile (board-connected comparison — see
+        ModelStepper).
 
         Call set_paused(True) before start() to have a freshly (re)created
         engine sit ready-but-idle until the app's Start button resumes it,
@@ -504,7 +513,7 @@ class SimulationEngine(QThread):
         super().__init__(parent)
         self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
         self._paused = False
-        self._stepper = ModelStepper(profile)
+        self._stepper = ModelStepper(profile, allow_csv=allow_csv)
 
     def stop(self) -> None:
         """Request the tick loop to end after its current iteration."""
@@ -585,14 +594,23 @@ class EnginePool(QObject):
         return not self._engines
 
     def rebuild(
-        self, profiles: dict[int, PersonProfile], speed_mult: float, *, paused: bool
+        self,
+        profiles: dict[int, PersonProfile],
+        speed_mult: float,
+        *,
+        paused: bool,
+        allow_csv: bool = True,
     ) -> None:
-        """Stop every engine and start a fresh one per slot in *profiles*."""
+        """Stop every engine and start a fresh one per slot in *profiles*.
+
+        *allow_csv* False (a board is connected) forces the model even for a
+        CSV-backed profile, so the "expected" line stays a live prediction.
+        """
         self.stop_all()
         self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
         self._paused = paused
         for slot, profile in profiles.items():
-            eng = SimulationEngine(profile, self._speed_mult, self)
+            eng = SimulationEngine(profile, self._speed_mult, self, allow_csv=allow_csv)
             eng.expected_reading.connect(
                 lambda ts, g, c, e, s=slot: self.expected_reading.emit(s, ts, g, c, e)
             )

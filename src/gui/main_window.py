@@ -755,7 +755,17 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         # A freshly rebuilt pool sits idle unless a run is already in progress,
         # so switching profiles/modes/layout doesn't silently start a comparison.
-        self._engines.rebuild(slots, self._speed_mult, paused=self._run_state != "running")
+        # CSV replay only in Model Only mode; with a board connected the expected
+        # line stays a live model prediction fed by the board's Food/Exercise
+        # Status, whatever the profile's data source says (issue 16 / user
+        # report: picking "CSV region" must not desync the two lines until it's
+        # actually sent to the board).
+        self._engines.rebuild(
+            slots,
+            self._speed_mult,
+            paused=self._run_state != "running",
+            allow_csv=self._model_only,
+        )
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]
@@ -922,11 +932,13 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _fe_graph_title(self) -> str:
         """Title for the food/exercise graph, passed to GlucoseGraph as a callback.
 
-        In CSV playback there is no model running — the food log is replayed
-        report-only and does not affect glucose (see issue 08). Say so, so the
-        carb-rate curve isn't read as driving the trace above it.
+        In CSV playback (Model Only + a CSV-backed person) there is no model
+        running — the food log is replayed report-only and does not affect
+        glucose (see issue 08). Say so, so the carb-rate curve isn't read as
+        driving the trace above it. With a board connected the model always
+        runs, so the normal title stands.
         """
-        if getattr(self._active_person, "data_source", "model") == "csv":
+        if self._model_only and getattr(self._active_person, "data_source", "model") == "csv":
             return "Food log — report-only (CSV playback; does not drive glucose)"
         return "Food / Exercise"
 
