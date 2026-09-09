@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._thresholds,
             self._view_window_s,
             datetime.now(UTC),
+            speed_mult=self._speed_mult,
             on_redraw=self._update_stats_panel,
             fe_title=self._fe_graph_title,
         )
@@ -145,9 +146,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._history: dict[str, dict[str, list[float]]] = {}
 
         # One-shot "insert now" events → engine pool + board + graph shading (issue 18).
-        self._events = InstantEvents(
-            self._engines, self._board, self._graph, self._board_layout, lambda: self._speed_mult
-        )
+        self._events = InstantEvents(self._engines, self._board, self._graph, self._board_layout)
         # Scenario-step vocabulary (models.scenario.ScenarioRunner owns the timing).
         self._scenario = ScenarioDispatch(self, self._events)
 
@@ -609,7 +608,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """
         self._speed_mult = max(1.0, min(1000.0, float(multiplier)))
         app_settings.save_pref("speed_mult", self._speed_mult)
-        self._restart_engine()
+        self._graph.set_speed_mult(self._speed_mult)  # sim-time x-axis scale
+        self._restart_engine()  # clears + re-anchors the graph at the new scale
         self._board.broadcast("speed", protocol.encode_speed(self._speed_mult))
         self._board.restart_all()
         # Keep the Configuration window's slider/spin in step when the change

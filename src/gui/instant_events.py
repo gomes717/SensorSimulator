@@ -10,7 +10,6 @@ the glucose panel, the board layout, and the current speed multiplier.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 
 from PyQt6.QtWidgets import QDialog, QMessageBox, QWidget
@@ -21,14 +20,11 @@ from models import board_layout as board_layout_mod
 
 
 class InstantEvents:
-    def __init__(
-        self, engines, board, graph, board_layout, speed_mult: Callable[[], float]
-    ) -> None:
+    def __init__(self, engines, board, graph, board_layout) -> None:
         self._engines = engines
         self._board = board
         self._graph = graph
         self._board_layout = board_layout
-        self._speed_mult = speed_mult
 
     # ------------------------------------------------------------------
     # Injection (also the scenario-runner entry points)
@@ -66,10 +62,10 @@ class InstantEvents:
         self._board.send_instant(
             "pisa_instant", protocol.encode_pisa_instant(duration_min, depth_frac), slot
         )
-        # Shade the affected interval: duration is simulated minutes; the graph
-        # x-axis is wall-clock seconds, so scale by the current speed multiplier.
+        # Shade the affected interval: the graph x-axis is *simulated* seconds
+        # now, so a sim-minute duration is just * 60.
         t0 = self._graph.elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
-        self._graph.add_pisa_span(t0, t0 + duration_min * 60.0 / self._speed_mult())
+        self._graph.add_pisa_span(t0, t0 + duration_min * 60.0)
         self._graph.redraw_glucose()
 
     # ------------------------------------------------------------------

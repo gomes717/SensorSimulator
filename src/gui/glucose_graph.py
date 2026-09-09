@@ -92,12 +92,17 @@ class GlucoseGraph:
         view_window_s: float,
         graph_t0: datetime,
         *,
+        speed_mult: float = 1.0,
         on_redraw: Callable[[], None] | None = None,
         fe_title: Callable[[], str] | None = None,
     ) -> None:
         self.thresholds = thresholds
         self.view_window_s = view_window_s
         self.graph_t0 = graph_t0
+        # The x-axis is *simulated* time: one wall-clock second at speed x60 is
+        # 60 sim-seconds. So the axis, the rolling view window and the h:mm
+        # metrics all read in sim-time, not wall-clock (user report 2026-09-08).
+        self.speed_mult = max(1.0, float(speed_mult))
         self._on_redraw = on_redraw
         self._fe_title = fe_title or (lambda: "Food / Exercise")
 
@@ -232,9 +237,11 @@ class GlucoseGraph:
     # ------------------------------------------------------------------
 
     def elapsed_seconds(self, timestamp_str: str) -> float:
-        """ISO timestamp (BLE message or engine tick) -> seconds since graph_t0,
-        the shared x-axis unit for both graphs."""
-        return (datetime.fromisoformat(timestamp_str) - self.graph_t0).total_seconds()
+        """ISO timestamp (BLE message or engine tick) -> *simulated* seconds since
+        graph_t0 — wall-clock elapsed scaled by the speed multiplier, the shared
+        x-axis unit for both graphs."""
+        wall = (datetime.fromisoformat(timestamp_str) - self.graph_t0).total_seconds()
+        return wall * self.speed_mult
 
     def reset(self, now: datetime) -> None:
         """Re-anchor the shared timeline at t=0 and drop every plot buffer.
@@ -273,6 +280,12 @@ class GlucoseGraph:
         self.view_window_s = seconds
         self.redraw_glucose()
         self.redraw_food_ex()
+
+    def set_speed_mult(self, speed_mult: float) -> None:
+        """New sim-time scale. The owner clears + re-anchors the graph on a speed
+        change (see MainWindow._on_speed_changed -> _restart_engine), so this only
+        needs to update the factor for the next batch of points."""
+        self.speed_mult = max(1.0, float(speed_mult))
 
     def set_glucose_title(self, text: str) -> None:
         self._g.ax.set_title(text, color=self._g.fg, fontweight="bold", fontsize=11)
