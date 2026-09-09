@@ -200,7 +200,7 @@ class ModelStepper:
     same as the firmware's instant-event slots.
     """
 
-    def __init__(self, profile: PersonProfile, *, allow_csv: bool = True) -> None:
+    def __init__(self, profile: PersonProfile) -> None:
         self._profile = profile
         self.sim_clock_min = 0.0
 
@@ -221,12 +221,10 @@ class ModelStepper:
         self._csv: _CsvReplay | None = None
         self._model: _ModelRun | None = None
 
-        # CSV replay is a Model Only feature: when a board is connected the
-        # "expected" line must stay a live model prediction of what the board is
-        # doing (fed by set_board_food_exercise), not a recording — otherwise
-        # picking "CSV region" in Person Config silently desyncs the two lines
-        # even though nothing was sent to the board (user report 2026-09-08).
-        if allow_csv and getattr(profile, "data_source", "model") == "csv":
+        # A CSV-backed person never runs the physiological model: the "expected"
+        # line is the recording, or nothing until a CSV window is assigned —
+        # not a model drifting in the background (user report 2026-09-09).
+        if getattr(profile, "data_source", "model") == "csv":
             samples, interval_s, foodlog = load_csv_window(profile)
             if samples:
                 self._mode = "csv"
@@ -238,8 +236,8 @@ class ModelStepper:
                     pending=sorted(foodlog),
                     active_meals=[],
                 )
-            # else: no usable window — fall through to the model so the
-            # "expected" line still shows something.
+            else:
+                self._mode = "idle"  # CSV requested, none assigned — emit nothing
 
         if self._mode == "model":
             adapter = _ADAPTERS[profile.model_id]
@@ -259,7 +257,8 @@ class ModelStepper:
 
     @property
     def mode(self) -> str:
-        """``"model"`` or ``"csv"`` — resolved once at construction."""
+        """``"model"``, ``"csv"`` (replay a recording) or ``"idle"`` (CSV-backed
+        person with no window assigned — emits NaN, no model) — resolved once."""
         return self._mode
 
     # -- instant events (thread-safe) ------------------------------------
@@ -344,6 +343,9 @@ class ModelStepper:
         """
         if self._mode == "csv":
             return self._tick_csv(dt_min, now_iso)
+        if self._mode == "idle":  # CSV-backed but no window assigned — no model
+            self.sim_clock_min += dt_min
+            return TickResult(now_iso, float("nan"), 0.0, 0.0)
         return self._tick_model(dt_min, now_iso)
 
     def _tick_csv(self, dt_min: float, now_iso: str) -> TickResult:
@@ -495,15 +497,11 @@ class SimulationEngine(QThread):
     # or the equivalent instantaneous rate for a firing impulse-fed meal), exercise_pct
     expected_reading = pyqtSignal(str, float, float, float)
 
-    def __init__(
-        self, profile: PersonProfile, speed_mult: float, parent=None, *, allow_csv: bool = True
-    ) -> None:
+    def __init__(self, profile: PersonProfile, speed_mult: float, parent=None) -> None:
         """Store the profile + speed multiplier to run; call start() to begin ticking.
 
         *speed_mult* (x1..x1000) scales simulated time per 1 Hz tick exactly as
-        on the MCU: dt_min = (1/60) * speed_mult. *allow_csv* False forces the
-        model even for a CSV-backed profile (board-connected comparison — see
-        ModelStepper).
+        on the MCU: dt_min = (1/60) * speed_mult.
 
         Call set_paused(True) before start() to have a freshly (re)created
         engine sit ready-but-idle until the app's Start button resumes it,
@@ -513,7 +511,7 @@ class SimulationEngine(QThread):
         super().__init__(parent)
         self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
         self._paused = False
-        self._stepper = ModelStepper(profile, allow_csv=allow_csv)
+        self._stepper = ModelStepper(profile)
 
     def stop(self) -> None:
         """Request the tick loop to end after its current iteration."""
@@ -594,23 +592,14 @@ class EnginePool(QObject):
         return not self._engines
 
     def rebuild(
-        self,
-        profiles: dict[int, PersonProfile],
-        speed_mult: float,
-        *,
-        paused: bool,
-        allow_csv: bool = True,
+        self, profiles: dict[int, PersonProfile], speed_mult: float, *, paused: bool
     ) -> None:
-        """Stop every engine and start a fresh one per slot in *profiles*.
-
-        *allow_csv* False (a board is connected) forces the model even for a
-        CSV-backed profile, so the "expected" line stays a live prediction.
-        """
+        """Stop every engine and start a fresh one per slot in *profiles*."""
         self.stop_all()
         self._speed_mult = max(1.0, min(1000.0, float(speed_mult)))
         self._paused = paused
         for slot, profile in profiles.items():
-            eng = SimulationEngine(profile, self._speed_mult, self, allow_csv=allow_csv)
+            eng = SimulationEngine(profile, self._speed_mult, self)
             eng.expected_reading.connect(
                 lambda ts, g, c, e, s=slot: self.expected_reading.emit(s, ts, g, c, e)
             )

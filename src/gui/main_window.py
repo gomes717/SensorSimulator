@@ -757,26 +757,16 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         # A freshly rebuilt pool sits idle unless a run is already in progress,
         # so switching profiles/modes/layout doesn't silently start a comparison.
-        # CSV replay only in Model Only mode; with a board connected the expected
-        # line stays a live model prediction fed by the board's Food/Exercise
-        # Status, whatever the profile's data source says (issue 16 / user
-        # report: picking "CSV region" must not desync the two lines until it's
-        # actually sent to the board).
-        self._engines.rebuild(
-            slots,
-            self._speed_mult,
-            paused=self._run_state != "running",
-            allow_csv=self._model_only,
-        )
+        # A CSV-backed person replays its recording (or emits nothing if no
+        # window is assigned) — the physiological model never runs for it.
+        self._engines.rebuild(slots, self._speed_mult, paused=self._run_state != "running")
 
     def _apply_csv_mode_view(self) -> None:
-        """In CSV replay (Model Only + a CSV-backed person) the trace is a
-        recording, not a simulation — there is no model and the food log is
-        report-only, so hide the food/exercise graph entirely (issue 08)."""
-        csv_replay = self._model_only and (
-            getattr(self._active_person, "data_source", "model") == "csv"
-        )
-        self._graph.fe_canvas.setVisible(not csv_replay)
+        """A CSV-backed person has no model and no meal input that drives glucose
+        (the food log is report-only), so hide the food/exercise graph entirely
+        whenever one is active — Model Only or board-connected (issue 08)."""
+        is_csv = getattr(self._active_person, "data_source", "model") == "csv"
+        self._graph.fe_canvas.setVisible(not is_csv)
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]
@@ -943,13 +933,12 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _fe_graph_title(self) -> str:
         """Title for the food/exercise graph, passed to GlucoseGraph as a callback.
 
-        In CSV playback (Model Only + a CSV-backed person) there is no model
-        running — the food log is replayed report-only and does not affect
-        glucose (see issue 08). Say so, so the carb-rate curve isn't read as
-        driving the trace above it. With a board connected the model always
-        runs, so the normal title stands.
+        A CSV-backed person runs no model — the food log is replayed
+        report-only and does not affect glucose (see issue 08). Say so, so the
+        carb-rate curve isn't read as driving the trace above it. (The graph
+        itself is hidden for a CSV person; this covers a transient redraw.)
         """
-        if self._model_only and getattr(self._active_person, "data_source", "model") == "csv":
+        if getattr(self._active_person, "data_source", "model") == "csv":
             return "Food log — report-only (CSV playback; does not drive glucose)"
         return "Food / Exercise"
 

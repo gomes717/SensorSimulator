@@ -60,6 +60,17 @@ def test_csv_window_replays_verbatim(path: Path):
     assert got == samples[:n]  # the plotted line IS the recorded 24 h window
 
 
+def test_csv_person_without_a_window_runs_no_model():
+    """data_source="csv" but no CSV assigned -> idle, not a model drifting in
+    the background (user report 2026-09-09)."""
+    import math
+
+    s = ModelStepper(PersonProfile(name="x", model_id=ModelId.CAMBRIDGE, data_source="csv"))
+    assert s.mode == "idle"
+    out = [s.tick(_TICK_MIN, FIXED_TS) for _ in range(30)]
+    assert all(math.isnan(r.glucose) for r in out)  # emits nothing, no model
+
+
 def test_app_csv_mode_hides_the_food_graph_and_runs_no_model():
     """The real MainWindow, Model Only + a CSV person: the engine the app builds
     is a CSV replay (no physiological model), and the food/exercise graph is
@@ -73,7 +84,7 @@ def test_app_csv_mode_hides_the_food_graph_and_runs_no_model():
         w._model_only = True
         w._active_person = csv_person
         assert w._engine_slots() == {0: csv_person}
-        assert ModelStepper(csv_person, allow_csv=True).mode == "csv"
+        assert ModelStepper(csv_person).mode == "csv"
         w._apply_csv_mode_view()
         assert w._graph.fe_canvas.isHidden()
 

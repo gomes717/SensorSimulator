@@ -36,22 +36,15 @@ def test_title_is_plain_without_a_csv_person(win):
     assert win._fe_graph_title() == "Food / Exercise"
 
 
-def test_title_says_report_only_for_a_csv_person(win):
-    win._model_only = True  # CSV replay only runs in Model Only mode
+@pytest.mark.parametrize("model_only", [True, False])
+def test_title_says_report_only_for_any_csv_person(win, model_only):
+    """A CSV-backed person runs no model, Model Only or board-connected."""
+    win._model_only = model_only
     win._active_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
     win._graph.redraw_food_ex()
     assert "report-only" in win._graph.fe_ax.get_title().lower()
 
     win._active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
-    win._graph.redraw_food_ex()
-    assert win._graph.fe_ax.get_title() == "Food / Exercise"
-
-
-def test_title_is_plain_for_a_csv_person_with_a_board(win):
-    """With a board connected the model runs even for a CSV-backed person, so
-    the food/exercise title is the normal one (issue 16 / 2026-09-08)."""
-    win._model_only = False
-    win._active_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
     win._graph.redraw_food_ex()
     assert win._graph.fe_ax.get_title() == "Food / Exercise"
 
