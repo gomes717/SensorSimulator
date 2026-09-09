@@ -95,6 +95,18 @@ git config core.hooksPath scripts/hooks   # enable the pre-commit gate (once per
 uv run python src/main.py
 ```
 
+If `uv` isn't found (a terminal opened before `uv` was installed — its PATH is
+stale; fully reopen it or reboot), use the wrappers, which locate `uv` by known
+paths. From the repo root:
+
+| Shell | Command |
+|---|---|
+| PowerShell | `.\run.ps1` |
+| cmd.exe | `run` |
+| Git Bash | `./run.sh` |
+
+They pass arguments through, so `.\run.ps1 -m pytest -q` == `uv run python -m pytest -q`.
+
 ## Checks
 
 See `docs/CODING_STANDARDS.md`. The pre-commit hook runs all four; the same
