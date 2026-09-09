@@ -403,6 +403,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         the new colors (they read the Qt palette only at build time)."""
         self._graph.rebuild_for_theme(self._right_splitter)
         self._set_graph_title()
+        self._apply_csv_mode_view()
 
     def _set_graph_title(self) -> None:
         """Set the glucose-graph title for the current mode / selection."""
@@ -750,6 +751,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         slots = self._engine_slots()
         self._per_slot_expected = len(slots) > 1
         self._set_graph_title()
+        self._apply_csv_mode_view()
         if not slots:
             return
 
@@ -766,6 +768,15 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             paused=self._run_state != "running",
             allow_csv=self._model_only,
         )
+
+    def _apply_csv_mode_view(self) -> None:
+        """In CSV replay (Model Only + a CSV-backed person) the trace is a
+        recording, not a simulation — there is no model and the food log is
+        report-only, so hide the food/exercise graph entirely (issue 08)."""
+        csv_replay = self._model_only and (
+            getattr(self._active_person, "data_source", "model") == "csv"
+        )
+        self._graph.fe_canvas.setVisible(not csv_replay)
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]

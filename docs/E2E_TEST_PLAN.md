@@ -409,6 +409,7 @@ all. Each fix now ships with a pin:
 | engine tick logic (issue 01) | `tests/test_engine_step.py` — raw-model equivalence |
 | ScenarioDispatch extraction (issue 18) | `tests/test_scenario_dispatch.py` — each step kind reaches its app action |
 | "connected but no data" — app Start must reach an idle board (2026-09-08 report) | E2E **F17** (`e2e_4sensor.py`) — STOPPED board streams no glucose; the app's own Start resumes it |
+| CSV replay fidelity — the plotted line **is** the recorded 24 h window (2026-09-09 report) | `tests/test_csv_replay.py` — parametrized over every `dataset/Dexcom_*.csv`: the engine's `_tick_csv` output == `dexcom_csv.resample(window)`, plus a MainWindow check that CSV mode runs no model and hides the food/exercise graph |
 
 Issue 04's per-slot *expected-vs-received* case waits on a healthy 4-way BLE
 link; its per-slot *engine* side is pinned by `tests/test_engine_pool.py` +
