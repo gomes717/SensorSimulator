@@ -25,12 +25,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from gui.config_controller import ConfigController
+from gui.widgets import NoWheelDoubleSpinBox, NoWheelSpinBox
 from models import app_settings
 
 _THRESHOLD_ROWS = (
@@ -47,7 +47,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
     def __init__(self, controller: ConfigController, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Configuration")
-        self.resize(460, 540)
         self._c = controller
         # Set while the window is repopulating a combo / re-syncing a widget from
         # a controller signal, so the widget's own change handler does not echo
@@ -69,17 +68,31 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-        # The combos are left empty here on purpose: MainWindow builds this
-        # window before its graphs exist, then fires profiles_changed once the
-        # rest of __init__ is done (the first repopulate can emit person_selected,
-        # which restarts the engine and touches the graphs).
+        # Open at the size the content actually wants. A fixed default (460x540)
+        # was narrower and shorter than the body's own size hint, so both
+        # scrollbars appeared on a window that had nothing to scroll.
+        self._resize_to_content(body, scroll)
 
         # app -> widget: re-sync widgets after a state change made outside this window.
-        controller.profiles_changed.connect(self._repopulate_combos)
         controller.speed_display_changed.connect(self._show_speed)
         controller.comm_profile_display_changed.connect(self._show_comm_profile)
         controller.model_only_display_changed.connect(self._show_model_only)
         controller.controls_locked.connect(self._set_controls_locked)
+
+    def _resize_to_content(self, body: QWidget, scroll: QScrollArea) -> None:
+        """Open wide/tall enough for the scroll area's widget, capped to the screen.
+
+        The width budget includes the vertical scrollbar, so a window that is
+        tall enough to need one still never needs the horizontal one.
+        """
+        chrome = 2 * scroll.frameWidth() + scroll.verticalScrollBar().sizeHint().width()
+        available = self.screen().availableGeometry()
+        # minimumSizeHint, not sizeHint: word-wrapping labels report their whole
+        # single-line text as the preferred width, which would open the window
+        # far wider than any control needs.
+        width = min(body.minimumSizeHint().width() + chrome, available.width())
+        height = body.heightForWidth(width - chrome) or body.sizeHint().height()
+        self.resize(width, min(height + chrome, int(available.height() * 0.9)))
 
     # ------------------------------------------------------------------
     # Selectors + config buttons
@@ -89,16 +102,11 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         group = QGroupBox("Patient / sensor")
         outer = QVBoxLayout(group)
 
-        person_row = QHBoxLayout()
-        person_row.addWidget(QLabel("Person:"))
-        self.person_combo = QComboBox()
-        self.person_combo.setMinimumWidth(160)
-        self.person_combo.currentIndexChanged.connect(self._on_person_combo_changed)
-        person_row.addWidget(self.person_combo, 1)
-        outer.addLayout(person_row)
-
+        # No Person/Sensor combos: each editor owns its own profile list, and
+        # which profile a board slot runs is decided by that editor's own
+        # "Send to Board" (see MainWindow.record_slot_assignment).
         person_btns = QHBoxLayout()
-        self.person_configure_btn = QPushButton("Configure…")
+        self.person_configure_btn = QPushButton("Person…")
         self.person_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("person"))
         person_btns.addWidget(self.person_configure_btn)
         self.food_btn = QPushButton("Food…")
@@ -110,72 +118,13 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         outer.addLayout(person_btns)
 
         sensor_row = QHBoxLayout()
-        sensor_row.addWidget(QLabel("Sensor:"))
-        self.sensor_combo = QComboBox()
-        self.sensor_combo.setMinimumWidth(160)
-        self.sensor_combo.currentIndexChanged.connect(self._on_sensor_combo_changed)
-        sensor_row.addWidget(self.sensor_combo, 1)
-        self.sensor_configure_btn = QPushButton("Configure…")
+        self.sensor_configure_btn = QPushButton("Sensor…")
         self.sensor_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("sensor"))
         sensor_row.addWidget(self.sensor_configure_btn)
+        sensor_row.addStretch(1)
         outer.addLayout(sensor_row)
 
-        layout_row = QHBoxLayout()
-        self.board_layout_btn = QPushButton("Board layout (4 sensors)…")
-        self.board_layout_btn.clicked.connect(lambda: self._c.editor_requested.emit("board_layout"))
-        layout_row.addWidget(self.board_layout_btn)
-        layout_hint = QLabel("Assign a person + sensor to each independent slot")
-        layout_hint.setEnabled(False)
-        layout_row.addWidget(layout_hint, 1)
-        outer.addLayout(layout_row)
-
         return group
-
-    def _on_person_combo_changed(self, _index: int) -> None:
-        if self._syncing:
-            return
-        self._c.person_selected.emit(self.person_combo.currentData())
-
-    def _on_sensor_combo_changed(self, _index: int) -> None:
-        if self._syncing:
-            return
-        self._c.sensor_selected.emit(self.sensor_combo.currentData())
-
-    # ------------------------------------------------------------------
-    # Combo population (moved here from MainWindow with issue 18 — the widgets
-    # live here, so the "keep the selection / default to the first profile"
-    # logic does too).
-    # ------------------------------------------------------------------
-
-    def _repopulate_combos(self) -> None:
-        self._repopulate_one(self.person_combo, self._c.person_profiles, self._c.active_person)
-        self._repopulate_one(self.sensor_combo, self._c.sensor_profiles, self._c.active_sensor)
-
-    def _repopulate_one(self, combo: QComboBox, profiles: list, active) -> None:
-        """Rebuild *combo* from *profiles*, keeping the current selection if it
-        still exists; on first load (nothing ever selected) default to the first
-        profile so the graph shows data right away instead of sitting empty."""
-        current_name = active.name if active is not None else None
-        self._syncing = True
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("(none)", None)
-        select_index = 0
-        for i, profile in enumerate(profiles):
-            combo.addItem(profile.name, profile)
-            if profile.name == current_name:
-                select_index = i + 1
-        if select_index == 0 and active is None and profiles:
-            select_index = 1
-        combo.setCurrentIndex(select_index)
-        combo.blockSignals(False)
-        self._syncing = False
-        # If the selection actually moved (profile deleted, or first-load
-        # default), tell the app once — signals were blocked above.
-        chosen = combo.currentData()
-        if chosen is not active:
-            sig = self._c.person_selected if combo is self.person_combo else self._c.sensor_selected
-            sig.emit(chosen)
 
     # ------------------------------------------------------------------
     # Mode toggles
@@ -195,7 +144,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         # Type an exact multiplier here — the log-scaled slider alone makes
         # precise values (e.g. x30) fiddly. keyboardTracking off: commit on
         # Enter / focus-out, not on every digit.
-        self.speed_spin = QSpinBox()
+        self.speed_spin = NoWheelSpinBox()
         self.speed_spin.setRange(1, 1000)
         self.speed_spin.setPrefix("x")
         self.speed_spin.setKeyboardTracking(False)
@@ -206,6 +155,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         box.addLayout(speed_row)
         hint = QLabel("x1 = real time · x60 = 1 s per sim-minute · up to x1000")
         hint.setEnabled(False)
+        hint.setWordWrap(True)
         box.addWidget(hint)
 
         comm_row = QHBoxLayout()
@@ -311,7 +261,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         current = app_settings.load()
         self._threshold_spins: dict[str, QDoubleSpinBox] = {}
         for key, caption in _THRESHOLD_ROWS:
-            spin = QDoubleSpinBox()
+            spin = NoWheelDoubleSpinBox()
             spin.setRange(1.0, 600.0)
             spin.setDecimals(0)
             spin.setValue(current[key])

@@ -31,7 +31,7 @@ class ConfigController(QObject):
     model_only_toggled = pyqtSignal(bool)
     cgms_only_toggled = pyqtSignal(bool)
     comm_profile_toggled = pyqtSignal(bool)  # True = Dexcom-style
-    editor_requested = pyqtSignal(str)  # "person"|"food"|"exercise"|"sensor"|"board_layout"
+    editor_requested = pyqtSignal(str)  # "person"|"food"|"exercise"|"sensor"
     thresholds_saved = pyqtSignal()
 
     # -- app -> widget ----------------------------------------------------

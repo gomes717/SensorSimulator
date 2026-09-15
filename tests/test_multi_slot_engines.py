@@ -77,3 +77,36 @@ def test_expected_ticks_route_to_per_slot_history(win):
     assert win._history[uid1]["ex_gy"] == [202.0, 202.0, 202.0]
     assert not win._history[uid0]["gy"]  # received buffer untouched
     win._engines.stop_all()
+
+
+def test_expected_line_follows_the_live_session_id_after_a_reassignment(win):
+    """A session's user_id is frozen at connect. Re-assigning its slot to another
+    patient renames the device, but the board's readings keep arriving under the
+    old id — so the expected line must use the session's id, not a freshly
+    derived label, or the row plots a received trace with no model line."""
+
+    class _FakeSession:
+        slot_index = 2
+        user_id = "test3 — Sensor 3"  # what it connected as
+
+    class _FakeBt:
+        def sessions(self):
+            return {"aa:bb": _FakeSession()}
+
+        def display_name(self, address):
+            return "test4 — Sensor 3"  # renamed since
+
+    win._bluetooth_window = _FakeBt()
+    win._board_layout.slots[2].person = "test4"
+    try:
+        assert win._slot_user_id(2) == "test3 — Sensor 3"
+    finally:
+        # MainWindow.closeEvent drives the real window's teardown on the
+        # fixture's close(); leaving a stand-in there aborts the interpreter.
+        win._bluetooth_window = None
+
+
+def test_slot_user_id_falls_back_to_the_layout_when_nothing_is_connected(win):
+    win._bluetooth_window = None
+    win._board_layout.slots[1].person = "P1"
+    assert win._slot_user_id(1) == "P1 — Sensor 2"

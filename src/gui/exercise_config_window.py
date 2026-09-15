@@ -6,13 +6,11 @@ from collections.abc import Callable
 
 from PyQt6.QtCore import QTime
 from PyQt6.QtWidgets import (
-    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTimeEdit,
@@ -23,6 +21,7 @@ from PyQt6.QtWidgets import (
 from api import protocol
 from gui.bluetooth_window import BluetoothWindow
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
+from gui.widgets import NoWheelDoubleSpinBox, NoWheelSpinBox
 from models.types import ExerciseEvent, PersonProfile
 
 
@@ -71,12 +70,12 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         self._time_edit = QTimeEdit(QTime(18, 0))
         add_row.addWidget(QLabel("Time:"))
         add_row.addWidget(self._time_edit)
-        self._duration_spin = QSpinBox()
+        self._duration_spin = NoWheelSpinBox()
         self._duration_spin.setRange(1, 300)
         self._duration_spin.setValue(30)
         add_row.addWidget(QLabel("Duration (min):"))
         add_row.addWidget(self._duration_spin)
-        self._intensity_spin = QDoubleSpinBox()
+        self._intensity_spin = NoWheelDoubleSpinBox()
         self._intensity_spin.setRange(0.0, 100.0)
         self._intensity_spin.setValue(50.0)
         add_row.addWidget(QLabel("Intensity (%):"))
@@ -215,6 +214,7 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         self._read_session = session
         session.config_read.connect(self._on_config_read)
         session.request_read("exercise_list")
+        self._send_status.setText("Reading the board’s exercise schedule…")
 
     def _on_config_read(self, _address: str, char_key: str, data: bytes) -> None:
         """Load an Exercise Events Readback into the table (see person_config_window.py's
@@ -226,3 +226,6 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         if person is not None:
             person.exercise_events = list(self._events)
         self._redraw_table()
+        self._send_status.setText(
+            f"✓ Read {len(self._events)} exercise event(s) from the board (not saved yet)"
+        )

@@ -1,22 +1,22 @@
 """The per-patient "Data source" chooser — physiological model vs a recorded CSV
-region — plus the "Send CSV to Board" upload.
+region — and the CSV upload behind Person Configuration's "Send to Board".
 
 Lives in the Person Configuration window (issue 16), right next to the model it
 replaces. Kept as its own widget so the Person window stays a thin host: it
 passes in how to reach the selected profile, the persist callback, and the
 target BLE session.
+
+Which 24 h region a patient replays is picked in the CSV Analysis window, opened
+from "Choose CSV file…" — this group only shows what was picked.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from datetime import datetime, timedelta
 
 from PyQt6.QtWidgets import (
-    QFileDialog,
     QGroupBox,
-    QHBoxLayout,
-    QLabel,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -24,12 +24,14 @@ from PyQt6.QtWidgets import (
 )
 
 from api import protocol
+from gui.csv_analysis_window import CsvAnalysisWindow
 from gui.device_target import restart_board
-from models import dexcom_csv, food_log_csv
+from gui.widgets import wrapped_label
+from models import food_log_csv
 from models.engine import load_csv_window
 from models.types import PersonProfile
 
-_DATASET_DIR = Path(__file__).resolve().parent.parent.parent / "dataset"
+_WINDOW_HOURS = 24
 
 
 class DataSourceGroup(QGroupBox):
@@ -45,6 +47,8 @@ class DataSourceGroup(QGroupBox):
         self._on_change = on_change
         self._target_session = target_session
         self._upload_session = None
+        self._on_applied: Callable[[], None] | None = None
+        self._picker: CsvAnalysisWindow | None = None
 
         box = QVBoxLayout(self)
         self.model_radio = QRadioButton("Physiological model (parameters below)")
@@ -57,32 +61,25 @@ class DataSourceGroup(QGroupBox):
         self._choose_btn.clicked.connect(self._choose_csv)
         box.addWidget(self._choose_btn)
 
-        self._path_label = QLabel("—")
-        self._path_label.setWordWrap(True)
+        self._path_label = wrapped_label("—")
         box.addWidget(self._path_label)
-        hint = QLabel(
-            "The 24 h window starts at the file's first reading. Use the CSV "
-            "Analysis window to slide it to a different day and preview it."
+
+        box.addWidget(
+            wrapped_label(
+                "“Choose CSV file…” opens CSV Analysis: pick the file and the 24 h "
+                "region there, against the trace and its metrics.",
+                muted=True,
+            )
         )
-        hint.setWordWrap(True)
-        hint.setEnabled(False)
-        box.addWidget(hint)
 
-        send_row = QHBoxLayout()
-        self._send_btn = QPushButton("Send CSV to Board")
-        self._send_btn.clicked.connect(self.send_csv)
-        send_row.addWidget(self._send_btn)
-        self._send_status = QLabel("")
-        self._send_status.setWordWrap(True)
-        send_row.addWidget(self._send_status, 1)
-        box.addLayout(send_row)
+        self._send_status = wrapped_label("")
+        box.addWidget(self._send_status)
 
-        self._note = QLabel(
+        self._note = wrapped_label(
             "This patient replays the recorded CSV window — the physiological "
             "model and its parameters below are not used. Switch back to the "
             "model above to edit them."
         )
-        self._note.setWordWrap(True)
         self._note.setVisible(False)
         box.addWidget(self._note)
 
@@ -94,7 +91,6 @@ class DataSourceGroup(QGroupBox):
         for w in (self.model_radio, self.csv_radio):
             w.setEnabled(person is not None)
         if person is None:
-            self._send_btn.setEnabled(False)
             self._choose_btn.setEnabled(False)
             self._path_label.setText("—")
             return
@@ -109,15 +105,21 @@ class DataSourceGroup(QGroupBox):
         self._choose_btn.setEnabled(is_csv)
 
         lines = [person.csv_path or "— no CSV file chosen —"]
-        if getattr(person, "csv_window_start_iso", None):
-            lines.append(f"window start: {person.csv_window_start_iso}")
+        start = getattr(person, "csv_window_start_iso", None)
+        if start:
+            try:
+                begin = datetime.fromisoformat(start)
+            except ValueError:
+                lines.append(f"window: {start}")
+            else:
+                end = begin + timedelta(hours=_WINDOW_HOURS)
+                lines.append(f"window: {begin:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M}")
         food_log = getattr(person, "food_log_path", None)
         if not food_log and person.csv_path:
             food_log = food_log_csv.matching_food_log_path(person.csv_path)
         if food_log:
             lines.append(f"food log (auto): {food_log}")
         self._path_label.setText("\n".join(lines))
-        self._send_btn.setEnabled(is_csv and bool(person.csv_path))
 
     def _save(self) -> None:
         person = self._current_person()
@@ -127,34 +129,38 @@ class DataSourceGroup(QGroupBox):
         self._on_change()  # persists + re-applies the model-form lock + refreshes us
 
     def _choose_csv(self) -> None:
-        """Pick a Dexcom EGV CSV for this patient and default the 24 h window to
-        its first reading (the CSV Analysis window can slide it afterwards)."""
+        """Open the CSV Analysis window as a picker: the patient's file *and* the
+        24 h region it replays are chosen there, against the trace and its
+        metrics, and confirmed with "Use this 24 h window"."""
+        if self._current_person() is None:
+            return
+        # Kept on self: a top-level QWidget with no parent is garbage-collected
+        # (and vanishes) the moment the last reference goes out of scope.
+        self._picker = CsvAnalysisWindow(on_pick=self._apply_picked_csv)
+        self._picker.show()
+        self._picker.raise_()
+        self._picker.activateWindow()
+
+    def _apply_picked_csv(self, path: str, start: datetime) -> None:
+        """Make the region picked in CSV Analysis this patient's data source."""
         person = self._current_person()
         if person is None:
             return
-        start_dir = str(_DATASET_DIR) if _DATASET_DIR.is_dir() else ""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose CGM CSV", start_dir, "CSV files (*.csv);;All files (*)"
-        )
-        if not path:
-            return
-        try:
-            rows = dexcom_csv.read_egv(path)
-        except (ValueError, OSError) as exc:
-            QMessageBox.warning(self, "Choose CSV", f"Could not read that CSV:\n{exc}")
-            return
-        if not rows:
-            QMessageBox.warning(self, "Choose CSV", "No EGV rows found in that file.")
-            return
         person.csv_path = path
         person.food_log_path = None  # auto-matched from the glucose CSV's id
-        person.csv_window_start_iso = rows[0][0].isoformat()
+        person.csv_window_start_iso = start.isoformat()
         person.data_source = "csv"
         self._on_change()
 
-    def send_csv(self) -> None:
+    def send_csv(self, on_applied: Callable[[], None] | None = None) -> None:
         """Build the glucose + food-log tracks for the selected CSV patient, upload
-        them to the target board, then switch the board to CSV playback."""
+        them to the target board, then switch the board to CSV playback.
+
+        *on_applied* runs only once the board has taken the whole upload, so a
+        caller can commit state that should describe the board (the slot ->
+        patient rename) rather than the attempt.
+        """
+        self._on_applied = on_applied
         person = self._current_person()
         if person is None or getattr(person, "data_source", "model") != "csv":
             QMessageBox.information(
@@ -183,7 +189,6 @@ class DataSourceGroup(QGroupBox):
         session.csv_upload_progress.connect(self._on_progress)
         session.csv_upload_finished.connect(self._on_finished)
         self._send_status.setText("Uploading CSV…")
-        self._send_btn.setEnabled(False)
         session.start_csv_upload(uploads)
         self._upload_session = session
 
@@ -191,11 +196,12 @@ class DataSourceGroup(QGroupBox):
         self._send_status.setText(f"Uploading CSV… {sent}/{total} B")
 
     def _on_finished(self, _address: str, ok: bool, message: str) -> None:
-        self._send_btn.setEnabled(True)
-        if ok:
-            if self._upload_session is not None:
-                self._upload_session.queue_write("data_source", protocol.encode_data_source(True))
-                restart_board(self._upload_session)
-            self._send_status.setText(f"✓ {message} — board set to CSV playback")
-        else:
+        if not ok:
             self._send_status.setText(f"⚠ Upload failed: {message}")
+            return
+        if self._upload_session is not None:
+            self._upload_session.queue_write("data_source", protocol.encode_data_source(True))
+            restart_board(self._upload_session)
+        self._send_status.setText(f"✓ {message} — board set to CSV playback")
+        if self._on_applied is not None:
+            self._on_applied()

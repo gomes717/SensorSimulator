@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from api import protocol
 from gui.bluetooth_window import BluetoothWindow
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
+from gui.widgets import NoWheelDoubleSpinBox
 from models import sensors
 from models.types import SensorId, SensorProfile
 
@@ -49,6 +50,8 @@ class SensorConfigWindow(QWidget):
         profiles: list[SensorProfile],
         on_change: Callable[[], None],
         get_bluetooth_window: Callable[[], BluetoothWindow],
+        on_slot_assigned: Callable[..., None] | None = None,
+        on_selected: Callable[[SensorProfile | None], None] | None = None,
         parent=None,
     ) -> None:
         """Build the profile list, parameter form, and Save/Send controls."""
@@ -58,6 +61,12 @@ class SensorConfigWindow(QWidget):
 
         self._profiles = profiles
         self._on_change = on_change
+        # See MainWindow.record_slot_assignment — the slot map is now a record of
+        # what the individual sends pushed, not a screen of its own.
+        self._on_slot_assigned = on_slot_assigned or (lambda *_a, **_k: None)
+        # The Configuration window no longer has a Sensor combo; this list is
+        # where the active sensor profile is chosen.
+        self._on_selected = on_selected or (lambda _p: None)
         self._param_spinboxes: dict[str, QDoubleSpinBox] = {}
         self._current_index: int | None = None
         self._read_session = None  # tracks which BleSession config_read is currently connected to
@@ -173,6 +182,7 @@ class SensorConfigWindow(QWidget):
         self._sensor_combo.setCurrentIndex(list(SensorId).index(profile.sensor_id))
         self._sensor_combo.blockSignals(False)
         self._rebuild_param_form(profile.sensor_id, profile.params)
+        self._on_selected(profile)
 
     # ------------------------------------------------------------------
     # Parameter form
@@ -193,7 +203,7 @@ class SensorConfigWindow(QWidget):
 
         defaults = _SENSOR_DEFAULTS[sensor_id]()
         for name in protocol.sensor_param_names(sensor_id):
-            spin = QDoubleSpinBox()
+            spin = NoWheelDoubleSpinBox()
             spin.setDecimals(6)
             spin.setRange(-1_000_000.0, 1_000_000.0)
             spin.setValue(values.get(name, defaults[name]))
@@ -228,7 +238,13 @@ class SensorConfigWindow(QWidget):
         payload = protocol.encode_sensor_config(profile.sensor_id, profile.params)
         session.queue_write("sensor", payload)
         restart_board(session)
-        await_send_confirmation(session, self._send_status)
+        # Slot captured now; the rename lands only if the board acknowledges.
+        slot, name = self._target_bar.selected_slot(), profile.name
+        await_send_confirmation(
+            session,
+            self._send_status,
+            on_confirmed=lambda: self._on_slot_assigned(slot, sensor=name),
+        )
 
     def _read_from_board(self) -> None:
         """Request the board's currently applied sensor config and load it into the selected profile."""
@@ -247,6 +263,7 @@ class SensorConfigWindow(QWidget):
         self._read_session = session
         session.config_read.connect(self._on_config_read)
         session.request_read("sensor")
+        self._send_status.setText("Reading the board’s sensor config…")
 
     def _on_config_read(self, _address: str, char_key: str, data: bytes) -> None:
         """Load a Sensor Config readback into the form (see person_config_window.py's
@@ -264,3 +281,6 @@ class SensorConfigWindow(QWidget):
         profile.sensor_id = sensor_id
         profile.params = params
         self._on_row_selected(self._current_index)
+        self._send_status.setText(
+            f"✓ Loaded the board’s sensor config into “{profile.name}” (not saved yet)"
+        )

@@ -21,14 +21,11 @@ from PyQt6.QtWidgets import (
 from api import protocol
 from core.ble_message_log import BleMessageLog
 from gui.bluetooth_window import BluetoothWindow
-from gui.board_layout_window import BoardLayoutWindow
 from gui.board_link import BoardLink
 from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
-from gui.csv_analysis_window import CsvAnalysisWindow
 from gui.debug_window import DebugWindow
 from gui.exercise_config_window import ExerciseConfigWindow
-from gui.fault_panel import FaultPanel
 from gui.food_config_window import FoodConfigWindow
 from gui.glucose_graph import GlucoseGraph
 from gui.instant_events import InstantEvents
@@ -42,7 +39,7 @@ from gui.view_config_window import ViewConfigWindow
 from models import app_settings, board_layout, cambridge, profile_store
 from models import sensors as sensor_defaults
 from models.engine import EnginePool
-from models.types import ModelId, PersonProfile, SensorId, SensorProfile
+from models.types import MODEL_LABELS, ModelId, PersonProfile, SensorId, SensorProfile
 
 
 class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  # see issue 18
@@ -66,10 +63,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._sensor_config_window: SensorConfigWindow | None = None
         self._food_config_window: FoodConfigWindow | None = None
         self._exercise_config_window: ExerciseConfigWindow | None = None
-        self._board_layout_window: BoardLayoutWindow | None = None
-        self._csv_analysis_window: CsvAnalysisWindow | None = None
         self._view_config_window: ViewConfigWindow | None = None
-        self._fault_panel: FaultPanel | None = None
         self._scenario_window: ScenarioWindow | None = None
 
         # One write surface over the connected board sessions (issue 18).
@@ -84,8 +78,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._seed_default_profiles()
         # slot -> (person, sensor) for the multi-sensor board (data/board_layout.json).
         self._board_layout = board_layout.load()
-        self._active_person: PersonProfile | None = None
-        self._active_sensor: SensorProfile | None = None
+        # The Configuration window's Person/Sensor combos are gone, so the first
+        # saved profile is active until the user picks another in the editors.
+        self._active_person: PersonProfile | None = (
+            self._person_profiles[0] if self._person_profiles else None
+        )
+        self._active_sensor: SensorProfile | None = (
+            self._sensor_profiles[0] if self._sensor_profiles else None
+        )
         # Continuous sim-speed multiplier x1..x1000; applied to dt_min + sent to the board.
         self._speed_mult = float(app_settings.load_pref("speed_mult", 1.0))
         # Rolling view: show only the last N wall-clock seconds (0 = entire run).
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
         # The left-hand sensor list owns its own rows + offline state (issue 18)
         # and reports the selected user_id back.
-        self.tree = UserTree(self._thresholds)
+        self.tree = UserTree(self._thresholds, self._row_label)
         self.tree.user_selected.connect(self._on_user_selected)
         self._ble_log.device_disconnected.connect(self.tree.mark_device_offline)
         self._selected_user: str | None = None
@@ -144,9 +144,22 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # onto a user's lists (see _bind_selected_history). Keyed by user_id.
         # {user_id: {"gx","gy","fx","fc","fe","ex_gx","ex_gy": list[float]}}
         self._history: dict[str, dict[str, list[float]]] = {}
+        # What the BOARD says each slot is running, read back from its own
+        # characteristics and cached per slot so re-selecting a row shows the
+        # last known answer instead of blanking while the reads are in flight.
+        self._board_is_csv: dict[int, bool] = {}
+        self._board_model: dict[int, str] = {}
+        self._mode_read_sessions: set = set()  # sessions whose config_read is wired up
 
         # One-shot "insert now" events → engine pool + board + graph shading (issue 18).
-        self._events = InstantEvents(self._engines, self._board, self._graph, self._board_layout)
+        self._events = InstantEvents(
+            self._engines,
+            self._board,
+            self._graph,
+            self._board_layout,
+            self._show_status,
+            self._selected_slot,
+        )
         # Scenario-step vocabulary (models.scenario.ScenarioRunner owns the timing).
         self._scenario = ScenarioDispatch(self, self._events)
 
@@ -267,9 +280,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
     _TOOLBAR = (
         ("view_btn", "View", "_open_view_config"),
-        ("csv_analysis_btn", "CSV Analysis", "_open_csv_analysis"),
         ("configuration_btn", "Configuration", "_open_configuration"),
-        ("faults_btn", "Faults", "_open_faults"),
         ("scenario_btn", "Scenario", "_open_scenario"),
         ("bluetooth_btn", "Connect Bluetooth", "_open_bluetooth"),
         ("debug_btn", "Debug", "_open_debug"),
@@ -376,17 +387,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _open_configuration(self) -> None:
         self._raise(self._configuration_window)
 
-    def _open_csv_analysis(self) -> None:
-        self._raise(
-            self._lazy_window(
-                "_csv_analysis_window",
-                lambda: CsvAnalysisWindow(self._person_profiles, self._on_csv_window_assigned),
-            )
-        )
-
-    def _open_faults(self) -> None:
-        self._raise(self._lazy_window("_fault_panel", lambda: FaultPanel(self)))
-
     def _open_scenario(self) -> None:
         self._raise(self._lazy_window("_scenario_window", lambda: ScenarioWindow(self)))
 
@@ -405,15 +405,92 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._set_graph_title()
         self._apply_csv_mode_view()
 
+    def _data_source_label(self) -> str:
+        """What is driving the selected sensor: "CSV replay" or the model's name.
+
+        Reports what the *board* last said it is running, read back from its own
+        Data Source / Person Config characteristics. The app's slot map only
+        records what it tried to send — a CSV uploaded in an earlier session, a
+        config changed from elsewhere, or a send that silently failed all leave
+        the two disagreeing, and the board is the one actually producing the
+        trace. Falls back to the app's own view, marked as such, until the board
+        answers.
+        """
+        reported = self._board_mode_label(self._selected_slot())
+        if reported is not None:
+            return reported
+        person = self._selected_person()
+        if person is None:
+            return "no patient assigned"
+        expected = (
+            "CSV replay"
+            if getattr(person, "data_source", "model") == "csv"
+            else MODEL_LABELS.get(person.model_id, "model")
+        )
+        return f"{expected}? (not confirmed by board)"
+
+    def _refresh_board_mode(self) -> None:
+        """Ask the selected sensor's board what it is actually running."""
+        slot = self._selected_slot()
+        if slot is None or self._bluetooth_window is None:
+            return
+        session = next(
+            (s for s in self._bluetooth_window.sessions().values() if s.slot_index == slot), None
+        )
+        if session is None or not session.is_live:
+            return
+        if session not in self._mode_read_sessions:
+            session.config_read.connect(self._on_board_mode_read)
+            self._mode_read_sessions.add(session)
+        # begin() has already queued the sensor-select cursor for this slot; the
+        # reads ride the same FIFO, so they answer for the slot we asked about.
+        session.queue_write("sensor_select", protocol.encode_sensor_select(slot))
+        session.request_read("data_source")
+        session.request_read("person")
+
+    def _board_mode_label(self, slot: int | None) -> str | None:
+        """What the board last reported *slot* is running, or None if unknown.
+
+        The two facts arrive in separate reads and are cached separately: a
+        "running a model" answer must not discard the model's name learned
+        earlier, or re-selecting a row drops the title back to "not confirmed"
+        until the second read lands, which reads as a flicker.
+        """
+        if slot is None:
+            return None
+        if self._board_is_csv.get(slot):
+            return "CSV replay"
+        return self._board_model.get(slot)
+
+    def _on_board_mode_read(self, _address: str, char_key: str, data: bytes) -> None:
+        """Record what the board reported for the slot its cursor is on."""
+        slot = self._selected_slot()
+        if slot is None:
+            return
+        if char_key == "data_source":
+            self._board_is_csv[slot] = bool(protocol.decode_data_source(data))
+        elif char_key == "person":
+            decoded = protocol.decode_person_config(data)
+            if decoded is not None:
+                self._board_model[slot] = MODEL_LABELS.get(decoded[0], "model")
+        else:
+            return
+        self._set_graph_title()
+        self._apply_csv_mode_view()
+
     def _set_graph_title(self) -> None:
         """Set the glucose-graph title for the current mode / selection."""
         if self._model_only:
             name = self._active_person.name if self._active_person is not None else None
             self._graph.set_glucose_title(
-                f"Model — {name}" if name else "Model Only — select a person"
+                f"Model — {name} · {self._data_source_label()}"
+                if name
+                else "Model Only — select a person"
             )
         elif self._selected_user:
-            self._graph.set_glucose_title(f"Glucose — {self._selected_user}")
+            self._graph.set_glucose_title(
+                f"Glucose — {self.tree.label_of(self._selected_user)} · {self._data_source_label()}"
+            )
 
     def _on_thresholds_changed(self) -> None:
         """Reload thresholds after a Configuration-window save and redraw the bands/metrics."""
@@ -428,7 +505,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             "food": self._open_food_config,
             "exercise": self._open_exercise_config,
             "sensor": self._open_sensor_config,
-            "board_layout": self._open_board_layout,
         }[which]()
 
     def _on_comm_profile_toggled(self, dexcom: bool) -> None:
@@ -452,7 +528,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._lazy_window(
                 "_person_config_window",
                 lambda: PersonConfigWindow(
-                    self._person_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+                    self._person_profiles,
+                    self._on_profiles_changed,
+                    self._ensure_bluetooth_window,
+                    self.record_slot_assignment,
+                    self._on_person_selected,
                 ),
             )
         )
@@ -462,7 +542,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._lazy_window(
                 "_sensor_config_window",
                 lambda: SensorConfigWindow(
-                    self._sensor_profiles, self._on_profiles_changed, self._ensure_bluetooth_window
+                    self._sensor_profiles,
+                    self._on_profiles_changed,
+                    self._ensure_bluetooth_window,
+                    self.record_slot_assignment,
+                    self._on_sensor_selected,
                 ),
             )
         )
@@ -491,27 +575,34 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             )
         )
 
-    def _open_board_layout(self) -> None:
-        """Open (or raise) the Board Layout window; refresh its profiles if it already exists."""
-        existed = self._board_layout_window is not None
-        win = self._lazy_window(
-            "_board_layout_window",
-            lambda: BoardLayoutWindow(
-                self._person_profiles,
-                self._sensor_profiles,
-                self._board_layout,
-                self._on_board_layout_changed,
-                self._ensure_bluetooth_window,
-            ),
-        )
-        if existed:
-            win.reload_profiles()
-        self._raise(win)
+    def _show_status(self, message: str) -> None:
+        """Put *message* in the status bar — the only feedback an inserted
+        food/exercise/PISA event has, since the dialog closes on accept."""
+        self.statusBar().showMessage(message, 15000)
+
+    def record_slot_assignment(
+        self, slot: int | None, *, person: str | None = None, sensor: str | None = None
+    ) -> None:
+        """Remember which profiles a just-sent config put on *slot*.
+
+        The slot -> profile map still drives the per-slot engines, the sensor
+        rows' names and the CSV-vs-model view, but there is no Board Layout
+        screen to edit it any more: it is now a record of what the individual
+        "Send to Board" actions actually pushed, so each send reports here.
+        """
+        if slot is None or not 0 <= slot < board_layout.MAX_SLOTS:
+            return
+        assignment = self._board_layout.slots[slot]
+        if person is not None:
+            assignment.person = person
+        if sensor is not None:
+            assignment.sensor = sensor
+        self._on_board_layout_changed()
 
     def _on_board_layout_changed(self) -> None:
-        """Persist the slot assignments after a Board Layout window edit, and
-        refresh the Bluetooth device list so a newly-assigned patient name shows
-        there (and in the config windows' target combo)."""
+        """Persist the slot assignments, and refresh the Bluetooth device list so
+        a newly-assigned patient name shows there (and in the config windows'
+        target combo)."""
         board_layout.save(self._board_layout)
         if self._bluetooth_window is not None:
             self._bluetooth_window.relabel()
@@ -523,7 +614,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         return 4 if self._board.multi_slot() else 1
 
     # One-shot "insert now" events live in gui/instant_events.py (issue 18);
-    # these thin wrappers keep the toolbar buttons, FaultPanel and the hardware
+    # these thin wrappers keep the toolbar buttons and the hardware
     # harnesses calling the same names.
     def _open_insert_food(self) -> None:
         self._events.prompt_food(self)
@@ -549,17 +640,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     # Person/sensor selection and profile persistence
     # ------------------------------------------------------------------
 
-    def _on_csv_window_assigned(self, person: PersonProfile) -> None:
-        """CSV Analysis assigned a 24 h window to *person* — make them the active
-        person so the Configuration window's data-source group and the graph
-        immediately reflect the new CSV source, then persist + refresh."""
-        match = next(
-            (p for p in self._person_profiles if p is person or p.name == person.name), None
-        )
-        if match is not None:
-            self._on_person_selected(match)
-        self._on_profiles_changed()
-
     def _on_profiles_changed(self) -> None:
         """Persist profiles to disk and refresh everything that depends on them."""
         profile_store.save(self._person_profiles, self._sensor_profiles)
@@ -569,8 +649,6 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # assignment made elsewhere (e.g. CSV Analysis → "Assign window to
         # person…").
         self._controller.notify_profiles_changed()
-        if self._board_layout_window is not None:
-            self._board_layout_window.reload_profiles()
         # Keep the per-person editors' CSV locks in sync when the data source
         # changed here or in CSV Analysis.
         if self._person_config_window is not None:
@@ -726,6 +804,21 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             return None
         return next((p for p in self._person_profiles if p.name == name), None)
 
+    def _selected_person(self) -> PersonProfile | None:
+        """The person whose data_source should govern the food/exercise graph.
+
+        In Model Only mode that's simply the active person. Board-connected
+        with a multi-sensor layout, each row can carry a different person
+        (one CSV, one model) — so it must track whichever row is selected,
+        not the single _active_person (which Model Only alone updates).
+        """
+        if self._model_only or not self._selected_user:
+            return self._active_person
+        for slot, person in self._engine_slots().items():
+            if self._slot_user_id(slot) == self._selected_user:
+                return person
+        return self._active_person
+
     def _engine_slots(self) -> dict[int, PersonProfile]:
         """slot -> profile for the engine pool. Per-slot when a multi-sensor
         board layout has assignments (and not in Model Only); otherwise a single
@@ -762,19 +855,49 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._engines.rebuild(slots, self._speed_mult, paused=self._run_state != "running")
 
     def _apply_csv_mode_view(self) -> None:
-        """A CSV-backed person has no model and no meal input that drives glucose
+        """A CSV-backed sensor has no model and no meal input that drives glucose
         (the food log is report-only), so hide the food/exercise graph entirely
-        whenever one is active — Model Only or board-connected (issue 08)."""
-        is_csv = getattr(self._active_person, "data_source", "model") == "csv"
+        whenever one is active — Model Only or board-connected (issue 08).
+
+        Prefers the board's own answer over the app's slot map, for the same
+        reason the title does (see _data_source_label).
+        """
+        reported = self._board_mode_label(self._selected_slot())
+        if reported is not None:
+            is_csv = reported == "CSV replay"
+        else:
+            is_csv = getattr(self._selected_person(), "data_source", "model") == "csv"
         self._graph.fe_canvas.setVisible(not is_csv)
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]
         self._start_pause_btn.setText(label)
 
+    _RUN_STATE_NAMES = {
+        protocol.RUN_STATE_STOPPED: "Stop",
+        protocol.RUN_STATE_RUNNING: "Start",
+        protocol.RUN_STATE_PAUSED: "Pause",
+    }
+
     def _send_run_state(self, value: int) -> None:
-        """Broadcast a run-state byte to every connected board (see PROTOCOL_SPEC.md)."""
-        self._board.broadcast("run_state", protocol.encode_run_state(value))
+        """Broadcast a run-state byte to every connected board (see PROTOCOL_SPEC.md).
+
+        Reports the outcome: a board that never receives RUNNING stays idle and
+        pushes nothing, which otherwise looks like "the sensor sends no data"
+        with nothing anywhere saying the command went nowhere.
+        """
+        reached = self._board.broadcast("run_state", protocol.encode_run_state(value))
+        connected = len(self._board.sessions())
+        if not connected:
+            return
+        name = self._RUN_STATE_NAMES.get(value, "Run state")
+        if reached:
+            self._show_status(f"✓ {name} sent to {reached} of {connected} sensor(s).")
+        else:
+            self._show_status(
+                f"⚠ {name} reached 0 of {connected} connected sensor(s) — their links are "
+                "down. Reconnect in the Bluetooth window."
+            )
 
     def _broadcast_data_source(self) -> None:
         """Tell every connected board whether the active person is model- or CSV-backed.
@@ -826,9 +949,46 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._send_run_state(protocol.RUN_STATE_STOPPED)
         self._set_start_pause_label()
 
+    def _row_label(self, user_id: str, dev_id: str | None) -> str:
+        """Visible name for a sensor row / graph title.
+
+        A row's user_id is fixed when its session connects — it can be a bare
+        address (the scan returned no name yet) and it still names whichever
+        patient the slot carried back then. Both go stale, so the visible name
+        comes from the Bluetooth window's current, board-layout-resolved label.
+
+        The exception is a generic multi-instance device fanned out to one row
+        per slot: those rows share a dev_id and are told apart only by the
+        "· Sensor N" their user_id carries, so they keep it.
+        """
+        if dev_id is None or self._bluetooth_window is None or " · Sensor " in user_id:
+            return user_id
+        return self._bluetooth_window.display_name(dev_id) or user_id
+
+    def _selected_slot(self) -> int | None:
+        """The board slot behind the selected sensor row, or None when the
+        selection isn't a slot of a multi-sensor board."""
+        if self._bluetooth_window is None or not self._selected_user:
+            return None
+        for session in self._bluetooth_window.sessions().values():
+            if session.user_id == self._selected_user:
+                return session.slot_index
+        return None
+
     def _slot_user_id(self, slot: int) -> str:
-        """The tree-row id the received stream for *slot* uses, so the local
-        expected line lands in the same self._history bucket."""
+        """The history-bucket key the received stream for *slot* uses.
+
+        Taken from the live session for that slot, because a session's user_id
+        is frozen when it connects. Re-deriving a label from the board layout
+        here instead would silently split the two series the moment a slot is
+        re-assigned: the expected line would go to "new patient — Sensor N"
+        while the board's readings keep arriving under the old name, so the
+        selected row would plot a received trace with no model line.
+        """
+        if self._bluetooth_window is not None:
+            for session in self._bluetooth_window.sessions().values():
+                if session.slot_index == slot:
+                    return session.user_id
         return board_layout.device_label(board_layout.advert_name(slot), self._board_layout)
 
     def _feed_board_food_exercise(self, user_id: str, carbs: float, exercise: float) -> None:
@@ -921,6 +1081,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """
         self._selected_user = user_id
         self._bind_selected_history()
+        self._refresh_board_mode()
+        self._apply_csv_mode_view()
         self._graph.redraw_glucose()
         self._graph.redraw_food_ex()
         self._set_graph_title()
@@ -938,7 +1100,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         carb-rate curve isn't read as driving the trace above it. (The graph
         itself is hidden for a CSV person; this covers a transient redraw.)
         """
-        if getattr(self._active_person, "data_source", "model") == "csv":
+        if getattr(self._selected_person(), "data_source", "model") == "csv":
             return "Food log — report-only (CSV playback; does not drive glucose)"
         return "Food / Exercise"
 
@@ -959,9 +1121,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._food_config_window,
             self._exercise_config_window,
             self._configuration_window,
-            self._csv_analysis_window,
             self._view_config_window,
-            self._fault_panel,
             self._scenario_window,
         ):
             if window is not None:

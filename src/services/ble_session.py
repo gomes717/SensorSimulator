@@ -266,6 +266,11 @@ class BleSession(QThread):
         # short names. Writes are queued from any thread via queue_write() and
         # drained by _session()'s own event loop, since bleak's client only
         # works on the loop it was created on.
+        # UUIDs this session actually subscribed to. On a congested 3rd/4th link
+        # some start_notify calls fail even though others succeed, so "connected"
+        # does not imply every notification channel exists — callers waiting on
+        # one (the config-write confirmation) have to check.
+        self._subscribed_uuids: set[str] = set()
         self._config_characteristics: dict[str, object] = {}
         self._write_queue: asyncio.Queue = asyncio.Queue()
         # CSV control notifications ({status, received_bytes}), consumed by
@@ -273,6 +278,11 @@ class BleSession(QThread):
         self._csv_ctrl_queue: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: BleakClient | None = None  # set once connected, used by request_read()
+        # Plain flag owned by this thread's session loop. Deliberately NOT a
+        # query into bleak: is_live is read from the GUI thread on every send,
+        # and touching the WinRT client object across threads marshals through
+        # COM and can stall the UI for seconds.
+        self._link_up = False
 
     def stop(self) -> None:
         """Request the session to close the connection and end its run loop."""
@@ -284,6 +294,8 @@ class BleSession(QThread):
             asyncio.run(self._session())
         except Exception as exc:  # pylint: disable=broad-except
             self.connect_failed.emit(self._address, str(exc))
+        finally:
+            self._link_up = False
 
     async def _session(self) -> None:
         """Pair (Windows only, best-effort), open the connection, subscribe, then wait."""
@@ -306,6 +318,7 @@ class BleSession(QThread):
             if not client.is_connected:
                 raise ConnectionError("Device did not accept the connection")
             self._client = client
+            self._link_up = True
 
             notify_count = 0
             last_error = ""
@@ -361,6 +374,12 @@ class BleSession(QThread):
             # for a relaxed 30-50 ms interval on connect (firmware main.c); a
             # couple of spaced retries give that update time to land and the
             # radio time to free up.
+            # CGM Measurement first: it is the only one that produces the trace,
+            # and on the 3rd/4th link every start_notify that fails costs a GATT
+            # timeout — so any characteristic subscribed ahead of it delays the
+            # first reading by that much. The rest can take their retries after.
+            want_chars.sort(key=lambda c: c.uuid.lower() != CGM_MEASUREMENT_UUID)
+
             subscribed: set = set()
             for attempt in range(4):
                 pending = [c for c in want_chars if c not in subscribed]
@@ -372,6 +391,7 @@ class BleSession(QThread):
                     try:
                         await client.start_notify(ch, self._handle_notification)
                         subscribed.add(ch)
+                        self._subscribed_uuids.add(ch.uuid.lower())
                     except Exception as exc:  # pylint: disable=broad-except
                         last_error = str(exc)
             subscribed_count = len(subscribed)
@@ -420,12 +440,41 @@ class BleSession(QThread):
                 except Exception as exc:  # pylint: disable=broad-except
                     self.write_failed.emit(self._address, char_key, str(exc))
 
+        self._link_up = False
         self.disconnected.emit(self._address)
 
     def exposes(self, char_key: str) -> bool:
         """True if the connected board exposes the config characteristic *char_key*
         (populated during discovery; False before connect / for a missing char)."""
         return char_key in self._config_characteristics
+
+    def notifies(self, uuid: str) -> bool:
+        """True if this session successfully subscribed to *uuid*."""
+        return uuid.lower() in self._subscribed_uuids
+
+    @property
+    def user_id(self) -> str:
+        """The id this session stamps on every message it emits.
+
+        Public so the app can bucket its own locally-computed data (the
+        "expected" model line) under exactly the same key as this session's
+        received stream, instead of re-deriving a label that may since have
+        drifted (a slot re-assigned to another patient renames the device, but
+        a live session keeps the id it connected with).
+        """
+        return self._user_id()
+
+    @property
+    def is_live(self) -> bool:
+        """True while the GATT link is actually up.
+
+        :meth:`exposes` only reports what discovery found and stays true after
+        the link drops, so a caller about to push a burst of writes must check
+        this too — otherwise it queues onto a session nobody drains, or picks
+        one whose WinRT object is already closed and fails partway through with
+        "[WinError -2147483629] The object was closed".
+        """
+        return self._link_up
 
     @property
     def slot_index(self) -> int | None:

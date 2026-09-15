@@ -20,6 +20,15 @@ class ModelId(IntEnum):
     DEICHMANN = 3
 
 
+# One spelling of each model's name, shared by every window that shows one.
+MODEL_LABELS = {
+    ModelId.CAMBRIDGE: "Cambridge (Hovorka)",
+    ModelId.UVA_PADOVA: "UVA/Padova T1DMS",
+    ModelId.ROYPARKER: "Roy & Parker (exercise)",
+    ModelId.DEICHMANN: "Deichmann (HR-driven exercise)",
+}
+
+
 class SensorId(IntEnum):
     """Which CGM sensor noise model a SensorProfile applies (on-device only)."""
 

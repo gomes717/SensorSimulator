@@ -6,13 +6,11 @@ from collections.abc import Callable
 
 from PyQt6.QtCore import QTime
 from PyQt6.QtWidgets import (
-    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTimeEdit,
@@ -23,6 +21,7 @@ from PyQt6.QtWidgets import (
 from api import protocol
 from gui.bluetooth_window import BluetoothWindow
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
+from gui.widgets import NoWheelDoubleSpinBox, NoWheelSpinBox
 from models.types import FoodEvent, PersonProfile
 
 
@@ -71,12 +70,12 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         self._time_edit = QTimeEdit(QTime(8, 0))
         add_row.addWidget(QLabel("Time:"))
         add_row.addWidget(self._time_edit)
-        self._carbs_spin = QDoubleSpinBox()
+        self._carbs_spin = NoWheelDoubleSpinBox()
         self._carbs_spin.setRange(0.0, 500.0)
         self._carbs_spin.setValue(50.0)
         add_row.addWidget(QLabel("Carbs (g):"))
         add_row.addWidget(self._carbs_spin)
-        self._duration_spin = QSpinBox()
+        self._duration_spin = NoWheelSpinBox()
         self._duration_spin.setRange(1, 240)
         self._duration_spin.setValue(15)
         add_row.addWidget(QLabel("Spread over (min):"))
@@ -216,6 +215,7 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         self._read_session = session
         session.config_read.connect(self._on_config_read)
         session.request_read("food_list")
+        self._send_status.setText("Reading the board’s food schedule…")
 
     def _on_config_read(self, _address: str, char_key: str, data: bytes) -> None:
         """Load a Food Events Readback into the table (see person_config_window.py's
@@ -227,3 +227,6 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         if person is not None:
             person.food_events = list(self._events)
         self._redraw_table()
+        self._send_status.setText(
+            f"✓ Read {len(self._events)} food event(s) from the board (not saved yet)"
+        )

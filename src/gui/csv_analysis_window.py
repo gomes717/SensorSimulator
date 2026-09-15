@@ -1,15 +1,13 @@
 """CSV Analysis window: load a Dexcom CGM export, pick a 24 h window with a slider,
 zoom the trace, and read the range metrics (TIR/TBR/TAR, mean, variance) for it.
 
-The picked 24 h window can also be assigned to a patient as their data source
-("Assign window to person…"), after which the app's engine and the board both
-replay it instead of running a physiological model (see docs/TODO.md,
-PROTOCOL_SPEC.md's "CSV playback data source" section).
+Inspection only. Choosing the window a patient actually replays is done in the
+Person Configuration window's Data source group (``gui/data_source_group.py``),
+next to the CSV file chooser it belongs with.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,7 +20,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -31,14 +28,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from models.types import PersonProfile
-
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qt import NavigationToolbar2QT
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from models import app_settings, cgm_metrics, dexcom_csv, food_log_csv
+from models import app_settings, cgm_metrics, dexcom_csv
 
 _DATASET_DIR = Path(__file__).resolve().parent.parent.parent / "dataset"
 _WINDOW_HOURS = 24.0
@@ -48,18 +43,16 @@ _SLIDER_STEPS = 1000  # slider resolution over the movable range
 class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
     """Load a CGM CSV, slide a 24 h window over it, and show that window's metrics."""
 
-    def __init__(
-        self,
-        persons: list[PersonProfile] | None = None,
-        on_assign: Callable[[PersonProfile], None] | None = None,
-        parent=None,
-    ) -> None:
+    def __init__(self, on_pick=None, parent=None) -> None:
+        """*on_pick*, when given, turns this into the picker the Person
+        Configuration window opens from "Choose CSV file…": it gains a confirm
+        button that hands back ``(csv_path, window_start)`` and closes."""
         super().__init__(parent)
         self.setWindowTitle("CSV Analysis")
         self.resize(900, 640)
 
-        self._persons = persons if persons is not None else []
-        self._on_assign = on_assign
+        self._on_pick = on_pick
+
         self._csv_path: str | None = None
         self._sel_start_dt: datetime | None = None
 
@@ -94,14 +87,11 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         self._range_label = QLabel("—")
         layout.addWidget(self._range_label)
 
-        assign_row = QHBoxLayout()
-        self._assign_btn = QPushButton("Assign window to person…")
-        self._assign_btn.setEnabled(False)
-        self._assign_btn.clicked.connect(self._assign_to_person)
-        assign_row.addWidget(self._assign_btn)
-        self._assign_status = QLabel("")
-        assign_row.addWidget(self._assign_status, 1)
-        layout.addLayout(assign_row)
+        self._pick_btn = QPushButton("Use this 24 h window")
+        self._pick_btn.setEnabled(False)
+        self._pick_btn.clicked.connect(self._pick)
+        self._pick_btn.setVisible(on_pick is not None)
+        layout.addWidget(self._pick_btn)
 
         stats_row = QHBoxLayout()
         whole_group, self._whole_labels = self._build_stats_group("Whole recording")
@@ -243,7 +233,7 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
             return
 
         self._csv_path = path
-        self._assign_btn.setEnabled(True)
+        self._pick_btn.setEnabled(True)
         self._times = [ts for ts, _ in rows]
         self._values = [g for _, g in rows]
         t0 = self._times[0]
@@ -321,44 +311,10 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
             span_minutes=span_minutes,
         )
 
-    # ------------------------------------------------------------------
-    # Assign the selected 24 h window to a patient as their data source
-    # ------------------------------------------------------------------
-
-    def _assign_to_person(self) -> None:
-        """Make the picked 24 h window a patient's CSV data source.
-
-        Sets data_source/csv_path/csv_window_start_iso on the chosen
-        PersonProfile (optionally a matching Food Log CSV too) and calls the
-        on_assign callback so MainWindow persists and restarts its engine.
-        """
-        if not self._persons:
-            QMessageBox.information(self, "CSV Analysis", "No patients to assign to.")
+    def _pick(self) -> None:
+        """Hand the chosen file + window start back to whoever opened the picker."""
+        if self._on_pick is None or self._csv_path is None or self._sel_start_dt is None:
+            QMessageBox.information(self, "CSV Analysis", "Open a CSV and pick a window first.")
             return
-        if self._csv_path is None or self._sel_start_dt is None:
-            QMessageBox.information(self, "CSV Analysis", "Load a CSV and pick a window first.")
-            return
-
-        names = [p.name for p in self._persons]
-        name, ok = QInputDialog.getItem(
-            self, "Assign window", "Assign this 24 h window to patient:", names, 0, False
-        )
-        if not ok:
-            return
-        person = self._persons[names.index(name)]
-
-        # The Food Log is paired by ID (Dexcom_001.csv <-> Food_Log_001.csv),
-        # so it is picked up automatically — no separate file chooser.
-        food_log = food_log_csv.matching_food_log_path(self._csv_path)
-
-        person.data_source = "csv"
-        person.csv_path = self._csv_path
-        person.csv_window_start_iso = self._sel_start_dt.isoformat()
-        person.food_log_path = food_log
-
-        self._assign_status.setText(
-            f"✓ Assigned to {person.name}"
-            + (f"  (+ food log {Path(food_log).name})" if food_log else "  (no matching food log)")
-        )
-        if self._on_assign is not None:
-            self._on_assign(person)
+        self._on_pick(self._csv_path, self._sel_start_dt)
+        self.close()

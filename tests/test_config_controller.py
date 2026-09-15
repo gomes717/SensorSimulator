@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import QApplication
 
 from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
-from models.types import ModelId, PersonProfile, SensorId, SensorProfile
+from gui.person_config_window import PersonConfigWindow
+from models.types import ModelId, PersonProfile, SensorProfile
 
 _app = QApplication.instance() or QApplication([])
 
@@ -60,46 +61,26 @@ def _person(name):
     return PersonProfile(name=name, model_id=ModelId.CAMBRIDGE)
 
 
-def test_profiles_changed_populates_and_defaults_to_first():
+def test_person_editor_list_is_what_selects_the_active_patient():
+    """The Configuration window has no Person/Sensor combos any more: the
+    editors' own lists are where a profile is picked, and they report outward."""
     alice, bob = _person("Alice"), _person("Bob")
-    c, _st, seen = _wire(
-        persons=[alice, bob], sensors=[SensorProfile(name="S1", sensor_id=SensorId.IDEAL)]
+    chosen = []
+
+    class _NoBoards:
+        def sessions(self):
+            return {}
+
+        def display_name(self, address):
+            return address
+
+    win = PersonConfigWindow(
+        [alice, bob], lambda: None, _NoBoards, on_selected=chosen.append
     )
-    win = ConfigurationWindow(c)
 
-    c.notify_profiles_changed()
+    win._list.setCurrentRow(1)
 
-    # combo has (none) + 2 people, first real profile auto-selected, app told once
-    assert win.person_combo.count() == 3
-    assert win.person_combo.currentData() is alice
-    assert seen["person"] == [alice]
-
-
-def test_user_combo_change_emits_selection():
-    alice, bob = _person("Alice"), _person("Bob")
-    c, st, seen = _wire(persons=[alice, bob])
-    win = ConfigurationWindow(c)
-    c.notify_profiles_changed()
-    st.active_person = alice
-    seen["person"].clear()
-
-    win.person_combo.setCurrentIndex(2)  # Bob
-
-    assert seen["person"] == [bob]
-
-
-def test_repopulate_keeps_selection_and_stays_silent():
-    alice, bob = _person("Alice"), _person("Bob")
-    c, st, seen = _wire(persons=[alice, bob])
-    win = ConfigurationWindow(c)
-    c.notify_profiles_changed()
-    st.active_person = alice
-    seen["person"].clear()
-
-    c.notify_profiles_changed()  # e.g. a profile edit elsewhere
-
-    assert win.person_combo.currentData() is alice
-    assert seen["person"] == []  # selection unchanged -> no echo
+    assert chosen[-1] is bob
 
 
 def test_mode_toggles_and_editor_buttons_reach_the_app():
@@ -110,12 +91,12 @@ def test_mode_toggles_and_editor_buttons_reach_the_app():
     win.cgms_only_check.setChecked(True)
     win.comm_profile_combo.setCurrentIndex(1)
     win.person_configure_btn.click()
-    win.board_layout_btn.click()
+    win.sensor_configure_btn.click()
 
     assert seen["model"] == [True]
     assert seen["cgms"] == [True]
     assert seen["comm"] == [True]
-    assert seen["editor"] == ["person", "board_layout"]
+    assert seen["editor"] == ["person", "sensor"]
 
 
 def test_speed_display_from_app_does_not_echo():

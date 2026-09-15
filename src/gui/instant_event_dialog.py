@@ -8,10 +8,10 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
-    QSpinBox,
 )
+
+from gui.widgets import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 class _InstantDialog(QDialog):
@@ -26,6 +26,7 @@ class _InstantDialog(QDialog):
         parent=None,
         *,
         slot_choices: list[tuple[int | None, str]] | None = None,
+        default_slot: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -40,6 +41,12 @@ class _InstantDialog(QDialog):
             self._slot_combo = QComboBox()
             for value, label in slot_choices:
                 self._slot_combo.addItem(label, value)
+            # Default to the sensor the user is looking at, not "All sensors":
+            # inserting an event into every slot at once is rarely what is meant
+            # while one row is selected.
+            index = self._slot_combo.findData(default_slot)
+            if index >= 0:
+                self._slot_combo.setCurrentIndex(index)
             self._layout.addRow("Target:", self._slot_combo)
 
     def _finish(self) -> None:
@@ -65,16 +72,19 @@ class FoodInstantDialog(_InstantDialog):
         slots: int = 1,
         *,
         slot_choices: list[tuple[int | None, str]] | None = None,
+        default_slot: int | None = None,
     ) -> None:
-        super().__init__("Insert Food Now", slots, parent, slot_choices=slot_choices)
+        super().__init__(
+            "Insert Food Now", slots, parent, slot_choices=slot_choices, default_slot=default_slot
+        )
 
-        self._carbs_spin = QDoubleSpinBox()
+        self._carbs_spin = NoWheelDoubleSpinBox()
         self._carbs_spin.setRange(0.1, 500.0)
         self._carbs_spin.setValue(50.0)
         self._carbs_spin.setSuffix(" g")
         self._layout.addRow("Carbs:", self._carbs_spin)
 
-        self._duration_spin = QSpinBox()
+        self._duration_spin = NoWheelSpinBox()
         self._duration_spin.setRange(1, 240)
         self._duration_spin.setValue(15)
         self._duration_spin.setSuffix(" min")
@@ -95,16 +105,23 @@ class ExerciseInstantDialog(_InstantDialog):
         slots: int = 1,
         *,
         slot_choices: list[tuple[int | None, str]] | None = None,
+        default_slot: int | None = None,
     ) -> None:
-        super().__init__("Insert Exercise Now", slots, parent, slot_choices=slot_choices)
+        super().__init__(
+            "Insert Exercise Now",
+            slots,
+            parent,
+            slot_choices=slot_choices,
+            default_slot=default_slot,
+        )
 
-        self._duration_spin = QSpinBox()
+        self._duration_spin = NoWheelSpinBox()
         self._duration_spin.setRange(1, 300)
         self._duration_spin.setValue(30)
         self._duration_spin.setSuffix(" min")
         self._layout.addRow("Duration:", self._duration_spin)
 
-        self._intensity_spin = QDoubleSpinBox()
+        self._intensity_spin = NoWheelDoubleSpinBox()
         self._intensity_spin.setRange(0.0, 100.0)
         self._intensity_spin.setValue(50.0)
         self._intensity_spin.setSuffix(" %")
@@ -131,16 +148,19 @@ class PisaInstantDialog(_InstantDialog):
         slots: int = 1,
         *,
         slot_choices: list[tuple[int | None, str]] | None = None,
+        default_slot: int | None = None,
     ) -> None:
-        super().__init__("Insert PISA Now", slots, parent, slot_choices=slot_choices)
+        super().__init__(
+            "Insert PISA Now", slots, parent, slot_choices=slot_choices, default_slot=default_slot
+        )
 
-        self._duration_spin = QSpinBox()
+        self._duration_spin = NoWheelSpinBox()
         self._duration_spin.setRange(1, 120)
         self._duration_spin.setValue(10)
         self._duration_spin.setSuffix(" min")
         self._layout.addRow("Duration:", self._duration_spin)
 
-        self._depth_spin = QDoubleSpinBox()
+        self._depth_spin = NoWheelDoubleSpinBox()
         self._depth_spin.setRange(5.0, 90.0)
         self._depth_spin.setValue(40.0)
         self._depth_spin.setSuffix(" %")

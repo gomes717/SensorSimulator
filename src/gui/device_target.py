@@ -7,7 +7,7 @@ from collections.abc import Callable
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
-from api import protocol
+from api import ble_uuids, protocol
 from gui.bluetooth_window import BluetoothWindow
 from services.ble_session import BleSession
 
@@ -27,9 +27,15 @@ def restart_board(session: BleSession) -> None:
     session.queue_write("run_state", protocol.encode_run_state(protocol.RUN_STATE_RUNNING))
 
 
-def await_send_confirmation(session: BleSession, status_label: QLabel) -> None:
+def await_send_confirmation(
+    session: BleSession, status_label: QLabel, on_confirmed: Callable[[], None] | None = None
+) -> None:
     """Show live feedback that a just-sent config write actually reached and was
     applied by the board, instead of leaving the user unsure whether it worked.
+
+    *on_confirmed* runs only if the board actually acknowledges — it is how
+    callers commit anything that should describe the board's real state (the
+    slot -> patient rename), rather than what was merely put on the wire.
 
     Reuses the board's reset_sync notification (see ble_uuids.RESET_SYNC_UUID)
     — it fires the instant ANY config write takes effect, so "the next one to
@@ -37,6 +43,13 @@ def await_send_confirmation(session: BleSession, status_label: QLabel) -> None:
     multiple writes are in flight) confirmation signal. Falls back to a
     timeout warning if nothing arrives, e.g. because the connection dropped.
     """
+    if not session.notifies(ble_uuids.RESET_SYNC_UUID):
+        # A congested 3rd/4th link can subscribe some characteristics and not
+        # others. Waiting on a channel this session never got would always time
+        # out and read as a dead connection, which is the wrong thing to go
+        # debug — the write itself was queued normally.
+        status_label.setText("Sent — this link has no confirmation channel (not re-subscribed)")
+        return
     status_label.setText("Sending to board…")
     state = {"done": False}
 
@@ -49,6 +62,8 @@ def await_send_confirmation(session: BleSession, status_label: QLabel) -> None:
         except TypeError:
             pass
         status_label.setText("✓ Applied on board")
+        if on_confirmed is not None:
+            on_confirmed()
 
     def on_timeout() -> None:
         if state["done"]:
@@ -65,17 +80,16 @@ def await_send_confirmation(session: BleSession, status_label: QLabel) -> None:
 
 
 class DeviceTargetBar(QWidget):
-    """A 'Target device: [combo] -> slot N' row backed by BluetoothWindow's live
-    sessions.
+    """A 'Target device: [combo]' row backed by BluetoothWindow's live sessions.
 
     The target slot is *not* a separate choice: each of a multi-sensor board's
     BLE identities already represents one specific slot (the advertised name
     ends in its number, e.g. "... Sensor 2" == slot 1), so picking the device
     picks the slot. :meth:`begin` writes the sensor-select cursor to that slot
-    before the window's own write/read; the label just shows which slot that
-    is. Single-sensor targets have no slot and get no cursor write. The device
-    list refreshes itself (on show and on a short timer), so sensors that
-    connect after this window opened appear without a manual rescan.
+    before the window's own write/read. Single-sensor targets have no slot and
+    get no cursor write. The device list refreshes itself (on show and on a
+    short timer), so sensors that connect after this window opened appear
+    without a manual rescan.
     """
 
     def __init__(self, get_bluetooth_window: Callable[[], BluetoothWindow], parent=None) -> None:
@@ -83,15 +97,13 @@ class DeviceTargetBar(QWidget):
         super().__init__(parent)
         self._get_bluetooth_window = get_bluetooth_window
         self._addresses: list[str] = []
+        self._entries: list[tuple[str, str]] = []  # (address, label) last shown
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QLabel("Target device:"))
         self.combo = QComboBox()
-        self.combo.currentIndexChanged.connect(self._update_slot_label)
         layout.addWidget(self.combo, 1)
-        self.slot_label = QLabel("")
-        layout.addWidget(self.slot_label)
 
         self._poll = QTimer(self)
         self._poll.timeout.connect(self.refresh)
@@ -103,27 +115,26 @@ class DeviceTargetBar(QWidget):
         super().showEvent(event)
 
     def refresh(self) -> None:
-        """Repopulate the combo from currently connected BLE sessions."""
+        """Repopulate the combo from currently connected BLE sessions.
+
+        Compares labels, not just addresses: re-pairing a slot to a different
+        patient renames the device without changing the connection, and the
+        combo would otherwise keep showing the old "patient — Sensor N".
+        """
         bt_window = self._get_bluetooth_window()
-        sessions = bt_window.sessions()
-        current = self.combo.currentData()
-        addresses = list(sessions.keys())
-        if addresses == self._addresses:
-            self._update_slot_label()
+        entries = [(address, bt_window.display_name(address)) for address in bt_window.sessions()]
+        if entries == self._entries:
             return
+        current = self.combo.currentData()
+        self._entries = entries
+        self._addresses = [address for address, _ in entries]
         self.combo.blockSignals(True)
         self.combo.clear()
-        self._addresses = addresses
-        for address in self._addresses:
-            self.combo.addItem(bt_window.display_name(address), address)
+        for address, label in entries:
+            self.combo.addItem(label, address)
         if current in self._addresses:
             self.combo.setCurrentIndex(self._addresses.index(current))
         self.combo.blockSignals(False)
-        self._update_slot_label()
-
-    def _update_slot_label(self) -> None:
-        slot = self.selected_slot()
-        self.slot_label.setText(f"→ slot {slot}" if slot is not None else "")
 
     def selected_session(self) -> BleSession | None:
         """Return the currently selected target's live BleSession, or None if none connected."""
@@ -141,8 +152,15 @@ class DeviceTargetBar(QWidget):
     def begin(self) -> BleSession | None:
         """Resolve the target session and, for a multi-sensor board, queue the
         sensor-select cursor write for that device's own slot. Call at the top
-        of every _send_to_board / _read_from_board in place of selected_session()."""
+        of every _send_to_board / _read_from_board in place of selected_session().
+
+        Returns None when the link is down: a dropped session still accepts
+        queue_write(), but nothing drains its queue, so the caller would report
+        a successful send that never happened.
+        """
         session = self.selected_session()
+        if session is not None and not session.is_live:
+            return None
         slot = self.selected_slot()
         if session is not None and slot is not None:
             session.queue_write("sensor_select", protocol.encode_sensor_select(slot))

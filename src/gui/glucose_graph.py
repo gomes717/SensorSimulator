@@ -166,11 +166,21 @@ class GlucoseGraph:
         (expected_line,) = ax.plot(
             [], [], lw=1.5, color=accent, linestyle="--", alpha=0.7, label="Expected (model)"
         )
+        # ncol must equal the number of entries (5: Mean + 3 range categories +
+        # Expected) so the legend stays a single row — the reserved bottom
+        # margin (_GLUCOSE_MARGINS) only has room for one row; wrapping to two
+        # pushes the second row past the figure's bottom edge and it gets
+        # clipped by the canvas.
         legend = ax.legend(
-            loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3, fontsize=8, frameon=False
+            loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=5, fontsize=8, frameon=False
         )
         for text in legend.get_texts():
             text.set_color(fg)
+        # The mean line is drawn transparent until it has data, and the legend
+        # copies that alpha — leaving "Mean" with a blank swatch. The key is a
+        # colour reference, not a live preview, so force every handle opaque.
+        for handle in legend.legend_handles:
+            handle.set_alpha(1.0)
         self._g = _GlucosePlot(figure, ax, fg, base_line, expected_line, mean_line, seg_lines)
         self._apply_range_bands()
         ax.set_ylim(*_EMPTY_YLIM)

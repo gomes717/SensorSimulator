@@ -287,7 +287,7 @@ def build_csv_uploads(
     """The `start_csv_upload` / board-layout `csv.uploads` list for one CSV window.
 
     One glucose track, plus a food-log track when *foodlog* is non-empty. Both
-    the Configuration "Send CSV to Board" path and BoardLayoutWindow build this
+    the Person Configuration "Send CSV to Board" path builds this
     the same way — keep it in one place (issue 19).
     """
     base_epoch = int(datetime.fromisoformat(start_iso).timestamp())

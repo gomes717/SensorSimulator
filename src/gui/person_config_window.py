@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -27,15 +28,20 @@ from api import protocol
 from gui.bluetooth_window import BluetoothWindow
 from gui.data_source_group import DataSourceGroup
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
-from models import cambridge, deichmann, royparker, uva_padova
-from models.types import ModelId, PersonProfile
+from gui.widgets import NoWheelDoubleSpinBox
+from models import board_layout, cambridge, deichmann, royparker, uva_padova
+from models.types import MODEL_LABELS, ModelId, PersonProfile
 
-_MODEL_LABELS = {
-    ModelId.CAMBRIDGE: "Cambridge (Hovorka)",
-    ModelId.UVA_PADOVA: "UVA/Padova T1DMS",
-    ModelId.ROYPARKER: "Roy & Parker (exercise)",
-    ModelId.DEICHMANN: "Deichmann (HR-driven exercise)",
-}
+
+@dataclass(frozen=True)
+class _Hooks:
+    """The three callbacks this window reports back to the app through."""
+
+    changed: Callable[[], None]
+    slot_assigned: Callable[..., None]
+    selected: Callable[[PersonProfile | None], None]
+
+
 _MODEL_MODULES = {
     ModelId.CAMBRIDGE: cambridge,
     ModelId.UVA_PADOVA: uva_padova,
@@ -58,6 +64,8 @@ class PersonConfigWindow(QWidget):
         profiles: list[PersonProfile],
         on_change: Callable[[], None],
         get_bluetooth_window: Callable[[], BluetoothWindow],
+        on_slot_assigned: Callable[..., None] | None = None,
+        on_selected: Callable[[PersonProfile | None], None] | None = None,
         parent=None,
     ) -> None:
         """Build the profile list, parameter form, and Save/Send controls."""
@@ -66,7 +74,16 @@ class PersonConfigWindow(QWidget):
         self.resize(640, 520)
 
         self._profiles = profiles
-        self._on_change = on_change
+        # How this window reports back to the app. Grouped so the three
+        # callbacks travel together: *changed* persists profiles, *slot_assigned*
+        # records which slot a send pushed to (there is no Board Layout screen
+        # any more), and *selected* makes the highlighted row the active patient
+        # (the Configuration window's Person combo is gone).
+        self._hooks = _Hooks(
+            changed=on_change,
+            slot_assigned=on_slot_assigned or (lambda *_a, **_k: None),
+            selected=on_selected or (lambda _p: None),
+        )
         self._param_spinboxes: dict[str, QDoubleSpinBox] = {}
         self._current_index: int | None = None
         self._read_session = None  # tracks which BleSession config_read is currently connected to
@@ -99,13 +116,13 @@ class PersonConfigWindow(QWidget):
         form_top.addRow("Name:", self._name_edit)
         self._model_combo = QComboBox()
         for model_id in ModelId:
-            self._model_combo.addItem(_MODEL_LABELS[model_id], model_id)
+            self._model_combo.addItem(MODEL_LABELS[model_id], model_id)
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
         form_top.addRow("Model:", self._model_combo)
         right_layout.addLayout(form_top)
 
         self._ds = DataSourceGroup(
-            self._current_person, self._on_change, lambda: self._target_bar.begin()
+            self._current_person, self._hooks.changed, lambda: self._target_bar.begin()
         )
         right_layout.addWidget(self._ds)
 
@@ -120,12 +137,15 @@ class PersonConfigWindow(QWidget):
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self._save_current)
         buttons.addWidget(save_btn)
-        self._send_btn = QPushButton("Send to Board")
-        self._send_btn.clicked.connect(self._send_to_board)
-        buttons.addWidget(self._send_btn)
-        self._read_btn = QPushButton("Read from Board")
-        self._read_btn.clicked.connect(self._read_from_board)
-        buttons.addWidget(self._read_btn)
+        send_btn = QPushButton("Send to Board")
+        send_btn.clicked.connect(self._send_to_board)
+        buttons.addWidget(send_btn)
+        read_btn = QPushButton("Read from Board")
+        read_btn.clicked.connect(self._read_from_board)
+        buttons.addWidget(read_btn)
+        # Greyed out with the model form for a CSV-backed patient. "Send to
+        # Board" is NOT in here: it stays live and uploads the CSV instead.
+        self._model_buttons = (read_btn,)
         right_layout.addLayout(buttons)
 
         self._send_status = QLabel("")
@@ -165,7 +185,7 @@ class PersonConfigWindow(QWidget):
             name=name.strip(), model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
         )
         self._profiles.append(profile)
-        self._on_change()
+        self._hooks.changed()
         self._reload_list()
         self._list.setCurrentRow(len(self._profiles) - 1)
 
@@ -174,7 +194,7 @@ class PersonConfigWindow(QWidget):
         if self._current_index is None:
             return
         del self._profiles[self._current_index]
-        self._on_change()
+        self._hooks.changed()
         self._current_index = None
         self._reload_list()
 
@@ -193,6 +213,7 @@ class PersonConfigWindow(QWidget):
         self._rebuild_param_form(profile.model_id, profile.params)
         self._apply_data_source_lock(profile)
         self._ds.refresh()
+        self._hooks.selected(profile)
 
     def reload(self) -> None:
         """Re-read the current profile (e.g. after its data source / CSV window
@@ -215,7 +236,7 @@ class PersonConfigWindow(QWidget):
             if is_csv
             else ""
         )
-        for w in (self._model_combo, self._params_group, self._send_btn, self._read_btn):
+        for w in (self._model_combo, self._params_group, *self._model_buttons):
             w.setEnabled(not is_csv)
             w.setToolTip(tip)
 
@@ -249,7 +270,7 @@ class PersonConfigWindow(QWidget):
         module = _MODEL_MODULES[model_id]
         defaults = module.default_params()
         for name in module.PARAM_NAMES:
-            spin = QDoubleSpinBox()
+            spin = NoWheelDoubleSpinBox()
             spin.setDecimals(6)
             spin.setRange(-1_000_000.0, 1_000_000.0)
             spin.setValue(values.get(name, defaults[name]))
@@ -269,16 +290,28 @@ class PersonConfigWindow(QWidget):
         profile.name = self._name_edit.text().strip() or profile.name
         profile.model_id = self._model_combo.currentData()
         profile.params = {name: spin.value() for name, spin in self._param_spinboxes.items()}
-        self._on_change()
+        self._hooks.changed()
         self._reload_list()
 
     def _send_to_board(self) -> None:
-        """Encode the selected profile and write it to the target device's Person Config characteristic."""
+        """Send this patient to the target slot: their recorded CSV window if that
+        is their data source, otherwise their model + parameters.
+
+        One button either way — what gets sent follows the Data source choice
+        above rather than making the user pick the matching button."""
         if self._current_index is None:
             QMessageBox.information(self, "Person Configuration", "Select or add a profile first.")
             return
         self._save_current()
         profile = self._profiles[self._current_index]
+        # Captured now, not when the board answers: the target combo can move
+        # while the write is in flight, and the rename belongs to the slot this
+        # send actually went to.
+        slot = self._target_bar.selected_slot()
+        name = profile.name
+        if getattr(profile, "data_source", "model") == "csv":
+            self._ds.send_csv(on_applied=lambda: self._hooks.slot_assigned(slot, person=name))
+            return
         session = self._target_bar.begin()
         if session is None:
             QMessageBox.warning(self, "Person Configuration", "No connected device selected.")
@@ -286,7 +319,11 @@ class PersonConfigWindow(QWidget):
         payload = protocol.encode_person_config(profile.model_id, profile.params)
         session.queue_write("person", payload)
         restart_board(session)
-        await_send_confirmation(session, self._send_status)
+        await_send_confirmation(
+            session,
+            self._send_status,
+            on_confirmed=lambda: self._hooks.slot_assigned(slot, person=name),
+        )
 
     def _read_from_board(self) -> None:
         """Request the board's currently applied person config and load it into the selected profile."""
@@ -297,6 +334,16 @@ class PersonConfigWindow(QWidget):
         if session is None:
             QMessageBox.warning(self, "Person Configuration", "No connected device selected.")
             return
+        # The board answers for the slot the target identity owns, so land the
+        # readback on the profile the board layout assigns to that slot.
+        # Otherwise "Read from Board" on Sensor 3 quietly loads its values into
+        # whichever row happened to be selected in the list.
+        slot = self._target_bar.selected_slot()
+        assigned = (
+            board_layout.person_for(board_layout.advert_name(slot)) if slot is not None else None
+        )
+        if assigned:
+            self._select_profile_named(assigned)
         if self._read_session is not None:
             try:
                 self._read_session.config_read.disconnect(self._on_config_read)
@@ -305,11 +352,23 @@ class PersonConfigWindow(QWidget):
         self._read_session = session
         session.config_read.connect(self._on_config_read)
         session.request_read("person")
+        where = f" (Sensor {slot + 1})" if slot is not None else ""
+        self._send_status.setText(
+            f"Reading{where} into “{self._profiles[self._current_index].name}”…"
+        )
+
+    def _select_profile_named(self, name: str) -> bool:
+        """Select the profile row called *name*; False when no such profile exists."""
+        index = next((i for i, p in enumerate(self._profiles) if p.name == name), None)
+        if index is None:
+            return False
+        self._list.setCurrentRow(index)
+        return True
 
     def _on_config_read(self, _address: str, char_key: str, data: bytes) -> None:
         """Load a Person Config readback into the form for inspection/editing.
 
-        Deliberately does NOT call self._on_change() — that persists to disk
+        Deliberately does NOT call self._hooks.changed() — that persists to disk
         and restarts the live comparison engine/graphs, which would make a
         passive "what's on the board right now" read visibly disrupt an
         in-progress run. Updates the in-memory profile (so the form reflects
@@ -329,3 +388,6 @@ class PersonConfigWindow(QWidget):
         profile.model_id = model_id
         profile.params = params
         self._on_row_selected(self._current_index)
+        self._send_status.setText(
+            f"✓ Loaded the board's config into “{profile.name}” (not saved yet)"
+        )

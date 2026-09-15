@@ -16,8 +16,9 @@ from gui.board_link import BoardLink
 
 
 class _FakeSession:
-    def __init__(self, slot_index=None):
+    def __init__(self, slot_index=None, is_live=True):
         self.slot_index = slot_index
+        self.is_live = is_live  # a dropped link silently discards queued writes
         self.writes: list[tuple[str, bytes]] = []
 
     def queue_write(self, key, payload):
@@ -79,3 +80,20 @@ def test_no_sessions_is_a_safe_noop():
     empty.broadcast("x", b"")
     empty.send_instant("x", b"", 1)
     empty.restart_all()
+
+
+def test_a_dead_session_is_never_written_to():
+    """A session whose link dropped still accepts queue_write(), but nothing
+    drains it — so the board never sees the event and the user sees no error."""
+    dead, live = _FakeSession(is_live=False), _FakeSession()
+    link, _ = _link(dead, live)
+
+    link.broadcast("speed", b"")
+
+    assert dead.writes == []
+    assert live.writes == [("speed", b"")]
+
+
+def test_send_instant_reports_nothing_sent_when_no_link_is_live():
+    link, _ = _link(_FakeSession(is_live=False))
+    assert link.send_instant("food_instant", b"", None) == 0

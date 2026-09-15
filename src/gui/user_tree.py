@@ -10,6 +10,8 @@ when the selection changes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
@@ -20,9 +22,20 @@ from gui.avatar import avatar_icon
 class UserTree(QTreeWidget):
     user_selected = pyqtSignal(str)  # the row's user_id (or its visible text)
 
-    def __init__(self, thresholds: dict, parent=None) -> None:
+    def __init__(
+        self,
+        thresholds: dict,
+        label_for: Callable[[str, str | None], str] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._thresholds = thresholds
+        # Resolves a row's *visible* name from its user_id + the address feeding
+        # it. The user_id is fixed at connect time (it keys the history buffers),
+        # so a session opened before its name was known keeps a bare address
+        # forever; this lets the row show the live, board-layout-resolved label
+        # without moving the key underneath the graph history.
+        self._label_for = label_for or (lambda user_id, _dev_id: user_id)
         self.setHeaderLabels(["User", "Glucose"])
         self.header().setStretchLastSection(True)
         self.currentItemChanged.connect(self._on_current_changed)
@@ -74,13 +87,17 @@ class UserTree(QTreeWidget):
     # Rows
     # ------------------------------------------------------------------
 
+    def label_of(self, user_id: str) -> str:
+        """The row's visible name (see *label_for*), which may differ from its key."""
+        return self._label_for(user_id, self._dev.get(user_id)) or user_id
+
     def ensure_item(self, user_id: str) -> QTreeWidgetItem:
         """Return the row for *user_id*, creating it with a #n id + avatar on first sight."""
         item = self._items.get(user_id)
         if item is not None:
             return item
         uid = self._ids.setdefault(user_id, len(self._ids) + 1)
-        item = QTreeWidgetItem([f"#{uid}  {user_id}", "—"])
+        item = QTreeWidgetItem([f"#{uid}  {self.label_of(user_id)}", "—"])
         item.setIcon(0, avatar_icon(user_id, user_id))
         item.setData(0, Qt.ItemDataRole.UserRole, user_id)
         self.addTopLevelItem(item)
@@ -93,7 +110,7 @@ class UserTree(QTreeWidget):
 
     def _update_alert(self, item: QTreeWidgetItem, user_id: str, glucose: float) -> None:
         """Show a LOW/HIGH badge beside the user's name when out of the target range."""
-        base = f"#{self._ids.get(user_id, 0)}  {user_id}"
+        base = f"#{self._ids.get(user_id, 0)}  {self.label_of(user_id)}"
         if glucose < self._thresholds["tbr1_below"]:
             item.setText(0, f"{base}   ▼ LOW")
             item.setForeground(0, QBrush(QColor("#c0392b")))
@@ -109,7 +126,7 @@ class UserTree(QTreeWidget):
         item = self._items.get(user_id)
         if item is None:
             return
-        base = f"#{self._ids.get(user_id, 0)}  {user_id}"
+        base = f"#{self._ids.get(user_id, 0)}  {self.label_of(user_id)}"
         if offline:
             item.setText(0, f"{base}   ⚊ offline")
             item.setForeground(0, QBrush(QColor("#7f8c8d")))
