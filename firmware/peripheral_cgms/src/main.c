@@ -64,6 +64,21 @@ static struct bt_conn *g_conn[MAX_SIM_SENSORS]; /* per-identity active central *
 static struct k_work adv_work;
 static atomic_t adv_pending; /* bit i set => (re)start g_adv[i] from adv_work */
 
+/* Re-advertise backoff for links that die young. A central that connects and
+ * immediately hangs up (seen on hardware: this PC's Windows stack reconnecting
+ * to identity 1 roughly twice a second, reason 0x13, on state that survived
+ * unpairing and board resets) would otherwise get a fresh advertisement the
+ * instant it disconnects, and every one of those cycles spends connection
+ * events the other identities' links need. A link shorter than SHORT_LINK_MS
+ * doubles the delay before that identity advertises again (capped); a link
+ * that survives resets it, so a real client is never slowed down. */
+#define SHORT_LINK_MS       2000
+#define ADV_BACKOFF_BASE_MS 1000
+#define ADV_BACKOFF_MAX_MS  30000
+static int64_t g_link_start_ms[MAX_SIM_SENSORS];
+static uint8_t g_short_links[MAX_SIM_SENSORS];
+static struct k_work_delayable g_adv_retry[MAX_SIM_SENSORS];
+
 /* Per-identity scan-response name. For N == 1 this is exactly
  * CONFIG_BT_DEVICE_NAME (no suffix) so the single-sensor build advertises the
  * same name it always has; for N > 1 each identity gets a trailing index the
@@ -141,6 +156,13 @@ static void arm_adv(int i)
 {
 	atomic_or(&adv_pending, BIT(i));
 	k_work_submit(&adv_work);
+}
+
+static void adv_retry_handler(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+
+	arm_adv((int)(dwork - g_adv_retry));
 }
 
 static void advertising_work_handler(struct k_work *work)
@@ -221,6 +243,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	printk("Connected %s (identity %d)\n", addr, id);
 	g_conn[id] = conn;
+	g_link_start_ms[id] = k_uptime_get();
 	dk_set_led_on(APP_LED);
 
 	/* With up to N_SENSORS links open at once, the radio cannot service them
@@ -268,7 +291,23 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	if (!any_connected()) {
 		dk_set_led_off(APP_LED);
 	}
-	arm_adv(id);
+
+	if (k_uptime_get() - g_link_start_ms[id] >= SHORT_LINK_MS) {
+		g_short_links[id] = 0;
+		arm_adv(id);
+		return;
+	}
+	if (g_short_links[id] < 16) {
+		g_short_links[id]++;
+	}
+	int64_t delay_ms = (int64_t)ADV_BACKOFF_BASE_MS << (g_short_links[id] - 1);
+
+	if (delay_ms > ADV_BACKOFF_MAX_MS) {
+		delay_ms = ADV_BACKOFF_MAX_MS;
+	}
+	printk("identity %d: short link #%u, re-advertising in %lld ms\n", id, g_short_links[id],
+	       delay_ms);
+	k_work_reschedule(&g_adv_retry[id], K_MSEC(delay_ms));
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
@@ -333,11 +372,34 @@ static void cgms_session_state_changed(struct bt_cgms *cgms, const bool state)
 	printk("CGMS session %s.\n", state ? "starts" : "stops");
 }
 
+/* Address generation for the secondary identities. Bumping it moves every
+ * secondary identity to a fresh address, which a host treats as a brand-new
+ * device: whatever it cached for the old address (GATT service device nodes,
+ * pairing records) can no longer be reached, because nothing advertises there
+ * any more. Bumped 0x9E -> 0x9F after this PC's Windows stack kept
+ * reconnecting to identity 1's old address twice a second on stale state that
+ * survived unpairing, a pnputil removal and board resets. */
+#define SECONDARY_ID_ADDR_GEN 0x9F
+
+static void secondary_identity_addr(size_t i, bt_addr_le_t *addr)
+{
+	addr->type = BT_ADDR_LE_RANDOM;
+	addr->a.val[0] = 0xA0 + (uint8_t)i;
+	addr->a.val[1] = SECONDARY_ID_ADDR_GEN;
+	addr->a.val[2] = 0x2C;
+	addr->a.val[3] = 0x5B;
+	addr->a.val[4] = 0x11;
+	addr->a.val[5] = 0xC0 | (uint8_t)i; /* MSB 11xxxxxx => static random */
+}
+
 /* Creates the N_SENSORS - 1 secondary BLE identities (identity 0 is the
  * factory default). Each gets a stable static random address (top two MSB
  * bits 11), deterministic so a host re-pairs to the same address after a
- * board reboot. Skips identities that already exist (CONFIG_BT_SETTINGS
- * restores them across reboots). No-op when N_SENSORS == 1. */
+ * board reboot. CONFIG_BT_SETTINGS restores identities across reboots, so an
+ * already-stored identity whose address no longer matches is re-addressed with
+ * bt_id_reset() (which also drops its pairing keys) — without that, changing
+ * SECONDARY_ID_ADDR_GEN would do nothing on an already-provisioned board.
+ * No-op when N_SENSORS == 1. */
 static void create_identities(void)
 {
 	bt_addr_le_t ids[CONFIG_BT_ID_MAX];
@@ -345,20 +407,21 @@ static void create_identities(void)
 
 	bt_id_get(ids, &count);
 
-	for (size_t i = count; i < N_SENSORS; i++) {
-		bt_addr_le_t addr = { .type = BT_ADDR_LE_RANDOM };
+	for (size_t i = 1; i < N_SENSORS; i++) {
+		bt_addr_le_t addr;
 
-		addr.a.val[0] = 0xA0 + (uint8_t)i;
-		addr.a.val[1] = 0x9E;
-		addr.a.val[2] = 0x2C;
-		addr.a.val[3] = 0x5B;
-		addr.a.val[4] = 0x11;
-		addr.a.val[5] = 0xC0 | (uint8_t)i; /* MSB 11xxxxxx => static random */
+		secondary_identity_addr(i, &addr);
+		if (i >= count) {
+			int id = bt_id_create(&addr, NULL);
 
-		int id = bt_id_create(&addr, NULL);
+			if (id < 0) {
+				printk("bt_id_create(%zu) failed (err %d)\n", i, id);
+			}
+		} else if (!bt_addr_le_eq(&ids[i], &addr)) {
+			int err = bt_id_reset((uint8_t)i, &addr, NULL);
 
-		if (id < 0) {
-			printk("bt_id_create(%zu) failed (err %d)\n", i, id);
+			printk("identity %zu: re-addressed to generation 0x%02X (err %d)\n", i,
+			       SECONDARY_ID_ADDR_GEN, err < 0 ? err : 0);
 		}
 	}
 
@@ -441,6 +504,9 @@ int main(void)
 	}
 
 	k_work_init(&adv_work, advertising_work_handler);
+	for (int i = 0; i < N_SENSORS; i++) {
+		k_work_init_delayable(&g_adv_retry[i], adv_retry_handler);
+	}
 
 	struct bt_le_adv_param adv_param = BT_LE_ADV_PARAM_INIT(
 		BT_LE_ADV_OPT_CONN, BT_GAP_ADV_FAST_INT_MIN_2, BT_GAP_ADV_FAST_INT_MAX_2, NULL);
