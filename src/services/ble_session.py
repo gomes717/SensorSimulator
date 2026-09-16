@@ -292,6 +292,16 @@ class BleSession(QThread):
         """Connect, subscribe to notifications, and idle until interruption is requested."""
         try:
             asyncio.run(self._session())
+        except asyncio.CancelledError:
+            # The WinRT backend cancels an in-flight GATT operation when the
+            # link drops mid service discovery (the congested 3rd/4th link
+            # again). CancelledError derives from BaseException, so the broad
+            # `except Exception` below never saw it: it escaped QThread.run()
+            # as an unhandled traceback and the session died silently, without
+            # ever telling the UI the connection had failed.
+            self.connect_failed.emit(
+                self._address, "link dropped during service discovery — try connecting again"
+            )
         except Exception as exc:  # pylint: disable=broad-except
             self.connect_failed.emit(self._address, str(exc))
         finally:
@@ -374,6 +384,20 @@ class BleSession(QThread):
             # for a relaxed 30-50 ms interval on connect (firmware main.c); a
             # couple of spaced retries give that update time to land and the
             # radio time to free up.
+            # A nameless connection (the scan returned no advertised name) has no
+            # identity to demux by, so it would subscribe to every CGMS instance
+            # and tag them all as the same row — four sensors' readings woven
+            # into one sawtooth trace. Pin it to the first instance: one
+            # coherent sensor beats four interleaved.
+            if not self._name and instance_index > 0:
+                want_chars = [
+                    c
+                    for c in want_chars
+                    if c.uuid.lower() != CGM_MEASUREMENT_UUID
+                    or self._instance_by_handle.get(c.handle) == 0
+                ]
+                self._own_instance_index = 0
+
             # CGM Measurement first: it is the only one that produces the trace,
             # and on the 3rd/4th link every start_notify that fails costs a GATT
             # timeout — so any characteristic subscribed ahead of it delays the
@@ -605,14 +629,21 @@ class BleSession(QThread):
                 lambda s, t: self.csv_upload_progress.emit(self._address, s, t),
             )
             self.csv_upload_finished.emit(self._address, True, f"CSV uploaded ({total} bytes)")
-        except Exception as exc:  # pylint: disable=broad-except
+        except (Exception, asyncio.CancelledError) as exc:  # pylint: disable=broad-except
+            # CancelledError is listed on purpose: it derives from BaseException,
+            # and this coroutine runs detached via run_coroutine_threadsafe, so
+            # anything it does not catch is swallowed by a Future nobody awaits.
+            # The upload would then never report finishing and the UI would sit
+            # on "Uploading CSV..." forever.
             ctrl = self._config_characteristics.get("csv_control")
             if ctrl is not None and self._client is not None:
                 with contextlib.suppress(Exception):
                     await self._client.write_gatt_char(
                         ctrl, protocol.encode_csv_abort(), response=True
                     )
-            self.csv_upload_finished.emit(self._address, False, str(exc))
+            self.csv_upload_finished.emit(
+                self._address, False, str(exc) or "link dropped mid-upload"
+            )
 
     # ------------------------------------------------------------------
     # Board layout push — write every slot's per-sensor config in one go
@@ -680,8 +711,13 @@ class BleSession(QThread):
             self.board_layout_finished.emit(
                 self._address, True, f"Layout applied to {total} slot(s)"
             )
-        except Exception as exc:  # pylint: disable=broad-except
-            self.board_layout_finished.emit(self._address, False, str(exc))
+        except (Exception, asyncio.CancelledError) as exc:  # pylint: disable=broad-except
+            # Detached coroutine, same as _do_csv_upload: an uncaught
+            # CancelledError would leave the caller waiting on a signal that
+            # never arrives.
+            self.board_layout_finished.emit(
+                self._address, False, str(exc) or "link dropped mid-push"
+            )
 
     def _user_id(self) -> str:
         """Return a display identifier that stays unique across connected devices.

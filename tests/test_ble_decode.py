@@ -96,3 +96,28 @@ def test_food_exercise_status_for_another_slot_is_ignored():
     frame = struct.pack("<BBff", 3, 0, 1.5, 0.0)  # u8 slot, u8 pad, f32 carbs/min, f32 ex%
     assert _msg(_decode(ble_uuids.FOOD_EXERCISE_STATUS_UUID, frame, own=3))["slot"] == 3
     assert _decode(ble_uuids.FOOD_EXERCISE_STATUS_UUID, frame, own=1).kind == "ignore"
+
+
+def test_a_nameless_connection_pinned_to_one_instance_keeps_the_others_out():
+    """Without an advertised name a session has no identity to demux by. Pinned
+    to instance 0 it must drop the sibling instances rather than tag every
+    slot's reading as the same row (which plots as one sawtooth trace)."""
+    from services.ble_session import CGM_MEASUREMENT_UUID, decode_notification
+
+    payload = bytes([6, 0, 0x6E, 0x00, 0, 0])
+    kwargs = {
+        "user_id": "D0:3F:4D:E2:7C:9B",
+        "dev_id": "D0:3F:4D:E2:7C:9B",
+        "own_instance_index": 0,
+        "instance_count": 4,
+    }
+
+    assert (
+        decode_notification(CGM_MEASUREMENT_UUID, payload, instance_of_handle=0, **kwargs).kind
+        == "message"
+    )
+    for other in (1, 2, 3):
+        result = decode_notification(
+            CGM_MEASUREMENT_UUID, payload, instance_of_handle=other, **kwargs
+        )
+        assert result.kind == "ignore"

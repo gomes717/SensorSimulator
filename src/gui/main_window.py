@@ -448,6 +448,18 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         session.request_read("data_source")
         session.request_read("person")
 
+    def _drop_expected_line(self, slot: int) -> None:
+        """Discard the expected-model curve drawn for *slot* before the board
+        revealed it is replaying a CSV — there is no model behind that trace."""
+        history = self._history.get(self._slot_user_id(slot))
+        if history is not None:
+            history["ex_gx"].clear()
+            history["ex_gy"].clear()
+        if not self._per_slot_expected:
+            self._graph.buf.expected_x.clear()
+            self._graph.buf.expected_y.clear()
+        self._graph.redraw_glucose()
+
     def _board_mode_label(self, slot: int | None) -> str | None:
         """What the board last reported *slot* is running, or None if unknown.
 
@@ -468,7 +480,10 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if slot is None:
             return
         if char_key == "data_source":
-            self._board_is_csv[slot] = bool(protocol.decode_data_source(data))
+            is_csv = bool(protocol.decode_data_source(data))
+            if is_csv and not self._board_is_csv.get(slot):
+                self._drop_expected_line(slot)  # whatever the model already drew is meaningless
+            self._board_is_csv[slot] = is_csv
         elif char_key == "person":
             decoded = protocol.decode_person_config(data)
             if decoded is not None:
@@ -1007,6 +1022,13 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self, slot: int, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
     ) -> None:
         """Consume one tick from slot *slot*'s engine in the pool."""
+        if self._board_is_csv.get(slot):
+            # The board told us this slot is replaying a recording, so there is
+            # no model behind its trace and nothing for an "expected model" line
+            # to mean. The app's own profile for the slot may still say model
+            # (that is how the two disagree in the first place), so this has to
+            # key off the board's answer, not the profile.
+            return
         g = self._graph
         t = g.elapsed_seconds(timestamp)
         if self._model_only:
@@ -1024,8 +1046,8 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             if self._slot_user_id(slot) == self._selected_user:
                 g.redraw_glucose()
         else:
-            g.expected_x.append(t)
-            g.expected_y.append(glucose)
+            g.buf.expected_x.append(t)
+            g.buf.expected_y.append(glucose)
             g.redraw_glucose()
 
     # ------------------------------------------------------------------
