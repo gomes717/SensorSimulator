@@ -45,5 +45,7 @@ MANIFEST
 scratchpad_ui/
 # E2E harness run artifacts (docs/E2E_TEST_PLAN.md)
 test-artifacts/
+# BLE soak run artifacts (scripts/ble_soak.py --out)
+.scratch/soak/
 # Added by code-review-graph
 .code-review-graph/
