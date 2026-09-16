@@ -447,8 +447,20 @@ int main(void)
 	struct bt_cgms_init_param params = {
 		.type = BT_CGMS_FEAT_TYPE_CAP_PLASMA,
 		.sample_location = BT_CGMS_FEAT_LOC_FINGER,
-		/* The session will run 1 hour. */
-		.session_run_time = 1,
+		/* CGMS session length, in HOURS (cgms.c: k_timer_start(...,
+		 * K_HOURS(srt))). When it expires, stop_session() latches
+		 * CGMS_STATUS_POS_SESSION_STOPPED and the instance goes silent for
+		 * good: bt_cgms_measurement_add() returns -ENOENT and report_meas()
+		 * stops rescheduling itself. Nothing restarts it — the only place
+		 * that clears the bit is bt_cgms_init() — so the board keeps
+		 * advertising, keeps accepting connections and keeps running its
+		 * model while never notifying another measurement, which reads as
+		 * "the sensor connects but sends no data" and needs a reboot to
+		 * clear. This was 1 hour, which is shorter than a long bench run
+		 * (and far shorter than an overnight soak: see scripts/ble_soak.py).
+		 * A week is past any plausible session; the simulator has no reason
+		 * to model sensor end-of-life. */
+		.session_run_time = 24 * 7,
 		/* cgms.c has been patched to interpret this field in seconds
 		 * instead of minutes, for faster bench testing; actual push
 		 * cadence is driven by comm_thread/model_thread, not this
