@@ -34,6 +34,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 os.chdir(_ROOT)
 
+import userdata_guard
+
 # Reuse the single-sensor harness's capture + case machinery verbatim.
 from e2e import (
     SERIAL_PORT,
@@ -52,7 +54,6 @@ from PyQt6.QtWidgets import QApplication
 
 import gui.main_window as mw
 from api import protocol
-from gui.board_layout_window import BoardLayoutWindow
 from models import (
     cambridge,
     deichmann,
@@ -61,7 +62,7 @@ from models import (
     uva_padova,
 )
 from models import sensors as sensor_defaults
-from models.board_layout import BoardLayout
+from models.engine import load_csv_window
 from models.types import ModelId, PersonProfile, SensorId, SensorProfile
 from services.ble_session import BleSession
 
@@ -309,27 +310,12 @@ class FourCtx(Ctx):
     # -- layout push -----------------------------------------------
 
     def push_layout(self, c: Case, assign: list[tuple], persons: dict, sensors: dict) -> None:
-        """`assign` is [(slot, person_key, sensor_key), ...]. Builds the real
-        BoardLayoutWindow, calls _build_slots(), pushes via send_board_layout()."""
-        plist = list(persons.values())
-        slist = list(sensors.values())
-        layout = BoardLayout()
+        """`assign` is [(slot, person_key, sensor_key), ...]. Builds each slot's
+        write list (see build_slot) and pushes via the real send_board_layout()."""
+        slots = []
         for slot, pk, sk in assign:
-            layout.slots[slot].person = persons[pk].name
-            layout.slots[slot].sensor = sensors[sk].name
-
+            slots.append(build_slot(slot, persons[pk], sensors[sk]))
         sess = self.cfg_session()
-        stub_bt = type(
-            "BT",
-            (),
-            {
-                "sessions": lambda _s: dict.fromkeys([sess._address], sess),
-                "display_name": lambda _s, _a: "cfg",
-            },
-        )()
-        win = BoardLayoutWindow(plist, slist, layout, lambda: None, lambda: stub_bt)
-        slots, errs = win._build_slots()
-        c.assert_(not errs, "layout builds without errors", "; ".join(errs))
         c.assert_(len(slots) == len(assign), f"{len(assign)} slot entries built", str(len(slots)))
 
         done = {"v": None}
@@ -340,6 +326,33 @@ class FourCtx(Ctx):
             QTest.qWait(150)
         c.assert_(done["v"] is not None, "layout push finished", "timeout")
         c.assert_(done["v"][0], "layout push OK", str(done["v"]))
+
+
+def build_slot(slot: int, person: PersonProfile, sensor: SensorProfile) -> dict:
+    """One send_board_layout() entry for *slot*: the same ordered writes the app
+    sends for a patient + sensor (config, data source, food and exercise events,
+    and the CSV tracks when the patient replays a CSV). The Board Layout window
+    that used to build these is gone; this keeps the harness on the session API
+    that is still the real push path."""
+    is_csv = getattr(person, "data_source", "model") == "csv"
+    writes: list[tuple[str, bytes]] = [
+        ("person", protocol.encode_person_config(person.model_id, person.params)),
+        ("sensor", protocol.encode_sensor_config(sensor.sensor_id, sensor.params)),
+        ("data_source", protocol.encode_data_source(is_csv)),
+        ("food", protocol.encode_clear_food()),
+        *(("food", protocol.encode_food_event(ev)) for ev in person.food_events),
+        ("exercise", protocol.encode_clear_exercise()),
+        *(("exercise", protocol.encode_exercise_event(ev)) for ev in person.exercise_events),
+    ]
+    csv_entry = None
+    if is_csv:
+        samples, interval_s, foodlog = load_csv_window(person)
+        csv_entry = {
+            "uploads": protocol.build_csv_uploads(
+                samples, interval_s, foodlog, person.csv_window_start_iso
+            )
+        }
+    return {"slot": slot, "writes": writes, "csv": csv_entry}
 
 
 # ----------------------------------------------------------------------
@@ -1235,6 +1248,7 @@ CASES = [
 
 
 def run_once(args) -> int:
+    saved_userdata = userdata_guard.snapshot()
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%SZ")
     run_dir = Path(args.out) / f"4sensor-{run_id}"
     (run_dir / "cases").mkdir(parents=True, exist_ok=True)
@@ -1318,13 +1332,7 @@ def run_once(args) -> int:
         ctx.stop_sessions()
         if tap:
             tap.stop()
-        subprocess.run(
-            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-            cwd=str(_ROOT),
-            check=False,
-        )
-        # not git-tracked — a case may create it; leave the tree clean
-        (_ROOT / "data" / "board_layout.json").unlink(missing_ok=True)
+        userdata_guard.restore(saved_userdata)
 
     counts: dict[str, int] = {}
     for _cid, _s, verdict, _n in ctx.results:

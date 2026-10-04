@@ -35,6 +35,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 os.chdir(_ROOT)
 
+import userdata_guard
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog
@@ -1155,6 +1156,7 @@ def _git_sha(path: str) -> str:
 
 
 def run_once(args) -> int:
+    saved_userdata = userdata_guard.snapshot()
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%SZ")
     run_dir = Path(args.out) / run_id
     (run_dir / "cases").mkdir(parents=True, exist_ok=True)
@@ -1260,11 +1262,7 @@ def run_once(args) -> int:
         ctx.stop_sessions()
         if tap:
             tap.stop()
-        subprocess.run(
-            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-            cwd=str(_ROOT),
-            check=False,
-        )
+        userdata_guard.restore(saved_userdata)
 
     counts: dict[str, int] = {}
     for _cid, _suite, verdict, _note in ctx.results:

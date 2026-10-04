@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -37,6 +36,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 os.chdir(_ROOT)
 
+import userdata_guard
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog
@@ -438,6 +438,7 @@ def scenario_F_view_window(w):
 
 def main() -> int:
     global _out
+    saved_userdata = userdata_guard.snapshot()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -478,11 +479,7 @@ def main() -> int:
             scenario_F_view_window(w)
     finally:
         # the assign/config/speed/window steps persist to data/ — restore it
-        subprocess.run(
-            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-            cwd=str(_ROOT),
-            check=False,
-        )
+        userdata_guard.restore(saved_userdata)
         try:
             if w._bluetooth_window is not None:
                 w._bluetooth_window.stop_all_sessions()
