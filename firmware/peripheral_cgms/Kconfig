@@ -35,6 +35,23 @@ config APP_CGMS_NO_AUTH
 	  the link. Single-sensor builds default off and keep the real security
 	  model (identity 0 pairs fine).
 
+config APP_CGMS_STAGGER_NOTIFY
+	bool "Round-robin the CGMS instances' periodic notifications"
+	default y if APP_SENSOR_COUNT > 1
+	default n
+	help
+	  Normally every instance's report_meas work item fires at
+	  the same instant each comm_interval (they are all initialised back to
+	  back at boot), so the N measurement notifications hit the controller
+	  as one burst. When set, instance k is delayed by k/N of a comm_interval
+	  (N = BT_CGMS_INSTANCE_COUNT), spreading them across the interval.
+
+	  Defaults on for multi-sensor builds. Measured on hardware 2026-10-03
+	  (scripts/ble_ab_batch.py, two-minute runs, 4 sensors connected at once):
+	  with this on, no sensor went silent in 12 of 12 runs; with it off,
+	  Sensor 4 accepted start_notify and then never notified in 12 of 12
+	  runs. Only connecting Sensor 4 first on its own avoided it.
+
 endmenu
 
 source "Kconfig.zephyr"

@@ -32,10 +32,14 @@ $logPath = Join-Path $Out "serial-$stamp.log"
 Write-Host "Logging $Port at $BaudRate for $([math]::Round($duration/3600,2)) h -> $logPath"
 Write-Host "(Ctrl-C to stop early.)"
 
-$port = New-Object System.IO.Ports.SerialPort $Port, $BaudRate, None, 8, one
-$port.ReadTimeout = 2000
+# NOTE: the serial port object is deliberately NOT called $port. PowerShell
+# variable names are case-insensitive, so $port and the -Port parameter are one
+# and the same variable, and the object assignment silently left a [String]
+# behind -- .Open() then failed with "does not contain a method named 'Open'".
+$sp = New-Object System.IO.Ports.SerialPort $Port, $BaudRate, None, 8, one
+$sp.ReadTimeout = 2000
 try {
-    $port.Open()
+    $sp.Open()
 } catch {
     Write-Host "Could not open ${Port}: $($_.Exception.Message)"
     Write-Host "Another reader (a serial monitor, or an earlier run) may still hold it."
@@ -50,7 +54,7 @@ $counts = @{ connected = 0; disconnected = 0; pushed = 0; backoff = 0 }
 try {
     while ($sw.Elapsed.TotalSeconds -lt $duration) {
         try {
-            $line = $port.ReadLine()
+            $line = $sp.ReadLine()
         } catch {
             continue  # read timeout: the board is simply quiet right now
         }
@@ -62,7 +66,7 @@ try {
         elseif ($line -match 'short link')    { $counts.backoff++ }
     }
 } finally {
-    $port.Close()
+    $sp.Close()
     $summary = @(
         "",
         "--- serial soak summary ---",

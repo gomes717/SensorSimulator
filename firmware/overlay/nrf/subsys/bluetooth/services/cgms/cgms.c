@@ -582,7 +582,18 @@ int bt_cgms_init(const struct bt_cgms_init_param *init_params, struct bt_cgms **
 	}
 
 	k_work_init_delayable(&cgms->report_meas_work, report_meas);
-	rc = k_work_reschedule(&cgms->report_meas_work, K_SECONDS(cgms->comm_interval));
+	k_timeout_t first_report = K_SECONDS(cgms->comm_interval);
+
+#if defined(CONFIG_APP_CGMS_STAGGER_NOTIFY)
+	/* Round-robin the instances inside one comm_interval: instance k first
+	 * reports k/N of an interval late. report_meas() reschedules relative to
+	 * its own run, so this phase offset is kept for the whole session.
+	 */
+	first_report = K_MSEC((uint32_t)cgms->comm_interval * 1000U *
+			      (cgms_inst_cnt - 1) / CONFIG_BT_CGMS_INSTANCE_COUNT +
+			      (uint32_t)cgms->comm_interval * 1000U);
+#endif
+	rc = k_work_reschedule(&cgms->report_meas_work, first_report);
 	if (rc < 0) {
 		LOG_WRN("Cannot schedule notification task.");
 		return rc;
