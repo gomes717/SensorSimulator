@@ -55,6 +55,17 @@ def _stamp() -> str:
 
 
 @dataclass
+class Churn:
+    """--churn-s bookkeeping for one identity, plus the live link it drops."""
+
+    drops: int = 0
+    recovered: int = 0
+    failed: int = 0
+    recovery_s: list[float] = field(default_factory=list)
+    link: BleakClient | None = None
+
+
+@dataclass
 class SensorStats:
     """Everything one identity did during the run."""
 
@@ -72,6 +83,7 @@ class SensorStats:
     intervals: list[float] = field(default_factory=list)
     gaps: list[tuple[str, float]] = field(default_factory=list)
     last_notify: float | None = None
+    churn: Churn = field(default_factory=Churn)
 
     def note_notification(self, gap_threshold: float, log) -> None:
         now = _now()
@@ -254,6 +266,7 @@ async def _one_connection(
     winrt_args = {"use_cached_services": False} if args.no_cache else {}
     async with BleakClient(stats.address, timeout=args.connect_timeout, winrt=winrt_args) as client:
         stats.connects += 1
+        stats.churn.link = client
         log("connected", stats.name, address=stats.address)
         try:
             char = await _subscribe(client, stats, slot, args, log)
@@ -271,6 +284,7 @@ async def _one_connection(
                     release.set()
                 await _hold_until(client, char, stats, args, log, deadline)
         finally:
+            stats.churn.link = None
             stats.connected_seconds += _now() - connected_at
             stats.disconnects += 1
             log("disconnected", stats.name, held_s=round(_now() - connected_at, 1))
@@ -398,6 +412,11 @@ def summarise(sensors: list[SensorStats], elapsed: float) -> str:
             f"  disconnects      : {s.disconnects}",
             f"  gaps over thresh : {len(s.gaps)}",
         ]
+        if s.churn.drops:
+            lines.append(
+                f"  churn            : {s.churn.drops} drops, {s.churn.recovered} recovered,"
+                f" {s.churn.failed} failed, recovery s {s.churn.recovery_s}"
+            )
         lines += [f"      {when}  {secs:.1f}s" for when, secs in s.gaps[:20]]
         if len(s.gaps) > 20:
             lines.append(f"      ... {len(s.gaps) - 20} more")
@@ -422,6 +441,11 @@ def result_dict(sensors: list[SensorStats], elapsed: float, args) -> dict:
                 "resubscribes": s.resubscribes,
                 "polls_with_data": s.polls_with_data,
                 "gaps": len(s.gaps),
+                "worst_gap_s": round(max((g for _, g in s.gaps), default=0.0), 1),
+                "churns": s.churn.drops,
+                "churn_recovered": s.churn.recovered,
+                "churn_failed": s.churn.failed,
+                "churn_recovery_s": s.churn.recovery_s,
                 "uptime_pct": round(100.0 * s.connected_seconds / elapsed, 1) if elapsed else 0.0,
             }
             for s in sensors
@@ -518,6 +542,20 @@ def parse_args() -> argparse.Namespace:
         " concurrent connection is broken' (default: all)",
     )
     ap.add_argument(
+        "--churn-s",
+        type=float,
+        default=0.0,
+        help="every this many seconds drop ONE sensor's link (rotating) and time how"
+        " long it takes to stream again, while the others keep going; 0 = off",
+    )
+    ap.add_argument(
+        "--churn-recovery-s",
+        type=float,
+        default=120.0,
+        help="a dropped sensor that is not streaming again after this long counts as"
+        " a failed recovery (default: 120)",
+    )
+    ap.add_argument(
         "--label",
         default="",
         help="free-text tag stored in the JSON result (e.g. the firmware variant),"
@@ -546,6 +584,45 @@ async def _snapshot_loop(sensors: list[SensorStats], started: float, path: Path,
     while True:
         await asyncio.sleep(every_s)
         path.write_text(summarise(sensors, _now() - started), encoding="utf-8")
+
+
+async def _churn_loop(sensors: list[SensorStats], args, log, deadline: float) -> None:
+    """Drop one sensor's link every --churn-s, rotating, and time its recovery.
+
+    Mirrors what the app does when a link is lost: the harness reconnects and
+    re-subscribes on its own. The point is the bystanders — a reconnect on one
+    identity must not stall the others — and the dropped sensor's time back to
+    its first notification. Stops early enough that the last drop can recover.
+    """
+    turn = 0
+    while True:
+        await asyncio.sleep(args.churn_s)
+        if _now() > deadline - args.churn_recovery_s - 10:
+            return
+        target = sensors[turn % len(sensors)]
+        turn += 1
+        client = target.churn.link
+        if client is None or not client.is_connected:
+            log("churn_skipped", target.name, reason="not connected")
+            continue
+        target.churn.drops += 1
+        log("churn", target.name)
+        try:
+            await client.disconnect()
+        except (Exception, asyncio.CancelledError) as exc:
+            log("churn_disconnect_error", target.name, error=str(exc) or type(exc).__name__)
+        before = target.notifications
+        dropped_at = _now()
+        while _now() - dropped_at < args.churn_recovery_s and target.notifications <= before:
+            await asyncio.sleep(1.0)
+        took = _now() - dropped_at
+        if target.notifications > before:
+            target.churn.recovered += 1
+            target.churn.recovery_s.append(round(took, 1))
+            log("churn_recovered", target.name, seconds=round(took, 1))
+        else:
+            target.churn.failed += 1
+            log("churn_failed", target.name, waited_s=round(took, 1))
 
 
 async def _timeout_release(event: asyncio.Event, cap_s: float) -> None:
@@ -578,23 +655,24 @@ async def run(args, log, summary_path: Path) -> tuple[list[SensorStats], float]:
     tasks = []
     for i, s in enumerate(connect_order):
         if args.serialize_first and i == 0:
-            tasks.append(
-                soak_one(s, _slot_of(s.name), deadline, args, log, release=gate)
-            )
+            tasks.append(soak_one(s, _slot_of(s.name), deadline, args, log, release=gate))
         else:
             delay = 0.0 if args.serialize_first else i * args.stagger_s
             tasks.append(
-                soak_one(
-                    s, _slot_of(s.name), deadline, args, log, start_delay=delay, wait_for=gate
-                )
+                soak_one(s, _slot_of(s.name), deadline, args, log, start_delay=delay, wait_for=gate)
             )
     snapshot = asyncio.create_task(
         _snapshot_loop(sensors, started, summary_path, args.snapshot_minutes * 60)
     )
+    churn = None
+    if args.churn_s > 0:
+        churn = asyncio.create_task(_churn_loop(sensors, args, log, deadline))
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         snapshot.cancel()
+        if churn is not None:
+            churn.cancel()
         if watchdog is not None:
             watchdog.cancel()
     return sensors, _now() - started
