@@ -181,6 +181,7 @@ class BluetoothWindow(QWidget):
         )
         session.connected.connect(self._on_connected)
         session.connect_failed.connect(self._on_connect_failed)
+        session.link_silent.connect(self._on_link_silent)
         session.disconnected.connect(self._on_disconnected)
         session.disconnected.connect(self._ble_log.note_disconnected)
         session.new_message.connect(self._ble_log.add_message)
@@ -244,6 +245,22 @@ class BluetoothWindow(QWidget):
         """Report a failed connection attempt."""
         self._set_status_cell(address, "Failed")
         self._status.setText(f"Failed to connect to {address}: {error}")
+
+    def _on_link_silent(self, address: str, silent: bool) -> None:
+        """Show a link that is up but delivering nothing, and clear it when data resumes.
+
+        The row would otherwise read "Connected" while the sensor never draws a
+        point — the failure that is invisible from connection state alone."""
+        label = self._names.get(address, address)
+        if silent:
+            self._set_status_cell(address, "No data")
+            self._status.setText(
+                f"{label} is connected but sending no measurements. The app keeps re-arming "
+                "its subscription; if it stays silent, disconnect and press Connect again."
+            )
+        else:
+            self._set_status_cell(address, "Connected")
+            self._status.setText(f"{label}: measurements are flowing again.")
 
     def _on_disconnected(self, address: str) -> None:
         """Report that a previously connected device disconnected."""

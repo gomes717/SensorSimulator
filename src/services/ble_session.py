@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from bleak import BleakClient
+from bleak.exc import BleakError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from api import ble_uuids, protocol
 from models import board_layout
+from services.silence_watchdog import Action, SilenceWatchdog
 
 # Standard Bluetooth SIG "Continuous Glucose Monitoring" service characteristics
 # (used e.g. by Nordic's peripheral_cgms sample). Recognised specially so the
@@ -223,14 +226,26 @@ class BleSession(QThread):
     csv_upload_finished = pyqtSignal(str, bool, str)  # address, ok, message
     board_layout_progress = pyqtSignal(str, int, int)  # address, slots_done, slots_total
     board_layout_finished = pyqtSignal(str, bool, str)  # address, ok, message
+    # address, silent: True when the CGM Measurement subscription has delivered
+    # nothing despite repeated re-arms; False once data flows again. See
+    # services/silence_watchdog.py.
+    link_silent = pyqtSignal(str, bool)
 
     def __init__(
-        self, address: str, name: str, parent=None, display_name: str | None = None
+        self,
+        address: str,
+        name: str,
+        parent=None,
+        display_name: str | None = None,
+        silence_limit_s: float | None = None,
     ) -> None:
         """*name* is the advertised BLE name (used for the per-slot demux + the
         pairing decision below — keep it verbatim). *display_name*, if given, is
         what the tree row / graph show instead (e.g. the assigned patient's
-        name); it does not affect any parsing."""
+        name); it does not affect any parsing. *silence_limit_s* overrides how
+        long a subscribed link may stay silent before the watchdog acts (the
+        default is four notification intervals); the hardware check uses a huge
+        value to measure a session without the watchdog."""
         super().__init__(parent)
         self._address = address
         self._name = name
@@ -283,6 +298,11 @@ class BleSession(QThread):
         # and touching the WinRT client object across threads marshals through
         # COM and can stall the UI for seconds.
         self._link_up = False
+        # Silent-subscribe watchdog: a notification every FAST_COMM_INTERVAL_SECONDS,
+        # so four missed in a row is a subscription that is not delivering.
+        self._watchdog = SilenceWatchdog(
+            silence_limit_s if silence_limit_s is not None else 4 * FAST_COMM_INTERVAL_SECONDS
+        )
 
     def stop(self) -> None:
         """Request the session to close the connection and end its run loop."""
@@ -419,6 +439,11 @@ class BleSession(QThread):
                     except Exception as exc:  # pylint: disable=broad-except
                         last_error = str(exc)
             subscribed_count = len(subscribed)
+            measurement_char = next(
+                (c for c in subscribed if c.uuid.lower() == CGM_MEASUREMENT_UUID), None
+            )
+            if measurement_char is not None:
+                self._watchdog.arm(time.monotonic())
 
             if subscribed_count == 0 and notify_count > 0 and pairing_error:
                 last_error = f"auto-pairing failed: {pairing_error}"
@@ -442,6 +467,7 @@ class BleSession(QThread):
             self.connected.emit(self._address, subscribed_count, notify_count, last_error)
 
             while not self.isInterruptionRequested():
+                await self._check_silence(client, measurement_char)
                 try:
                     char_key, payload = await asyncio.wait_for(self._write_queue.get(), timeout=0.2)
                 except TimeoutError:
@@ -466,6 +492,27 @@ class BleSession(QThread):
 
         self._link_up = False
         self.disconnected.emit(self._address)
+
+    async def _check_silence(self, client: BleakClient, measurement_char) -> None:
+        """Re-arm a subscription that has gone quiet, and tell the UI if that fails.
+
+        Re-arming is a stop/start_notify on the SAME connection: the minimal kick
+        for a stuck notification pipe, without throwing away a link that is not
+        actually broken. It does not always work (a silent 4th sensor stayed
+        silent through every re-arm on the stagger-off firmware), which is why
+        the user is told once it has failed a few times in a row.
+        """
+        action = self._watchdog.poll(time.monotonic())
+        if action is Action.NONE or measurement_char is None:
+            return
+        if action is Action.REPORT:
+            print(f"[ble] {self._user_id()}: connected but no measurements — link looks silent")
+            self.link_silent.emit(self._address, True)
+        try:
+            await client.stop_notify(measurement_char)
+            await client.start_notify(measurement_char, self._handle_notification)
+        except (BleakError, OSError, TimeoutError, asyncio.CancelledError) as exc:
+            print(f"[ble] {self._user_id()}: re-arming the subscription failed: {exc}")
 
     def exposes(self, char_key: str) -> bool:
         """True if the connected board exposes the config characteristic *char_key*
@@ -518,6 +565,10 @@ class BleSession(QThread):
         client can only be driven from the loop it was created on. Silently
         dropped if the session hasn't finished connecting yet.
         """
+        if char_key == "run_state" and payload:
+            # A stopped board sends nothing by design — keep that from reading
+            # as a silent link.
+            self._watchdog.set_running(payload[0] == protocol.RUN_STATE_RUNNING, time.monotonic())
         if self._loop is None:
             return
         self._loop.call_soon_threadsafe(self._write_queue.put_nowait, (char_key, payload))
@@ -708,6 +759,7 @@ class BleSession(QThread):
                 await self._layout_write(
                     run_state, protocol.encode_run_state(protocol.RUN_STATE_RUNNING)
                 )
+                self._watchdog.set_running(True, time.monotonic())
             self.board_layout_finished.emit(
                 self._address, True, f"Layout applied to {total} slot(s)"
             )
@@ -754,6 +806,8 @@ class BleSession(QThread):
             return
         if res.kind == "reset_sync":
             print(f"[ble] reset_sync from {self._user_id()}: gen={data[0] if data else '?'}")
+            # The board just re-applied its config; give the stream a moment.
+            self._watchdog.restart_clock(time.monotonic())
             self.reset_sync.emit(self._address)
             return
         if res.kind == "csv_control":
@@ -761,6 +815,11 @@ class BleSession(QThread):
             if res.csv_ctrl is not None:
                 self._csv_ctrl_queue.put_nowait(res.csv_ctrl)
             return
+        if characteristic.uuid.lower() == CGM_MEASUREMENT_UUID and self._watchdog.on_data(
+            time.monotonic()
+        ):
+            print(f"[ble] {self._user_id()}: measurements are flowing again")
+            self.link_silent.emit(self._address, False)
         msg = res.message or {}
         print(
             f"[ble] {msg.get('user_id')} <- {characteristic.uuid[-4:]}: "
