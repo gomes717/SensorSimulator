@@ -4,5 +4,6 @@
   "tar1_above": 180.0,
   "tar2_above": 250.0,
   "theme": "dark",
-  "speed_mult": 60.0
+  "speed_mult": 60.0,
+  "view_window_s": 21600
 }
