@@ -49,3 +49,6 @@ test-artifacts/
 .scratch/soak/
 # Added by code-review-graph
 .code-review-graph/
+# Long-run / overnight / watchdog test output (scripts/e2e_*_3sensor.py, scripts/e2e_overnight_3sensor.py)
+.scratch/*.log
+.scratch/overnight/
