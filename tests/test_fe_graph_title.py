@@ -51,7 +51,15 @@ def test_title_says_report_only_for_any_csv_person(win, model_only):
 
 def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
     """A multi-sensor board can mix a CSV slot and a model slot: the graph must
-    track whichever row is selected, not the single _active_person."""
+    track whichever row is selected, not the single _active_person.
+
+    Board-connected (not Model Only), so per gui/board_mode.py's policy this
+    must come from the BOARD's own confirmed answer, not the saved profile —
+    hence a fake session per slot (_selected_slot() needs one to resolve at
+    all) with win._board_mode populated directly for the answer itself.
+    """
+    from test_board_mode_fixes import _FakeBt, _FakeSession
+
     from models import board_layout as bl
 
     csv_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
@@ -61,14 +69,24 @@ def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
     win._board_layout = bl.BoardLayout(
         [bl.SlotAssignment(person="CSV Pt"), bl.SlotAssignment(person="Model Pt")]
     )
+    slot0_id, slot1_id = win._slot_user_id(0), win._slot_user_id(1)
+    win._bluetooth_window = _FakeBt(
+        {
+            "a": _FakeSession(slot_index=0, user_id=slot0_id),
+            "b": _FakeSession(slot_index=1, user_id=slot1_id),
+        }
+    )
+    win._board_mode._is_csv[0] = True
+    win._board_mode._model[1] = "Cambridge (Hovorka)"
 
-    win._on_user_selected(win._slot_user_id(0))
+    win._on_user_selected(slot0_id)
     assert win._graph.fe_canvas.isVisibleTo(win) is False
     assert "report-only" in win._fe_graph_title().lower()
 
-    win._on_user_selected(win._slot_user_id(1))
+    win._on_user_selected(slot1_id)
     assert win._graph.fe_canvas.isVisibleTo(win) is True
     assert win._fe_graph_title() == "Food / Exercise"
+    win._bluetooth_window = None
 
 
 # --- issue 14: CSV Analysis whole-recording metrics panel -----------------

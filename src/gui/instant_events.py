@@ -20,7 +20,16 @@ from models import board_layout as board_layout_mod
 
 
 class InstantEvents:
-    def __init__(self, engines, board, graph, board_layout, report=None, current_slot=None) -> None:
+    def __init__(
+        self,
+        engines,
+        board,
+        graph,
+        board_layout,
+        report=None,
+        current_slot=None,
+        record_pisa_span=None,
+    ) -> None:
         self._engines = engines
         self._board = board
         self._graph = graph
@@ -33,6 +42,16 @@ class InstantEvents:
         # Which sensor row the user is looking at, so an inserted event targets
         # that one by default instead of every slot at once.
         self._current_slot = current_slot or (lambda: None)
+        # Shades a PISA interval on the slot(s) it actually targets. Not just
+        # self._graph.add_pisa_span(): that always shades whatever row is
+        # currently on screen, which is wrong the moment the target slot isn't
+        # the one selected (see MainWindow._record_pisa_span).
+        self._record_pisa_span = record_pisa_span or self._add_pisa_span_directly
+
+    def _add_pisa_span_directly(self, _slot: int | None, t0: float, t1: float) -> None:
+        """Fallback when no per-slot router is given: shade the graph directly."""
+        self._graph.add_pisa_span(t0, t1)
+        self._graph.redraw_glucose()
 
     # ------------------------------------------------------------------
     # Injection (also the scenario-runner entry points)
@@ -73,10 +92,11 @@ class InstantEvents:
         )
         self._report(self._outcome(f"PISA {depth_frac:.0%} for {duration_min} min", sent))
         # Shade the affected interval: the graph x-axis is *simulated* seconds
-        # now, so a sim-minute duration is just * 60.
+        # now, so a sim-minute duration is just * 60. Routed by slot — see
+        # _record_pisa_span — so a fault sent to one sensor doesn't shade
+        # every open sensor's graph.
         t0 = self._graph.elapsed_seconds(datetime.now(UTC).isoformat(timespec="seconds"))
-        self._graph.add_pisa_span(t0, t0 + duration_min * 60.0)
-        self._graph.redraw_glucose()
+        self._record_pisa_span(slot, t0, t0 + duration_min * 60.0)
 
     def _outcome(self, what: str, sent: int) -> str:
         if not self._board.connected():

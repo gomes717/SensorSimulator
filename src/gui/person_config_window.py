@@ -318,6 +318,13 @@ class PersonConfigWindow(QWidget):
             return
         payload = protocol.encode_person_config(profile.model_id, profile.params)
         session.queue_write("person", payload)
+        # A slot previously sent a CSV keeps its data_source characteristic set
+        # to CSV until something explicitly clears it — sending fresh model
+        # params alone does NOT switch the board off CSV playback, so it would
+        # keep replaying the recording with the new params sitting unused. The
+        # CSV path always sets data_source=True on upload (see
+        # DataSourceGroup.send_csv); this is the missing other half.
+        session.queue_write("data_source", protocol.encode_data_source(False))
         restart_board(session)
         await_send_confirmation(
             session,

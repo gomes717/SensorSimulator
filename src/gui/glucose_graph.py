@@ -56,6 +56,11 @@ class _Buffers:
     food_ex_x: list[float] = field(default_factory=list)
     food_ex_carbs_y: list[float] = field(default_factory=list)
     food_ex_exercise_y: list[float] = field(default_factory=list)
+    # PISA-shaded intervals (t_start_s, t_end_s) for whichever user this buffer
+    # is currently bound to — per-user like the rest of _Buffers, not a single
+    # graph-wide list, so a fault inserted for one sensor doesn't shade every
+    # other sensor's graph too (see MainWindow._record_pisa_span).
+    pisa_spans: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -107,8 +112,8 @@ class GlucoseGraph:
         self._fe_title = fe_title or (lambda: "Food / Exercise")
 
         self.buf = _Buffers()
-        # PISA-shaded intervals (t_start_s, t_end_s) in graph time + their patches.
-        self.pisa_spans: list[tuple[float, float]] = []
+        # Drawn matplotlib patches for buf.pisa_spans (graph time), rebuilt
+        # wholesale on every _draw_pisa_spans() call.
         self.pisa_patches: list = []
         self.visible_xlim: tuple[float, float] | None = None
 
@@ -263,7 +268,6 @@ class GlucoseGraph:
         """
         self.graph_t0 = now
         self.buf = _Buffers()
-        self.pisa_spans = []
 
     def bind_buffers(
         self,
@@ -274,12 +278,15 @@ class GlucoseGraph:
         fe: list[float],
         ex_gx: list[float] | None = None,
         ex_gy: list[float] | None = None,
+        pisa: list[tuple[float, float]] | None = None,
     ) -> None:
         """Alias the live plot buffers onto the selected user's history lists."""
         self.buf.graph_x, self.buf.graph_y = gx, gy
         self.buf.food_ex_x, self.buf.food_ex_carbs_y, self.buf.food_ex_exercise_y = fx, fc, fe
         if ex_gx is not None and ex_gy is not None:
             self.buf.expected_x, self.buf.expected_y = ex_gx, ex_gy
+        if pisa is not None:
+            self.buf.pisa_spans = pisa
 
     def set_thresholds(self, thresholds: dict) -> None:
         self.thresholds = thresholds
@@ -302,7 +309,14 @@ class GlucoseGraph:
         self.canvas.draw_idle()
 
     def add_pisa_span(self, t_start_s: float, t_end_s: float) -> None:
-        self.pisa_spans.append((t_start_s, t_end_s))
+        """Shade an interval on whichever user this graph is CURRENTLY bound to.
+
+        Only correct for a single shared trace (Model Only / one sensor). A
+        multi-slot board must route through MainWindow._record_pisa_span
+        instead, which appends to the *target* slot's own history bucket
+        regardless of what happens to be on screen right now.
+        """
+        self.buf.pisa_spans.append((t_start_s, t_end_s))
 
     # ------------------------------------------------------------------
     # Range bands / categories
@@ -389,7 +403,7 @@ class GlucoseGraph:
                 pass
         self.pisa_patches = [
             self._g.ax.axvspan(a, b, color="#8e44ad", alpha=0.10, zorder=0)
-            for a, b in self.pisa_spans
+            for a, b in self.buf.pisa_spans
         ]
 
     def _fit_glucose_ylim(self) -> None:

@@ -22,6 +22,7 @@ from api import protocol
 from core.ble_message_log import BleMessageLog
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
+from gui.board_mode import BoardMode
 from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
 from gui.debug_window import DebugWindow
@@ -142,14 +143,16 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # Per-user received history, all sharing the one graph_t0 (re)anchored at
         # Start; switching the selected row just rebinds the graph's live buffers
         # onto a user's lists (see _bind_selected_history). Keyed by user_id.
-        # {user_id: {"gx","gy","fx","fc","fe","ex_gx","ex_gy": list[float]}}
-        self._history: dict[str, dict[str, list[float]]] = {}
-        # What the BOARD says each slot is running, read back from its own
-        # characteristics and cached per slot so re-selecting a row shows the
-        # last known answer instead of blanking while the reads are in flight.
-        self._board_is_csv: dict[int, bool] = {}
-        self._board_model: dict[int, str] = {}
-        self._mode_read_sessions: set = set()  # sessions whose config_read is wired up
+        # {user_id: {"gx","gy","fx","fc","fe","ex_gx","ex_gy": list[float], "pisa":
+        # list[tuple[float, float]]}}
+        self._history: dict[str, dict[str, list]] = {}
+        # What the BOARD says each slot is running (see gui/board_mode.py) —
+        # the display's source of truth over the app's own slot map.
+        self._board_mode = BoardMode(
+            lambda: self._bluetooth_window,
+            on_changed=self._on_board_mode_changed,
+            on_became_csv=self._drop_expected_line,
+        )
 
         # One-shot "insert now" events → engine pool + board + graph shading (issue 18).
         self._events = InstantEvents(
@@ -159,6 +162,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._board_layout,
             self._show_status,
             self._selected_slot,
+            self._record_pisa_span,
         )
         # Scenario-step vocabulary (models.scenario.ScenarioRunner owns the timing).
         self._scenario = ScenarioDispatch(self, self._events)
@@ -217,7 +221,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
 
     @property
     def _pisa_spans(self) -> list[tuple[float, float]]:
-        return self._graph.pisa_spans
+        return self._graph.buf.pisa_spans
 
     @property
     def _pisa_patches(self) -> list:
@@ -408,45 +412,43 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
     def _data_source_label(self) -> str:
         """What is driving the selected sensor: "CSV replay" or the model's name.
 
-        Reports what the *board* last said it is running, read back from its own
-        Data Source / Person Config characteristics. The app's slot map only
-        records what it tried to send — a CSV uploaded in an earlier session, a
-        config changed from elsewhere, or a send that silently failed all leave
-        the two disagreeing, and the board is the one actually producing the
-        trace. Falls back to the app's own view, marked as such, until the board
-        answers.
+        Model Only has no board at all — the saved profile is not a guess
+        there, it IS what is running, so that mode alone reads it directly.
+        Everywhere else this is the BOARD's own answer, and only the board's —
+        never the app's saved profile. A CSV uploaded in an earlier session, a
+        config changed from elsewhere, or a send that silently failed all
+        leave the app's saved intent disagreeing with what the board is
+        actually running, and the board is the one producing the trace.
+        Guessing from the saved profile when the board hasn't answered yet was
+        worse than saying nothing: it showed a specific, confident answer that
+        was sometimes flat wrong. Waits instead — the label says so until a
+        real answer arrives, and does not estimate one in the meantime.
+
+        The same "or not self._selected_user" carve-out as _selected_person():
+        with no specific board row selected there is no live answer to even be
+        waiting for, so the saved profile is the only thing there is to show.
         """
-        reported = self._board_mode_label(self._selected_slot())
+        if self._model_only or not self._selected_user:
+            person = self._selected_person()
+            if person is None:
+                return "no patient assigned"
+            return (
+                "CSV replay"
+                if getattr(person, "data_source", "model") == "csv"
+                else MODEL_LABELS.get(person.model_id, "model")
+            )
+        reported = self._board_mode.label(self._selected_slot())
         if reported is not None:
             return reported
-        person = self._selected_person()
-        if person is None:
+        if self._selected_person() is None:
             return "no patient assigned"
-        expected = (
-            "CSV replay"
-            if getattr(person, "data_source", "model") == "csv"
-            else MODEL_LABELS.get(person.model_id, "model")
-        )
-        return f"{expected}? (not confirmed by board)"
+        return "waiting for the board to confirm…"
 
-    def _refresh_board_mode(self) -> None:
-        """Ask the selected sensor's board what it is actually running."""
-        slot = self._selected_slot()
-        if slot is None or self._bluetooth_window is None:
-            return
-        session = next(
-            (s for s in self._bluetooth_window.sessions().values() if s.slot_index == slot), None
-        )
-        if session is None or not session.is_live:
-            return
-        if session not in self._mode_read_sessions:
-            session.config_read.connect(self._on_board_mode_read)
-            self._mode_read_sessions.add(session)
-        # begin() has already queued the sensor-select cursor for this slot; the
-        # reads ride the same FIFO, so they answer for the slot we asked about.
-        session.queue_write("sensor_select", protocol.encode_sensor_select(slot))
-        session.request_read("data_source")
-        session.request_read("person")
+    def _on_board_mode_changed(self) -> None:
+        """The board answered a mode read (see gui/board_mode.py) — refresh
+        whatever the title / food-exercise view show for it."""
+        self._set_graph_title()
+        self._apply_csv_mode_view()
 
     def _drop_expected_line(self, slot: int) -> None:
         """Discard the expected-model curve drawn for *slot* before the board
@@ -460,38 +462,31 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             self._graph.buf.expected_y.clear()
         self._graph.redraw_glucose()
 
-    def _board_mode_label(self, slot: int | None) -> str | None:
-        """What the board last reported *slot* is running, or None if unknown.
+    def _record_pisa_span(self, slot: int | None, t_start_s: float, t_end_s: float) -> None:
+        """Shade a PISA interval on the sensor(s) it actually targets.
 
-        The two facts arrive in separate reads and are cached separately: a
-        "running a model" answer must not discard the model's name learned
-        earlier, or re-selecting a row drops the title back to "not confirmed"
-        until the second read lands, which reads as a flicker.
+        Appending straight to the graph's live buffer would misattribute the
+        span to whichever row happens to be selected right now — the same class
+        of bug as the board-mode read above: a fault inserted for slot 3 must
+        not shade slot 1's graph just because slot 1 is on screen at the time.
+        Model Only / a single-sensor board has exactly one shared trace (no
+        per-slot expected lines), so the shading is inherently and correctly
+        global there — same behaviour as before.
         """
-        if slot is None:
-            return None
-        if self._board_is_csv.get(slot):
-            return "CSV replay"
-        return self._board_model.get(slot)
-
-    def _on_board_mode_read(self, _address: str, char_key: str, data: bytes) -> None:
-        """Record what the board reported for the slot its cursor is on."""
-        slot = self._selected_slot()
-        if slot is None:
+        if not self._per_slot_expected:
+            self._graph.add_pisa_span(t_start_s, t_end_s)
+            self._graph.redraw_glucose()
             return
-        if char_key == "data_source":
-            is_csv = bool(protocol.decode_data_source(data))
-            if is_csv and not self._board_is_csv.get(slot):
-                self._drop_expected_line(slot)  # whatever the model already drew is meaningless
-            self._board_is_csv[slot] = is_csv
-        elif char_key == "person":
-            decoded = protocol.decode_person_config(data)
-            if decoded is not None:
-                self._board_model[slot] = MODEL_LABELS.get(decoded[0], "model")
-        else:
-            return
-        self._set_graph_title()
-        self._apply_csv_mode_view()
+        targets = range(board_layout.MAX_SLOTS) if slot is None else [slot]
+        touched_selected = False
+        for s in targets:
+            user_id = self._slot_user_id(s)
+            self._hist(user_id)["pisa"].append((t_start_s, t_end_s))
+            if user_id == self._selected_user:
+                touched_selected = True
+        if touched_selected:
+            self._graph.buf.pisa_spans = self._hist(self._selected_user)["pisa"]
+            self._graph.redraw_glucose()
 
     def _set_graph_title(self) -> None:
         """Set the glucose-graph title for the current mode / selection."""
@@ -613,6 +608,11 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         if sensor is not None:
             assignment.sensor = sensor
         self._on_board_layout_changed()
+        # A send can flip what the slot is actually running (e.g. model ->
+        # cleared off CSV, or a fresh CSV upload) — re-ask the board rather
+        # than leaving the title/food-graph on a stale cached answer until the
+        # user happens to re-select the row.
+        self._board_mode.refresh(slot)
 
     def _on_board_layout_changed(self) -> None:
         """Persist the slot assignments, and refresh the Bluetooth device list so
@@ -777,15 +777,26 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self._graph.redraw_glucose()
         self._graph.redraw_food_ex()
 
-    def _hist(self, user_id: str) -> dict[str, list[float]]:
+    def _hist(self, user_id: str) -> dict[str, list]:
         """Return (creating on first sight) the history buffers for *user_id*.
 
         ``gx``/``gy`` + ``fx``/``fc``/``fe`` are the received (board) stream;
-        ``ex_gx``/``ex_gy`` are that slot's local "expected" line (issue 04).
+        ``ex_gx``/``ex_gy`` are that slot's local "expected" line (issue 04);
+        ``pisa`` is the (t_start_s, t_end_s) shaded intervals inserted for this
+        slot specifically (see _record_pisa_span).
         """
         h = self._history.get(user_id)
         if h is None:
-            h = {"gx": [], "gy": [], "fx": [], "fc": [], "fe": [], "ex_gx": [], "ex_gy": []}
+            h = {
+                "gx": [],
+                "gy": [],
+                "fx": [],
+                "fc": [],
+                "fe": [],
+                "ex_gx": [],
+                "ex_gy": [],
+                "pisa": [],
+            }
             self._history[user_id] = h
         return h
 
@@ -802,7 +813,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
             return
         h = self._hist(self._selected_user)
         ex = (h["ex_gx"], h["ex_gy"]) if self._per_slot_expected else (None, None)
-        self._graph.bind_buffers(h["gx"], h["gy"], h["fx"], h["fc"], h["fe"], *ex)
+        self._graph.bind_buffers(h["gx"], h["gy"], h["fx"], h["fc"], h["fe"], *ex, pisa=h["pisa"])
 
     def _stop_engine(self) -> None:
         """Stop and discard every engine in the pool.
@@ -869,20 +880,28 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         # window is assigned) — the physiological model never runs for it.
         self._engines.rebuild(slots, self._speed_mult, paused=self._run_state != "running")
 
+    def _is_csv_selected(self) -> bool:
+        """Whether the selected sensor is CSV-backed right now.
+
+        Model Only, or nothing selected yet, has no live board answer to defer
+        to — same carve-out as _data_source_label — so the saved profile is
+        read directly there. Otherwise this is the BOARD's confirmed answer
+        alone, never the app's saved profile: a person saved as CSV but never
+        sent to the board is not actually replaying anything, and asserting it
+        was is what let this panel and the main title disagree. Reads False
+        (food/exercise shown normally) until the board itself says otherwise —
+        it does not guess in the meantime.
+        """
+        if self._model_only or not self._selected_user:
+            return getattr(self._selected_person(), "data_source", "model") == "csv"
+        return self._board_mode.label(self._selected_slot()) == "CSV replay"
+
     def _apply_csv_mode_view(self) -> None:
         """A CSV-backed sensor has no model and no meal input that drives glucose
         (the food log is report-only), so hide the food/exercise graph entirely
         whenever one is active — Model Only or board-connected (issue 08).
-
-        Prefers the board's own answer over the app's slot map, for the same
-        reason the title does (see _data_source_label).
         """
-        reported = self._board_mode_label(self._selected_slot())
-        if reported is not None:
-            is_csv = reported == "CSV replay"
-        else:
-            is_csv = getattr(self._selected_person(), "data_source", "model") == "csv"
-        self._graph.fe_canvas.setVisible(not is_csv)
+        self._graph.fe_canvas.setVisible(not self._is_csv_selected())
 
     def _set_start_pause_label(self) -> None:
         label = {"stopped": "Start", "running": "Pause", "paused": "Resume"}[self._run_state]
@@ -1022,7 +1041,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         self, slot: int, timestamp: str, glucose: float, carbs_rate: float, exercise_pct: float
     ) -> None:
         """Consume one tick from slot *slot*'s engine in the pool."""
-        if self._board_is_csv.get(slot):
+        if self._board_mode.is_csv(slot):
             # The board told us this slot is replaying a recording, so there is
             # no model behind its trace and nothing for an "expected model" line
             # to mean. The app's own profile for the slot may still say model
@@ -1103,7 +1122,7 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         """
         self._selected_user = user_id
         self._bind_selected_history()
-        self._refresh_board_mode()
+        self._board_mode.refresh(self._selected_slot())
         self._apply_csv_mode_view()
         self._graph.redraw_glucose()
         self._graph.redraw_food_ex()
@@ -1121,8 +1140,14 @@ class MainWindow(QMainWindow):  # pylint: disable=too-many-instance-attributes  
         report-only and does not affect glucose (see issue 08). Say so, so the
         carb-rate curve isn't read as driving the trace above it. (The graph
         itself is hidden for a CSV person; this covers a transient redraw.)
+
+        Uses the same board-confirmed answer as the main title / fe_canvas
+        visibility (_is_csv_selected) — this used to read the app's local
+        profile unconditionally, so saving a person as CSV without ever
+        sending it to the board flipped this label immediately while the main
+        title correctly kept showing the board's actual (model) answer.
         """
-        if getattr(self._selected_person(), "data_source", "model") == "csv":
+        if self._is_csv_selected():
             return "Food log — report-only (CSV playback; does not drive glucose)"
         return "Food / Exercise"
 

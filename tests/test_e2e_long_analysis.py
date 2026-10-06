@@ -137,3 +137,30 @@ def test_a_late_issue_timestamp_is_realigned_to_the_boards_own_onset():
     onset_t_sim = out[100].t_sim
     stamped_early = lg.Instant(0, "pisa", (20, 0.45), t_sim=onset_t_sim - 0.5)
     assert lg.parity(prof, out, [stamped_early])["max"] < 0.5
+
+
+def test_timing_slack_forgives_a_two_tick_phase_offset_but_not_a_wrong_curve():
+    prof = _profile()
+    host = ModelStepper(prof)
+    trace = [host.tick(1.0, ISO).glucose for _ in range(400)]
+    sim = [float(i + 1) for i in range(400)]
+
+    def board(shift, scale=1.0):
+        return [
+            lg.Tick(
+                float(i),
+                sim[i],
+                1.0,
+                trace[min(399, max(0, i + shift))] * scale,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            )
+            for i in range(400)
+        ]
+
+    shifted = lg.parity(prof, board(2), [], slack=2)
+    assert shifted["p99"] < 0.01 and shifted["strict_max"] > 1.0  # strict view still sees it
+    wrong = lg.parity(prof, board(0, scale=1.08), [], slack=2)
+    assert wrong["p99"] > 8.0  # an 8% amplitude error is not a timing offset

@@ -100,6 +100,37 @@ class CsvAnalysisWindow(QWidget):  # pylint: disable=too-many-instance-attribute
         stats_row.addWidget(sel_group)
         layout.addLayout(stats_row)
 
+    def showEvent(self, event) -> None:
+        """Re-read the app palette every time this window is (re)shown.
+
+        Unlike native Qt widgets, matplotlib reads QApplication.palette() only
+        once, when the figure is built — it does not restyle itself when the
+        theme changes later. This window is short-lived and recreated each
+        time "Choose CSV file…" opens it, but a theme switch while one happens
+        to be open left it washed-out/mismatched against the rest of the app
+        (2026-09-16) until it was closed and reopened; refreshing on every
+        show() covers that without needing a push-based theme-change signal.
+        """
+        self._apply_theme_colors()
+        super().showEvent(event)
+
+    def _apply_theme_colors(self) -> None:
+        palette = QApplication.instance().palette()
+        bg = palette.color(QPalette.ColorRole.Window).name()
+        fg = palette.color(QPalette.ColorRole.WindowText).name()
+        self._accent = palette.color(QPalette.ColorRole.Highlight).name()
+        self._figure.set_facecolor(bg)
+        self._ax.set_facecolor(bg)
+        self._ax.title.set_color(fg)
+        self._ax.xaxis.label.set_color(fg)
+        self._ax.yaxis.label.set_color(fg)
+        self._ax.tick_params(colors=fg)
+        for spine in self._ax.spines.values():
+            spine.set_color(fg)
+        self._ax.grid(True, color=fg, alpha=0.15)
+        self._line.set_color(fg)
+        self._canvas.draw_idle()
+
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------

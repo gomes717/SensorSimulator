@@ -97,9 +97,16 @@ class Instant:
 # ---- analysis (pure: reads the logs, no hardware) ---------------------------
 
 
-def read_ticks(path: Path) -> dict[int, list[Tick]]:
+def _log_lines(path: Path, offset: int = 0) -> list[str]:
+    """Lines of a log from byte *offset* on (a long run analyses one cycle at a time)."""
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        return fh.read().decode("utf-8", errors="replace").splitlines()
+
+
+def read_ticks(path: Path, offset: int = 0) -> dict[int, list[Tick]]:
     out: dict[int, list[Tick]] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in _log_lines(path, offset):
         m = _TICK.match(line)
         if m:
             out.setdefault(int(m["slot"]), []).append(
@@ -117,9 +124,9 @@ def read_ticks(path: Path) -> dict[int, list[Tick]]:
     return out
 
 
-def read_pushes(path: Path) -> dict[int, list[tuple[float, float]]]:
+def read_pushes(path: Path, offset: int = 0) -> dict[int, list[tuple[float, float]]]:
     out: dict[int, list[tuple[float, float]]] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in _log_lines(path, offset):
         m = _PUSH.match(line)
         if m:
             out.setdefault(int(m["slot"]), []).append((float(m["t"]), float(m["g"])))
@@ -197,20 +204,30 @@ def observed_onset(ev: Instant, run: list[Tick]) -> Instant:
     return ev
 
 
-def parity(profile: PersonProfile, ticks: list[Tick], instants: list[Instant]) -> dict:
+def parity(
+    profile: PersonProfile, ticks: list[Tick], instants: list[Instant], slack: int = 0
+) -> dict:
     """Step the host model with the board's own dt per tick and compare it with the
     board's true glucose x PISA factor.
 
     That product is what the host model's output means (the expected reading,
     PISA included) and it is independent of the sensor model: the board adds noise
     (Breton) or a deliberate per-slot offset (Ideal: (slot - (N-1)/2) * 2 mg/dL,
-    model_thread.c) only after it, in ``reading``."""
+    model_thread.c) only after it, in ``reading``.
+
+    *slack* allows the two to differ in timing by up to that many ticks: the firmware
+    applies a scheduled meal or exercise window about two ticks earlier than the host
+    model, which at a high speed multiplier (a tick is speed/60 sim-minutes) is a large
+    error on a steep meal edge although both follow the same dynamics. With slack each
+    board value is compared with the closest host value within +-slack ticks; the
+    strict (same-tick) figures are returned alongside as ``strict_*``."""
     run = last_run(ticks)
     if len(run) < 10:
         return {"n": 0}
     pending = sorted((observed_onset(e, run) for e in instants), key=lambda e: e.t_sim)
-    errs: list[float] = []
-    worst = (0.0, 0.0)  # (abs err, t_sim)
+    host: list[float] = []
+    board: list[float] = []
+    sim: list[float] = []
     # ModelStepper prints a debug line per tick; keep it out of the report output.
     with contextlib.redirect_stdout(io.StringIO()):
         stepper = ModelStepper(profile)
@@ -228,19 +245,38 @@ def parity(profile: PersonProfile, ticks: list[Tick], instants: list[Instant]) -
                         stepper.add_instant_pisa(*ev.args)
                 res = stepper.tick(tk.dt, "2020-01-01T00:00:00+00:00")
             if res is not None:
-                err = abs(res.glucose - tk.glucose * tk.pisa)
-                errs.append(err)
-                if err > worst[0]:
-                    worst = (err, tk.t_sim)
-    if not errs:
+                host.append(res.glucose)
+                board.append(tk.glucose * tk.pisa)
+                sim.append(tk.t_sim)
+    if not host:
         return {"n": 0}
-    errs.sort()
+
+    def stats(errs: list[float]) -> tuple[float, float, float, int]:
+        order = sorted(errs)
+        return (
+            statistics.fmean(errs),
+            order[int(0.99 * (len(order) - 1))],
+            order[-1],
+            errs.index(order[-1]),
+        )
+
+    strict = [abs(h - b) for h, b in zip(host, board, strict=True)]
+    near = [
+        min(abs(host[j] - b) for j in range(max(0, i - slack), min(len(host), i + slack + 1)))
+        for i, b in enumerate(board)
+    ]
+    mean, p99, worst, at = stats(near if slack else strict)
+    s_mean, s_p99, s_max, _ = stats(strict)
     return {
-        "n": len(errs),
-        "max": errs[-1],
-        "mean": statistics.fmean(errs),
-        "p99": errs[int(0.99 * (len(errs) - 1))],
-        "worst_t_sim": worst[1],
+        "n": len(host),
+        "max": worst,
+        "mean": mean,
+        "p99": p99,
+        "worst_t_sim": sim[at],
+        "strict_mean": s_mean,
+        "strict_p99": s_p99,
+        "strict_max": s_max,
+        "host_range": max(host) - min(host),
     }
 
 

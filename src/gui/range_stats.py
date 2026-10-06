@@ -34,7 +34,14 @@ class RangeStatsPanel(QGroupBox):
             row, col = divmod(i, 5)
             box = QVBoxLayout()
             cap = QLabel(caption)
-            cap.setStyleSheet("font-size: 10px;")
+            # A QFont tweak, not setStyleSheet: any stylesheet on a widget
+            # routes its rendering through QStyleSheetStyle, which does not
+            # reliably re-resolve text color from a later app.setPalette()
+            # (see gui/theme.py) — these captions went near-invisible in light
+            # mode and stayed wrong after switching back to dark.
+            font = cap.font()
+            font.setPointSize(max(1, font.pointSize() - 2))
+            cap.setFont(font)
             val = QLabel("—")
             self.labels[key] = val
             box.addWidget(cap)
