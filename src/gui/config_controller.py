@@ -30,14 +30,14 @@ class ConfigController(QObject):
     speed_change_requested = pyqtSignal(float)
     model_only_toggled = pyqtSignal(bool)
     cgms_only_toggled = pyqtSignal(bool)
-    comm_profile_toggled = pyqtSignal(bool)  # True = Dexcom-style
     editor_requested = pyqtSignal(str)  # "person"|"food"|"exercise"|"sensor"
     thresholds_saved = pyqtSignal()
+    theme_changed = pyqtSignal()  # the palette was switched: rebuild what cached the colors
+    view_window_changed = pyqtSignal()  # the graph time-window preference changed
 
     # -- app -> widget ----------------------------------------------------
     profiles_changed = pyqtSignal()  # the profile lists changed: repopulate the combos
     speed_display_changed = pyqtSignal(float)  # move the slider/spin, do not re-emit
-    comm_profile_display_changed = pyqtSignal(bool)
     model_only_display_changed = pyqtSignal(bool)
     controls_locked = pyqtSignal(bool)  # CGMS-only: disable every config-sending control
 
@@ -75,9 +75,6 @@ class ConfigController(QObject):
 
     def set_speed_display(self, mult: float) -> None:
         self.speed_display_changed.emit(float(mult))
-
-    def set_comm_profile_display(self, dexcom: bool) -> None:
-        self.comm_profile_display_changed.emit(bool(dexcom))
 
     def set_model_only_display(self, on: bool) -> None:
         self.model_only_display_changed.emit(bool(on))

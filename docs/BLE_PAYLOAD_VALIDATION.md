@@ -178,7 +178,7 @@ scenarios and asserts on the live graph/metrics state:
 | **C** model + food | Model Only, Cambridge → x60 → Start → Food command (Commands panel) → carbs trapezoid on the food/exercise graph, glucose excursion, stats update |
 | **D** model + exercise | Model Only, Deichmann → x60 → Start → Exercise command → exercise step on the graph, glucose drop |
 | **E** model + PISA | Model Only, Cambridge → x60 → Start → PISA command → glucose dips to ≈ level·(1−depth) at the midpoint and recovers; the interval is shaded (the page's `graph.buf.pisa_spans` / `graph.pisa_patches`) |
-| **F** rolling window | run, shrink the View-window to a few seconds → only the recent slice is shown (`_visible_xlim` + windowed metrics) → "Entire run" restores the full span |
+| **F** rolling window | run, shrink the Graph time window (Configuration → Appearance) to a few seconds → only the recent slice is shown (`_visible_xlim` + windowed metrics) → "Entire run" restores the full span |
 
 All pass; screenshots land in `scratchpad_ui/` (gitignored). The speed
 multiplier is set via the Configuration-window slider (`_speed_to_slider`).

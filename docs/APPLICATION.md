@@ -210,7 +210,7 @@ each one can be tested on its own (`tests/test_run_controller.py`,
 
 | Module | Owns |
 |---|---|
-| `main_window.py` | Builds and wires the pieces; the actions that touch several of them: speed, Model Only / CGMS Only, profile / person / sensor changes, comm-profile switch |
+| `main_window.py` | Builds and wires the pieces; the actions that touch several of them: speed, Model Only / CGMS Only, profile / person / sensor changes |
 | `app_state.py` — `AppState` | Person/sensor profiles, `board_layout` (slot → patient/sensor record), active person/sensor, speed multiplier, graph view window, range thresholds, the `model_only` / `cgms_only` flags; `engine_slots()` (which person runs on which slot) and persistence to `data/` |
 | `run_clock.py` — `RunClock` | The run's t=0 and speed multiplier; converts a timestamp to simulated seconds. Every graph reads it, so Start re-anchors all of them at once |
 | `start_push.py` — `StartPush` | Start's first step: writes the app's per-sensor profiles (person, sensor, schedules) to the board before the run begins |
@@ -225,7 +225,7 @@ each one can be tested on its own (`tests/test_run_controller.py`,
 | `board_mode.py` — `BoardMode` | Reads each slot's Data Source / model name back from the board, for titles and the CSV view (§3.6) |
 | `board_link.py` — `BoardLink` | "For every live session, write …" and per-slot sends, with reach counts |
 | `child_windows.py` — `ChildWindows` | Lazily creates, shows and closes the secondary windows; the Bluetooth window is special because sessions live in it |
-| `toolbar.py` | Builds the toolbar: Start/Stop on the left, the window buttons (View, Configuration, Debug) on the right — there is no Connect Bluetooth button; connecting is the start screen's button and the tab strip's "+" |
+| `toolbar.py` | Builds the toolbar: Start/Stop on the left, the window buttons (Configuration, Debug) on the right — there is no Connect Bluetooth button; connecting is the start screen's button and the tab strip's "+" |
 | `config_controller.py` — `ConfigController` | The typed signal seam between `MainWindow` and the Configuration window |
 | `glucose_graph.py` — `GlucoseGraph` | The two matplotlib canvases of one page and every draw decision (range bands, trace coloured exactly at the limits, optional sample dots, PISA shading, rolling window) |
 | `range_stats.py` — `RangeStatsPanel` | The TIR/TBR/TAR grid under a page's graphs |
@@ -239,14 +239,13 @@ by `ChildWindows` and kept, so re-opening raises the same instance.
 
 | Window | Role |
 |---|---|
-| `configuration_window.py` — `ConfigurationWindow` | Person/Sensor editors' launch buttons, the Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Communication-type combo, Model-Only and CGMS-Only toggles, the editable glucose range thresholds |
+| `configuration_window.py` — `ConfigurationWindow` | Person/Sensor editors' launch buttons, the Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Model-Only and CGMS-Only toggles, the **Appearance** group (UI theme and the rolling graph time window — formerly the separate View window) and the editable glucose range thresholds |
 | `person_config_window.py` / `sensor_config_window.py` | Manage saved `PersonProfile` / `SensorProfile`s; Save, **Send to Board** (which also sends the patient's data source, incl. a CSV upload), **Read from Board**. A send reports which slot got which patient so the slot record stays true |
 | `data_source_group.py` | The per-patient model-vs-CSV chooser inside Person Configuration (the 24 h region is picked in CSV Analysis) |
 | `food_config_window.py` / `exercise_config_window.py` | Recurring-daily meal / exercise schedules for the patient on the **target device's** slot (the one recorded for that slot, else the active patient); locked only when *that sensor* replays a CSV (the board's answer first, the saved profile as a fallback) — not because the globally active patient does. Picking another device switches the patient |
 | `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom export, slide a 24 h window, read range metrics for the whole recording and the selection; assigns the window to a person |
 | `bluetooth_window.py` — `BluetoothWindow` | Device list, scan, multi-device connect / disconnect; owns the `sessions()` dict; emits `session_connected` (opens that sensor's tab) and offers `disconnect_device()` (the tab's close button) |
 | `device_target.py` — `DeviceTargetBar` | "Target device / Slot" picker shared by the config windows, plus `restart_board()` / `await_send_confirmation()` |
-| `view_config_window.py` | Rolling graph-window length and UI theme |
 | `debug_window.py` / `message_detail_window.py` | Live list of every BLE message; field dump of one |
 
 There is no Board Layout window and no Faults window any more: the slot →
@@ -399,7 +398,7 @@ The Food and Exercise editors follow the patient chosen in Person Configuration.
   `link_silent`, shown as **"No data"** in the Bluetooth window. A stopped board
   is not silent.
 - **Reconnects do not cross wires.** Closing a session and opening a new one for
-  the same address (Disconnect then Connect, or the comm-profile reconnect) can
+  the same address (Disconnect then Connect, or an automatic reconnect) can
   deliver the old thread's `finished` / `disconnected` after the new session is
   already registered; both handlers ignore a session that has been replaced.
   The advertised name is kept across a failed attempt and across a rescan that

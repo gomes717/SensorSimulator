@@ -1,5 +1,6 @@
 """Configuration window: the Person/Sensor selectors, their config buttons, the
-mode toggles that used to sit in the main window's bottom bar, and the glucose
+mode toggles that used to sit in the main window's bottom bar, the appearance
+settings (theme, graph time window — formerly the View window) and the glucose
 range thresholds editor.
 
 Simulation / BLE state lives on :class:`MainWindow`; this window only hosts the
@@ -12,6 +13,7 @@ Configuration window (issue 16), next to the model it replaces.
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -26,8 +28,18 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.config_controller import ConfigController
+from gui.theme import apply_theme
 from gui.widgets import NoWheelDoubleSpinBox
 from models import app_settings
+
+_THEME_LABELS = [("system", "System default"), ("light", "Light"), ("dark", "Dark")]
+# (seconds, label); 0 = show the whole run
+_WINDOW_CHOICES = [
+    (3600, "Last 1 hour"),
+    (21600, "Last 6 hours"),
+    (86400, "Last 24 hours"),
+    (0, "Entire run"),
+]
 
 _THRESHOLD_ROWS = (
     ("tbr2_below", "TBR2 below (mg/dL)"),
@@ -55,6 +67,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         inner = QVBoxLayout(body)
         inner.addWidget(self._build_selectors_group())
         inner.addWidget(self._build_modes_group())
+        inner.addWidget(self._build_appearance_group())
         inner.addWidget(self._build_thresholds_group())
         inner.addStretch(1)
         scroll = QScrollArea()
@@ -71,7 +84,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
 
         # app -> widget: re-sync widgets after a state change made outside this window.
         controller.speed_display_changed.connect(self._show_speed)
-        controller.comm_profile_display_changed.connect(self._show_comm_profile)
         controller.model_only_display_changed.connect(self._show_model_only)
         controller.controls_locked.connect(self._set_controls_locked)
 
@@ -141,21 +153,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         box.addLayout(speed_row)
         self._show_speed(self._c.speed_mult)
 
-        comm_row = QHBoxLayout()
-        comm_row.addWidget(QLabel("Communication type:"))
-        self.comm_profile_combo = QComboBox()
-        self.comm_profile_combo.addItem("SIG CGMS (standard)", False)
-        self.comm_profile_combo.addItem("Dexcom-style (basic)", True)
-        self.comm_profile_combo.currentIndexChanged.connect(self._on_comm_profile_changed)
-        comm_row.addWidget(self.comm_profile_combo, 1)
-        box.addLayout(comm_row)
-        comm_hint = QLabel(
-            "Switching re-advertises the board; the app drops and reconnects automatically (~3 s)."
-        )
-        comm_hint.setWordWrap(True)
-        comm_hint.setEnabled(False)
-        box.addWidget(comm_hint)
-
         self.model_only_check = QCheckBox("Model Only (no device)")
         self.model_only_check.toggled.connect(self._on_model_only_toggled)
         box.addWidget(self.model_only_check)
@@ -193,16 +190,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         self.speed_combo.setCurrentIndex(index)
         self._syncing = False
 
-    def _on_comm_profile_changed(self, _index: int) -> None:
-        if self._syncing:
-            return
-        self._c.comm_profile_toggled.emit(bool(self.comm_profile_combo.currentData()))
-
-    def _show_comm_profile(self, dexcom: bool) -> None:
-        self._syncing = True
-        self.comm_profile_combo.setCurrentIndex(1 if dexcom else 0)
-        self._syncing = False
-
     def _on_model_only_toggled(self, checked: bool) -> None:
         if not self._syncing:
             self._c.model_only_toggled.emit(checked)
@@ -228,6 +215,47 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             self.model_only_check,
         ):
             widget.setEnabled(not locked)
+
+    # ------------------------------------------------------------------
+    # Appearance (theme + graph time window)
+    # ------------------------------------------------------------------
+
+    def _build_appearance_group(self) -> QGroupBox:
+        group = QGroupBox("Appearance")
+        form = QFormLayout(group)
+
+        self.theme_combo = QComboBox()
+        for value, label in _THEME_LABELS:
+            self.theme_combo.addItem(label, value)
+        current = app_settings.load_theme()
+        self.theme_combo.setCurrentIndex(
+            next((i for i, (v, _) in enumerate(_THEME_LABELS) if v == current), 0)
+        )
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_selected)
+        form.addRow("Theme:", self.theme_combo)
+
+        self.window_combo = QComboBox()
+        for seconds, label in _WINDOW_CHOICES:
+            self.window_combo.addItem(label, seconds)
+        saved = int(app_settings.load_pref("view_window_s", 3600))
+        self.window_combo.setCurrentIndex(
+            next((i for i, (s, _) in enumerate(_WINDOW_CHOICES) if s == saved), 0)
+        )
+        self.window_combo.currentIndexChanged.connect(self._on_window_selected)
+        form.addRow("Graph time window:", self.window_combo)
+        return group
+
+    def _on_theme_selected(self, _index: int) -> None:
+        mode = self.theme_combo.currentData()
+        app_settings.save_theme(mode)
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, mode)
+        self._c.theme_changed.emit()
+
+    def _on_window_selected(self, _index: int) -> None:
+        app_settings.save_pref("view_window_s", int(self.window_combo.currentData()))
+        self._c.view_window_changed.emit()
 
     # ------------------------------------------------------------------
     # Glucose range thresholds

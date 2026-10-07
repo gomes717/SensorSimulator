@@ -134,9 +134,10 @@ class MainWindow(QMainWindow):
         c.speed_change_requested.connect(self._on_speed_changed)
         c.model_only_toggled.connect(self._on_model_only_toggled)
         c.cgms_only_toggled.connect(self._on_cgms_only_toggled)
-        c.comm_profile_toggled.connect(self._on_comm_profile_toggled)
         c.editor_requested.connect(lambda which: self.windows.open(which))
         c.thresholds_saved.connect(self._on_thresholds_changed)
+        c.theme_changed.connect(lambda: self.sensors.rebuild_for_theme())
+        c.view_window_changed.connect(self._on_view_window_changed)
         self._configuration_window = ConfigurationWindow(c)
         self.windows = ChildWindows(
             WindowDeps(
@@ -149,8 +150,6 @@ class MainWindow(QMainWindow):
                 record_slot_assignment=self.record_slot_assignment,
                 on_person_selected=self._on_person_selected,
                 on_sensor_selected=self._on_sensor_selected,
-                on_theme_changed=lambda: self.sensors.rebuild_for_theme(),
-                on_view_window_changed=self._on_view_window_changed,
                 on_bluetooth_created=lambda bt: bt.session_connected.connect(
                     self._on_session_ready
                 ),
@@ -164,7 +163,6 @@ class MainWindow(QMainWindow):
             self,
             left=(("start_pause_btn", "Start", None), ("stop_btn", "Stop", None)),
             right=(
-                ("view_btn", "View", lambda: self.windows.open("view")),
                 ("configuration_btn", "Configuration", lambda: self.windows.open("configuration")),
                 ("debug_btn", "Debug", lambda: self.windows.open("debug")),
             ),
@@ -391,22 +389,6 @@ class MainWindow(QMainWindow):
         # Disable every control that would send a now-rejected config write.
         self._controller.set_controls_locked(checked)
         self._run.set_locked(checked)
-
-    def _on_comm_profile_toggled(self, dexcom: bool) -> None:
-        """Write the chosen BLE comm profile to every connected board, then let each
-        board drop the link and re-advertise, and reconnect to it automatically.
-
-        Moved out of ConfigurationWindow with issue 18 — it needs the Bluetooth
-        window (sessions + reconnect), which is MainWindow's to hand out.
-        """
-        bt = self._ensure_bluetooth_window()
-        sessions = bt.sessions()
-        if not sessions:
-            return
-        payload = protocol.encode_comm_profile(dexcom)
-        for address, session in list(sessions.items()):
-            session.queue_write("comm_profile", payload)
-            bt.reconnect(address)
 
     # ------------------------------------------------------------------
     # Qt overrides

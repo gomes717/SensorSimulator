@@ -393,9 +393,11 @@ connectable adv set can't restart with the single connection slot occupied
 link** and re-advertises under the new profile on disconnect; the app then
 reconnects automatically (`BluetoothWindow.reconnect()`).
 
-App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile`, the
-"Communication type" combo in the Configuration window (which triggers the
-reconnect), and `services/ble_session.py`'s Dexcom decoder branch.
+App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile` and
+`services/ble_session.py`'s Dexcom decoder branch. (The "Communication type" combo
+that used to live in the Configuration window, and its reconnect, were removed in
+2026-10 pending a refactor; the hardware harnesses still write the characteristic
+directly.)
 
 #### Dexcom-style stream
 

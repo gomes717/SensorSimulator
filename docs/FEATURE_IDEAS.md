@@ -192,7 +192,7 @@ Convenience only — the J-Link flow works fine for a thesis.
 
 ### 14. pt-BR localization
 **Sketch.** Wrap UI strings in `tr()` / a small dict, ship a pt-BR resource,
-language toggle in the View window. **Value.** The thesis and defense are in
+language toggle in the Configuration window (Appearance). **Value.** The thesis and defense are in
 Portuguese; screenshots in pt-BR read better.
 
 ### 15. Remote/web dashboard

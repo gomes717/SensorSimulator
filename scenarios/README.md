@@ -21,7 +21,6 @@ Timed-action scripts for the **Scenario** window (toolbar → Scenario). Load a
 | `run_state` | `{ "state": "start" \| "stop" \| "pause" \| "resume" }` | drives Start/Stop/Pause |
 | `person` | `{ "person": "<profile name>" }` | selects that patient (no-op if not found) |
 | `data_source` | `{ "person": "<profile name>" }` | selects the patient (it reaches the board at the next Start) |
-| `comm_profile` | `{ "profile": "sig" \| "dexcom" }` | switches the board's BLE profile (reconnect after) |
 | `insert_food` | `{ "carbs_g": <g>, "duration_min": <min> }` | one-shot carb bolus (no reset) |
 | `insert_exercise` | `{ "duration_min": <min>, "intensity_pct": 0..100 }` | one-shot exercise bout |
 | `inject_fault` | `{ "fault": "pisa", "duration_min": <min>, "depth_frac": 0..1 }` | sensor fault; PISA = transient false low |
@@ -47,4 +46,4 @@ Notes:
 | `alerts_low_high.json` | big meal → HIGH badge, then PISA → LOW badge |
 | `speed_sweep.json` | x1 → x10 → x60 → x300 while streaming |
 | `csv_playback.json` | replay a CSV-backed patient (needs a *CSV Patient* with a window assigned) |
-| `full_demo.json` | speed + meal + exercise + PISA + comm-profile switch, ~2 min |
+| `full_demo.json` | speed + meal + exercise + PISA, ~2 min |

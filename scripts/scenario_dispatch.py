@@ -20,7 +20,6 @@ class ScenarioDispatch:
             "run_state": self._do_run_state,
             "person": self._do_person,
             "data_source": self._do_person,
-            "comm_profile": self._do_comm_profile,
             "insert_food": self._do_insert_food,
             "insert_exercise": self._do_insert_exercise,
             "inject_fault": self._do_inject_fault,
@@ -59,12 +58,6 @@ class ScenarioDispatch:
             getattr(h.state.active_person, "data_source", "model") if h.state.active_person else "?"
         )
         return f"person → {name} ({src})"
-
-    def _do_comm_profile(self, args: dict) -> str:
-        dexcom = str(args.get("profile", "sig")).lower() == "dexcom"
-        self._host._controller.set_comm_profile_display(dexcom)
-        self._host._on_comm_profile_toggled(dexcom)
-        return f"comm_profile → {'dexcom' if dexcom else 'sig'}"
 
     def _do_insert_food(self, args: dict) -> str:
         carbs_g = float(args.get("carbs_g", 50))

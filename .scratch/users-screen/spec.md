@@ -1,0 +1,115 @@
+# Users screen — one "User" replaces Person + Sensor, read from the board, preview, save, send
+
+Status: plan, not started. Written 2026-10-06 from your description; the six open questions were answered the same day (see *Decisions you made*). No open questions left.
+
+## What changes, in one paragraph
+
+Today the app has separate **Person** profiles (model, parameters, food, exercise, data source) and **Sensor** profiles (noise model), edited in four windows reached from Configuration, and a slot→(person, sensor) map in `data/board_layout.json`. This plan replaces all of that with a single **User**, edited in one **User Profile** screen, listed in a **Users** screen reached from a new toolbar button (next to Configuration and Debug). A user can be created by **reading it from a sensor on the board**, and can be **sent to a sensor**. The Person/Sensor group is removed from Configuration.
+
+## The User
+
+| Field | Notes |
+|---|---|
+| `id`, `name` | `id` is stable (picture folder, CSV files); `name` is what the board is told |
+| `picture` | image file copied into `data/users/<id>/`; falls back to the generated initials disc (`gui/avatar.py`) |
+| `height_cm`, `weight_kg` | weight is written into the model's `BW` parameter (all four models have one). Height is **app-only, display only** — it feeds nothing yet |
+| `mode` | `"model"` or `"csv"` (replaces `data_source`) |
+| model | `model_id` + params (the old Person) — only used when `mode == "model"` |
+| sensor model | `sensor_id` + params (the old Sensor) — only used when `mode == "model"` |
+| food, exercise | recurring daily event lists — only when `mode == "model"` |
+| csv | the 24 h glucose track (+ food log) **stored with the user**, not a path to the original file — the board will later send it back and the user must be rebuildable from it |
+
+Storage: `data/users.json` + `data/users/<id>/` (picture, csv). The old `profiles.json` / `board_layout.json` are read once to migrate (each person becomes a user, paired with the sensor profile its slot used, else the default `Ideal`), then left alone as a backup. The slot→user map stays in `board_layout.json` but holds user ids.
+
+`AppState.board_plan` (ADR 0005) becomes slot → `User`; Start still pushes exactly that list, and the expected-line engines are still built from the same list.
+
+## Screens
+
+### Toolbar
+New **Users** button on the right with Configuration and Debug (`build_toolbar`, `main_window._build_run_controls`).
+
+### Users screen (`users_window.py`)
+- List of users: picture + name (+ which sensor it is on, if any).
+- **+ Read from…** — choose a connected sensor (menu of live links), read that slot, then follow the flow below.
+- **+ New** — manual user with defaults (not every user will be on a board; also what Model Only mode needs). Opens the profile screen on an unsaved user.
+- Double-click / Open → User Profile screen. Delete.
+
+### Read-from flow (`user_reader.py` + `user_match.py`)
+1. Read the whole slot from the board, serialized under the Sensor-select cursor (one value shared by every connection — same constraint as `BoardMode`): **name**, data source, person config (model + params), sensor config, food list, exercise list. CSV later (below).
+2. Build a *board user* from that.
+3. Look up a saved user by **name**:
+   - **No such name** (or the board has no name) → the user is *unknown*: open the profile screen on a new unsaved user built from the board, named "Unknown" (editable; nothing is written until Save).
+   - **Same name, everything matches** → open the profile screen on the saved user.
+   - **Same name, something differs** → popup: *"The board's "Ana" differs from the saved "Ana". Overwrite the saved one with the board's parameters, or create a new user?"* — **Overwrite** / **Create "Ana#2"** / Cancel. Create uses the next free `#N`, saves the new user and **writes the new name to the board** so the two agree.
+4. "Matches" compares floats after rounding both sides to float32 (the wire format), and ignores `height_cm`, picture (the board never has them) — so a read-back user keeps those from the saved copy when overwritten.
+
+### User Profile screen (`user_profile_window.py`)
+```
+┌───────────┬───────────────────────────────────────┐
+│  picture  │                                       │
+│   Name    │        current page (stacked)         │
+│ ───────── │                                       │
+│  Profile  │                                       │
+│  CSV      │                                       │
+│  Food     │                                       │
+│  Exercise │                                       │
+│  Model    │                                       │
+├───────────┴───────────────────────────────────────┤
+│        [ Preview ]   [ Save ]   [ Send to… ]      │
+└───────────────────────────────────────────────────┘
+```
+- **Profile**: picture (choose file → copy + square-crop), name, height, weight, **mode** (CSV / Model).
+- **Mode gates the menu**: CSV → only *CSV* is enabled; Model → *Food*, *Exercise*, *Model* are enabled (CSV disabled). Switching mode is just enabling/disabling pages; data on the other side is kept, not deleted.
+- **Model** page: the person model combo + its parameters, and the sensor model combo + its parameters. `BW` is shown read-only and driven by the Profile page's weight.
+- **Food** / **Exercise** pages (one class, two configurations): rows to add an event at a time of day (carbs + duration / duration + intensity), and a 24 h graph of the events above the table. Per user.
+- **CSV** page: what exists today (choose a Dexcom CSV + window start, matching Food Log), but the chosen window is **copied into the user** on pick.
+- **Preview**: a 24 h graph of the simulated glucose using the user's food, exercise and glucose model **without sensor noise**, or the CSV window when mode is CSV. `ModelStepper` already runs noise-free (sensor noise is on-device only — confirm while implementing), so Preview is a pure function `preview_24h(user) -> (minutes, mg/dL)` stepping 1440 × 1 min with the same sub-stepping the board uses; run it off the UI thread if UVA/Padova is slow.
+- **Save**: persist the user, including the CSV data now.
+- **Send to…**: choose a connected sensor; if the screen differs from what is saved, ask **"Save before sending?"** (Save & send / Send without saving / Cancel). Send writes name, mode, model + params, sensor model + params, food + exercise (cleared first) **or** the CSV upload, records the slot assignment, and re-asks `BoardMode`. Built from `StartPush`'s per-slot push, which is generalized from "all slots" to "one slot, one user".
+
+### Configuration window
+Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…). Speed, Model Only, CGMS Only, appearance and thresholds stay. Delete `person_config_window.py`, `sensor_config_window.py`, `food_config_window.py`, `exercise_config_window.py`, `ConfigController.person_selected/sensor_selected/editor_requested`, and the matching `WindowDeps` / `ChildWindows` entries once the new screens cover them. `data_source_group.py` is reused or folded into the CSV page.
+
+## Firmware / protocol changes
+
+1. **User name characteristic** (new, read + write, per slot via Sensor select, persisted). `struct sensor_slot` gains `char name[32]` (30 characters + NUL; the app enforces 30 UTF-8 bytes) → bump `SIM_CONFIG_VERSION`; 4 slots grow the struct from ~2.85 KB to ~2.98 KB, still inside the 4 KB `sim_storage_partition`. Empty name = "no user". App side: `encode_user_name` / `decode_user_name` in `api/protocol.py`, UUID in `ble_uuids.py`, `PROTOCOL_SPEC.md` row. **The advertised BLE name stays "Nordic Glucose Sensor N"** — the app maps identity → slot from that name and the pairing/identity work (see memory: identity-1 storm, no-auth tradeoff) must not be disturbed.
+2. **CSV readback — later**, not in this build. The plan only leaves the seam: the reader treats "board is in CSV mode" as a user in CSV mode whose data is *not available from the board yet*; matching on a CSV user compares everything except the track. When the firmware gains a read op (e.g. `CSV_OP_READ` + notify chunks mirroring the upload, CRC-checked), the reader fills the track and the match includes it.
+3. Nothing is added for picture or height — the board has no use for them.
+
+## Decisions this plan relies on (and why)
+
+- **User, not Person + Sensor.** You asked to remove person/sensor from Configuration and put both models inside the user; keeping two profile types behind one screen would just move the confusion.
+- **The user is keyed by name for matching, and only by name.** It is the only identity the board can hold. A board user with an unknown name is *unknown* even if its parameters equal a saved user's.
+- **Contradicts nothing in ADR 0002 or 0005, extends both.** 0002 (board is the authority for what it runs) is what read-from does; 0005 (app writes its profile on Start, one list, two consumers) still holds with "profile" = user — Start now also writes the name. ADR 0005 says CSV sensors are left out of Start and uploaded separately; that stays, but the upload moves into **Send to**. Record this as **ADR 0006**.
+- **Name write on Create "#N" is part of the same action**, not a separate step, so the app and board cannot disagree afterward.
+- **Preview uses the engine, not a new simulator**, so what it shows is by construction what the expected line would draw.
+
+## Slices (each ends green: tests + pylint clean, no `# pylint: disable`)
+
+0. **Clean base.** The working tree has uncommitted work (config/main window edits, staged deletion of `view_config_window.py`, modified `data/*.json`). Commit or set that aside first so this refactor starts from a known state, and so tests' private `data/` copy is the baseline.
+1. **User type + store + migration** (`models/types.py`, `models/user_store.py`). Pure; tests for round-trip and for migrating the current `profiles.json` + `board_layout.json`.
+2. **Pure logic**: `user_match.compare(saved, board_user)` (float32-aware), `next_free_name("Ana") -> "Ana#2"`, `preview_24h(user)`. Tests first (TDD).
+3. **Firmware + protocol: user name.** Flash, then verify on hardware: write name to slot 2, read back, power-cycle, read again, other slots untouched. Extend `scripts/e2e_4sensor.py`.
+4. **Reader + Users screen + toolbar button.** `user_reader` (one slot, serialized), the three outcomes of read-from, the overwrite/create popup. Test the flow against `FakeSession`s the way `test_board_mode_fixes.py` / `test_send_confirmation.py` do.
+5. **User Profile shell + Profile + Model pages**, mode gating, Save.
+6. **Food + Exercise pages** with their 24 h graphs (reuse the instant-event/food graph code from `glucose_graph.py` where it fits).
+7. **CSV page** with the 24 h window copied into the user's folder on pick (the path to the original file is not kept).
+8. **Preview + Send to…** with the save-before-send popup; sending to a sensor that already has another user simply overwrites it (name included), no extra warning; generalize `StartPush` to one slot / one user; slot assignment by user id.
+9. **Remove the old**: Configuration group, four editor windows, controller signals, `board_plan`/`engine_slots` on users, `sensor_tabs` tab title/avatar from the user (the single `avatar_icon` call site the tabbed-UI spec reserved), `scripts/scenario_dispatch.py` and `scenarios/*.json` (they reference persons/sensors by name), docs (`APPLICATION.md`, `ARCHITECTURE.md`, `PROTOCOL_SPEC.md`, `TODO.md`), ADR 0006.
+10. **Hardware pass**: read-from each of the four slots; the three outcomes; Create "#2" and confirm the board's name changed; Send a model user and a CSV user; Start still runs (ADR 0005).
+
+## Risks
+
+- **Reading a whole slot is slow** (six GATT reads behind one shared cursor, ~80 ms pacing for writes). The Users screen needs a progress state and a timeout, and must not run during Start's push (same cursor).
+- **Float round-trip**: params go through float32 on the wire; comparing raw doubles would flag every user as "differs". Slice 2 covers it.
+- **Flash layout bump** wipes or migrates saved board config on first boot of the new firmware — decide migrate-vs-defaults when doing slice 3 and say so in the PR.
+- **Migration of scenarios and the e2e scripts** that address persons by name is easy to forget; they are the only callers outside the GUI.
+
+## Decisions you made (answers to the review questions)
+
+1. Height: app-only, display only, no use for now.
+2. Board name: 30 characters.
+3. Matching: by name only.
+4. CSV: copy the 24 h window into the user; no path kept.
+5. **+ New** exists alongside **+ Read from…**, because not every user will be on the board.
+6. Send to a sensor that already has a different user: overwrite, no warning.

@@ -45,14 +45,13 @@ def _wire(persons=None, sensors=None):
         lambda: st.speed,
     )
     seen: dict[str, list] = {
-        k: [] for k in ("person", "sensor", "speed", "model", "cgms", "comm", "editor")
+        k: [] for k in ("person", "sensor", "speed", "model", "cgms", "editor")
     }
     c.person_selected.connect(lambda p: seen["person"].append(p))
     c.sensor_selected.connect(lambda s: seen["sensor"].append(s))
     c.speed_change_requested.connect(lambda v: seen["speed"].append(v))
     c.model_only_toggled.connect(lambda b: seen["model"].append(b))
     c.cgms_only_toggled.connect(lambda b: seen["cgms"].append(b))
-    c.comm_profile_toggled.connect(lambda b: seen["comm"].append(b))
     c.editor_requested.connect(lambda name: seen["editor"].append(name))
     return c, st, seen
 
@@ -87,13 +86,11 @@ def test_mode_toggles_and_editor_buttons_reach_the_app():
 
     win.model_only_check.setChecked(True)
     win.cgms_only_check.setChecked(True)
-    win.comm_profile_combo.setCurrentIndex(1)
     win.person_configure_btn.click()
     win.sensor_configure_btn.click()
 
     assert seen["model"] == [True]
     assert seen["cgms"] == [True]
-    assert seen["comm"] == [True]
     assert seen["editor"] == ["person", "sensor"]
 
 
@@ -144,3 +141,42 @@ def test_controls_locked_disables_config_sending_widgets():
 
     c.set_controls_locked(False)
     assert win.speed_combo.isEnabled()
+
+
+def test_appearance_lives_in_the_configuration_window(monkeypatch):
+    """Theme and graph time window used to be a separate View window."""
+    from gui import configuration_window
+    from models import app_settings
+
+    applied = []
+    monkeypatch.setattr(
+        configuration_window, "apply_theme", lambda _app, mode: applied.append(mode)
+    )
+    c, _st, _seen = _wire()
+    pings = {"theme": 0, "window": 0}
+    c.theme_changed.connect(lambda: pings.__setitem__("theme", pings["theme"] + 1))
+    c.view_window_changed.connect(lambda: pings.__setitem__("window", pings["window"] + 1))
+    win = ConfigurationWindow(c)
+
+    win.theme_combo.setCurrentIndex(win.theme_combo.findData("light"))
+    win.window_combo.setCurrentIndex(win.window_combo.findData(21600))
+
+    assert applied == ["light"]
+    assert app_settings.load_theme() == "light"
+    assert app_settings.load_pref("view_window_s", 0) == 21600
+    assert pings == {"theme": 1, "window": 1}
+
+
+def test_there_is_no_view_window_button_and_no_communication_type():
+    from gui.main_window import MainWindow
+
+    win = MainWindow()
+    try:
+        assert not hasattr(win._configuration_window, "comm_profile_combo")
+        assert "view" not in win.windows._factories
+        assert not hasattr(win._run, "view_btn")
+        labels = [b.text() for b in win.findChildren(type(win._run.stop_btn))]
+        assert "View" not in labels
+    finally:
+        win.sim.engines.stop_all()
+        win.close()

@@ -21,7 +21,6 @@ from gui.exercise_config_window import ExerciseConfigWindow
 from gui.food_config_window import FoodConfigWindow
 from gui.person_config_window import PersonConfigWindow
 from gui.sensor_config_window import SensorConfigWindow
-from gui.view_config_window import ViewConfigWindow
 from models.types import PersonProfile
 
 
@@ -38,8 +37,6 @@ class WindowDeps:
     record_slot_assignment: Callable[..., None]
     on_person_selected: Callable[[PersonProfile | None], None]
     on_sensor_selected: Callable
-    on_theme_changed: Callable[[], None]
-    on_view_window_changed: Callable[[], None]
     on_bluetooth_created: Callable[[BluetoothWindow], None]
 
 
@@ -53,7 +50,6 @@ class ChildWindows:
         self._factories: dict[str, Callable[[], QWidget]] = {
             "debug": lambda: DebugWindow(d.ble_log),
             "bluetooth": lambda: BluetoothWindow(d.ble_log),
-            "view": lambda: ViewConfigWindow(d.on_theme_changed, d.on_view_window_changed),
             "person": lambda: PersonConfigWindow(
                 d.person_profiles,
                 d.on_profiles_changed,

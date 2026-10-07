@@ -519,5 +519,5 @@ local model through `window.sim`.
 4. Start → received (solid) + expected (dashed) lines track; range metrics populate.
 5. Insert PISA Now 40 % / 10 min → received line dips ~40 % and recovers; interval shaded.
 6. CSV Analysis → open `dataset/Dexcom_001.csv` → Assign to a patient → Configuration → Send CSV to Board → received line becomes the recorded trace.
-7. View → Graph time window → Last 1 hour vs Entire run.
+7. Configuration → Appearance → Graph time window → Last 1 hour vs Entire run.
 8. Power-cycle the board (no app) → it keeps streaming the last config.

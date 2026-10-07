@@ -62,7 +62,8 @@ readings against the same model run locally as a cross-check.
   graph view (or the whole run)
 - PISA (pressure-induced sensor attenuation) injection with the affected
   interval shaded on that sensor's graph
-- Switchable BLE profile: standard SIG CGMS or a basic Dexcom-style stream
+- BLE profile: standard SIG CGMS (a basic Dexcom-style stream exists in the firmware and
+  protocol; the app's selector for it was removed pending a refactor)
 - Scan for and connect to several nearby BLE devices at once, with
   automatic pairing for devices needing it (Windows)
 - Link-health reporting: a dropped link greys the tab, a connected-but-silent
