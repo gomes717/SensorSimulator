@@ -61,15 +61,19 @@ class _Signal:
 class _Session:
     """Just enough of BleSession for BoardMode's reads and Start's config push."""
 
-    def __init__(self, slot_index, user_id, live=True):
+    def __init__(self, slot_index, user_id, live=True, exposes=("user_name",)):
         self.slot_index = slot_index
         self.user_id = user_id
         self.is_live = live
+        self._exposes = set(exposes)
         self.config_read = _Signal()
         self.board_layout_finished = _Signal()
         self.writes = []
         self.reads = []
         self.pushes = []  # (entries, run) per send_board_layout call
+
+    def exposes(self, key):
+        return key in self._exposes
 
     def queue_write(self, key, payload):
         self.writes.append((key, payload))
@@ -120,7 +124,7 @@ def win(app):
     w.close()
 
 
-def _connect(win, *sessions):
+def _connect(win, *sessions: _Session) -> tuple[_Session, ...]:
     win.windows.bluetooth = _Bt(list(sessions))
     return sessions
 
@@ -293,6 +297,7 @@ def test_start_writes_each_sensors_profile_before_the_run_begins(win):
     assert [e["slot"] for e in entries] == [0, 1]
     assert _writes(entries[0]) == [
         "speed",
+        "user_name",
         "person",
         "sensor",
         "data_source",
@@ -302,8 +307,16 @@ def test_start_writes_each_sensors_profile_before_the_run_begins(win):
         "exercise",
     ]
     # every user has a sensor-noise model now, so each slot gets its sensor written too
-    assert _writes(entries[1]) == ["person", "sensor", "data_source", "food", "exercise"]
+    assert _writes(entries[1]) == [
+        "user_name",
+        "person",
+        "sensor",
+        "data_source",
+        "food",
+        "exercise",
+    ]
     sent = dict(entries[0]["writes"])
+    assert protocol.decode_user_name(sent["user_name"]) == "a"  # the board is told who it runs
     assert sent["person"] == protocol.encode_person_config(person.model_id, person.params)
     assert not any(k == "run_state" for k, _ in s0.writes)  # nothing started yet
 
@@ -313,6 +326,26 @@ def test_start_writes_each_sensors_profile_before_the_run_begins(win):
         protocol.RUN_STATE_STOPPED,
         protocol.RUN_STATE_RUNNING,
     ]
+
+
+def test_start_still_works_when_the_board_does_not_list_user_name(win):
+    """Right after a firmware update Windows can hide the new characteristic (a stale services
+    cache): Start must push the model as before, not fail because it cannot write the name."""
+    _assign(win, 0, _person("a"))
+    (s0,) = _connect(win, _Session(0, "S1", exposes=()))
+    win._run.start()
+    entries, _run = s0.pushes[0]
+    assert "user_name" not in _writes(entries[0])
+    assert "person" in _writes(entries[0])
+
+
+def test_start_skips_a_name_the_board_cannot_hold_instead_of_failing(win):
+    _assign(win, 0, _person("n" * 40))  # a migrated name longer than the board's 30 bytes
+    (s0,) = _connect(win, _Session(0, "S1"))
+    win._run.start()
+    entries, _run = s0.pushes[0]
+    assert "user_name" not in _writes(entries[0])
+    assert "person" in _writes(entries[0])
 
 
 def test_start_does_not_touch_a_csv_sensor(win):

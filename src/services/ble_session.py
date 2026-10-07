@@ -721,12 +721,13 @@ class BleSession(QThread):
         """Thread-safe: apply a whole multi-slot layout to this session's board.
 
         Each entry in *slots* is
-        ``{"slot": int, "writes": [(char_key, payload), ...], "csv": {"uploads": [...]} | None}``.
-        For every slot the sensor-select cursor is set first, then the ordered
-        per-sensor writes are sent (paced so the board's config queue keeps up),
-        then any CSV tracks. Progress arrives on board_layout_progress; the
-        outcome on board_layout_finished. The board is left RUNNING unless
-        *run* is False (the caller starts the run itself, once every slot is in).
+        ``{"slot": int, "writes": [(char_key, payload), ...], "csv": {"uploads": [...]} | None,
+        "after_csv": [(char_key, payload), ...]}`` (``after_csv`` optional). For every slot the
+        sensor-select cursor is set first, then the ordered per-sensor writes are sent (paced so
+        the board's config queue keeps up), then any CSV tracks, then the ``after_csv`` writes.
+        Progress arrives on board_layout_progress; the outcome on board_layout_finished. The
+        board is left RUNNING unless *run* is False (the caller starts the run itself, once
+        every slot is in).
         """
         if self._loop is None:
             self.board_layout_finished.emit(self._address, False, "not connected")
@@ -770,6 +771,14 @@ class BleSession(QThread):
                 csv = entry.get("csv")
                 if csv:
                     await self._upload_csv_sets(csv["uploads"])
+                # Writes that must land only once the upload is in (switching the slot to the CSV
+                # source before the track is complete would leave it playing its old model, with
+                # the clock already running, until the commit).
+                for char_key, payload in entry.get("after_csv", []):
+                    characteristic = self._config_characteristics.get(char_key)
+                    if characteristic is None:
+                        raise RuntimeError(f"device does not expose '{char_key}'")
+                    await self._layout_write(characteristic, payload)
                 self.board_layout_progress.emit(self._address, done + 1, total)
 
             if run and run_state is not None:

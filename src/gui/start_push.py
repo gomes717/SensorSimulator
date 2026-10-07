@@ -7,7 +7,8 @@ meal / exercise schedules from the app, writes them to the board, and only then
 starts the run. :meth:`AppState.board_plan` is the single list of what that means;
 the local engines are built from the same list, so the two lines cannot disagree.
 
-A sensor that replays a CSV is left alone — its recording is uploaded separately.
+Each sensor is also told the name of the user it runs. A sensor that replays a CSV is left
+alone — its recording is uploaded separately (by Send to…).
 
 The writes go through ONE session, one slot after another: the sensor-select cursor
 is a single value on the board shared by every connection, so two sessions pushing
@@ -73,6 +74,14 @@ class StartPush(QObject):
             return
 
         entries = [slot_entry(slot, person, sensor) for slot, (person, sensor) in plan.items()]
+        # Tell each sensor who it runs — but only if the board lists the characteristic (a stale
+        # Windows services cache can hide it right after a firmware update) and the name fits:
+        # the model is what Start is for, and it must not fail over the name.
+        if live[0].exposes("user_name"):
+            for entry, (person, _sensor) in zip(entries, plan.values(), strict=True):
+                name = user_send.name_write(person.name)
+                if name is not None:
+                    entry["writes"].insert(0, name)
         entries[0]["writes"].insert(0, ("speed", speed))
         names = ", ".join(str(slot + 1) for slot in plan)
         self._show_status(f"Sending the configuration to sensor(s) {names}…")

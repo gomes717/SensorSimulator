@@ -8,8 +8,9 @@ The board's Sensor-select cursor is set to the slot first by the session; the wr
   source and given its meals and exercise (each list **cleared first**: the board keeps what an
   earlier session left, and a stale meal on the board is exactly how it and the app's expected line
   drift apart). The model writes are shared with Start's push (:func:`model_writes`).
-* **A CSV user** is written its name and the CSV source, then its recorded window is uploaded. The
-  board's own model config is left alone — the recording drives it.
+* **A CSV user** is written its name, then its recorded window is uploaded, and only then is the
+  slot switched to the CSV source (so it never plays its old model with the CSV source already
+  on). The board's own model config is left alone — the recording drives it.
 
 The name goes first and is a plain write: it is metadata and does not reset the board's simulation.
 """
@@ -43,6 +44,15 @@ def model_writes(person: PersonProfile, sensor: SensorProfile | None) -> list[tu
     return writes
 
 
+def name_write(name: str) -> tuple[str, bytes] | None:
+    """The write that tells the board *name*, or None when there is nothing it can hold (empty, or
+    longer than its 30 bytes — a name that arrived from an older profile)."""
+    name = name.strip()
+    if not name or len(name.encode("utf-8")) > protocol.MAX_USER_NAME_BYTES:
+        return None
+    return ("user_name", protocol.encode_user_name(name))
+
+
 def refusal(user: User) -> str | None:
     """Why *user* cannot be sent, or None."""
     name = user.name.strip()
@@ -73,8 +83,10 @@ def slot_entry(slot: int, user: User) -> dict:
         )
         return {
             "slot": slot,
-            "writes": [name, ("data_source", protocol.encode_data_source(True))],
+            "writes": [name],
             "csv": {"uploads": uploads},
+            # The CSV source is switched on only once the recording is complete on the board.
+            "after_csv": [("data_source", protocol.encode_data_source(True))],
         }
     writes = model_writes(user_sim.person_profile_of(user), user_sim.sensor_profile_of(user))
     return {"slot": slot, "writes": [name, *writes], "csv": None}

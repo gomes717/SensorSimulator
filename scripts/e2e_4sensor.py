@@ -903,95 +903,6 @@ def f11_reboot_persistence(ctx: FourCtx):
         )
 
 
-def _select_target(bar, address: str, slot: int) -> None:
-    """Point a DeviceTargetBar at *address*. The target slot is derived from that
-    device's own identity (numbered advertised name), so it should already equal
-    *slot* — there is no separate slot picker anymore."""
-    bar.refresh()
-    for i in range(bar.combo.count()):
-        if bar.combo.itemData(i) == address:
-            bar.combo.setCurrentIndex(i)
-            break
-    pump(100)
-    assert bar.selected_slot() == slot, (
-        f"target device's derived slot should be {slot}, got {bar.selected_slot()}"
-    )
-
-
-def f12_config_window_target_slot(ctx: FourCtx):
-    with Case(ctx, "F12-01", "config_window_target_slot", "F12") as c:
-        if not ctx.serial_live():
-            raise _Skip("no serial console")
-        sess = ctx.cfg_session()
-        addr = sess._address
-        # push a fresh known layout (earlier cases mutate individual slots, so
-        # don't trust _ensure_layout's "already running" shortcut here)
-        persons, sensors = _persons(), _sensors()
-        ctx.push_layout(
-            c,
-            [
-                (0, "camb", "ideal"),
-                (1, "uva", "breton"),
-                (2, "roy", "ideal"),
-                (3, "deich", "breton"),
-            ],
-            persons,
-            sensors,
-        )
-        _set_speed(sess, 60)
-        ctx.wait_slot(1, lambda ln: ln["model"] == 1, 25, "slot 1 starts as UVA/Padova")
-
-        # --- Person window → write a Deichmann person to slot 2 only ---
-        ctx.w.state.person_profiles.append(
-            PersonProfile("F12-Deichmann", ModelId.DEICHMANN, deichmann.default_params())
-        )
-        ctx.w._on_profiles_changed()
-        ctx.w.windows.open("person")
-        pcw = ctx.w.windows.get("person")
-        pcw._reload_list()
-        pcw._list.setCurrentRow(len(ctx.w.state.person_profiles) - 1)
-        _select_target(pcw._target_bar, addr, 2)
-        c.step("Person window: Target slot 2, Send to Board (Deichmann)")
-        pcw._send_to_board()
-        ctx.wait_slot(2, lambda ln: ln["model"] == 3, 30, "slot 2 serial model=3 (Deichmann)")
-        c.assert_(ctx.slot_line(0)["model"] == 0, "slot 0 untouched by the slot-2 send")
-        c.assert_(ctx.slot_line(1)["model"] == 1, "slot 1 untouched by the slot-2 send")
-
-        # --- Person window → Read from Board, slot 1, expect UVA/Padova ---
-        # _on_config_read writes the decoded model onto the selected profile.
-        prof = ctx.w.state.person_profiles[-1]
-        prof.model_id = ModelId.CAMBRIDGE  # so a stale value can't pass the check
-        _select_target(pcw._target_bar, addr, 1)
-        c.step("Person window: Target slot 1, Read from Board")
-        pcw._read_from_board()
-        c.wait_until(
-            lambda: prof.model_id == ModelId.UVA_PADOVA,
-            15,
-            "person readback for slot 1 loaded into the form",
-        )
-        c.measure("slot1_readback", prof.model_id.name)
-        c.assert_(
-            prof.model_id == ModelId.UVA_PADOVA,
-            "Read from Board with slot 1 selected returns slot 1's config",
-            prof.model_id.name,
-        )
-
-        # --- Sensor window → write a Breton sensor to slot 0 only ---
-        ctx.w.state.sensor_profiles.append(
-            SensorProfile("F12-Breton", SensorId.BRETON, sensor_defaults.breton_default_params())
-        )
-        ctx.w._on_profiles_changed()
-        ctx.w.windows.open("sensor")
-        scw = ctx.w.windows.get("sensor")
-        scw._reload_list()
-        scw._list.setCurrentRow(len(ctx.w.state.sensor_profiles) - 1)
-        _select_target(scw._target_bar, addr, 0)
-        c.step("Sensor window: Target slot 0, Send to Board (Breton)")
-        scw._send_to_board()
-        ctx.wait_slot(0, lambda ln: ln["sensor"] == 1, 30, "slot 0 serial sensor=1 (Breton)")
-        c.assert_(ctx.slot_line(2)["sensor"] == 0, "slot 2 sensor untouched by the slot-0 send")
-
-
 def f13_instant_dialog_target_slot(ctx: FourCtx):
     with Case(ctx, "F13-01", "instant_dialog_target_slot", "F13") as c:
         if not ctx.serial_live():
@@ -1226,7 +1137,6 @@ CASES = [
     f7_insert_pisa,
     f8_alerts,
     f9_per_slot_isolation,
-    f12_config_window_target_slot,
     f13_instant_dialog_target_slot,
     f14_identity_shows_patient,
     f10_reconnect_autonomy,

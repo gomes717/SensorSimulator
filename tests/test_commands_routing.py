@@ -51,6 +51,9 @@ class _Session:
         self.is_live = live
         self.board_layout_finished = _Done()
 
+    def exposes(self, _key):
+        return True
+
     def send_board_layout(self, _entries, *, run=True):
         """Start's config push: the board takes it at once."""
         self.board_layout_finished.emit("addr", True, "applied")

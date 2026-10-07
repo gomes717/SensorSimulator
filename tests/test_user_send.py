@@ -93,10 +93,11 @@ def test_the_weight_is_what_is_written_as_bw():
 # -- a CSV user -----------------------------------------------------------------------------
 
 
-def test_a_csv_user_is_written_its_name_and_csv_mode_and_then_uploaded():
+def test_a_csv_user_is_named_then_uploaded_and_only_then_switched_to_csv_mode():
     entry = user_send.slot_entry(1, _csv_user())
-    assert _keys(entry) == ["user_name", "data_source"]
-    assert protocol.decode_data_source(dict(entry["writes"])["data_source"]) is True
+    assert _keys(entry) == ["user_name"]  # before the upload
+    assert [key for key, _ in entry["after_csv"]] == ["data_source"]  # after it
+    assert protocol.decode_data_source(dict(entry["after_csv"])["data_source"]) is True
     uploads = entry["csv"]["uploads"]
     assert [u["track"] for u in uploads] == [protocol.CSV_TRACK_GLUCOSE, protocol.CSV_TRACK_FOODLOG]
     assert uploads[0]["row_count"] == 288 and uploads[0]["interval_s"] == 300
@@ -166,3 +167,16 @@ def test_start_and_send_write_the_same_model_inputs():
     start = start_entry(0, user_sim.person_profile_of(user), user_sim.sensor_profile_of(user))
     send = user_send.slot_entry(0, user)
     assert send["writes"][1:] == start["writes"]  # Send is Start's writes with the name first
+
+
+# -- the name on its own (Start tells each sensor who it runs) -------------------------------------
+
+
+def test_the_name_write_is_the_trimmed_utf8_name():
+    assert user_send.name_write("  Ana ") == ("user_name", b"Ana")
+
+
+def test_there_is_no_name_write_for_nothing_or_for_a_name_the_board_cannot_hold():
+    assert user_send.name_write("   ") is None
+    assert user_send.name_write("n" * 31) is None
+    assert user_send.name_write("n" * 30) == ("user_name", b"n" * 30)

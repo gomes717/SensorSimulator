@@ -25,6 +25,11 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+# The app's status messages carry characters (a check mark) a cp1252 console cannot print; a harness
+# must report a result, not die on how it is displayed.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
