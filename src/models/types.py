@@ -37,6 +37,14 @@ class SensorId(IntEnum):
     FACCHINETTI = 2
 
 
+# One spelling of each sensor-noise model's name, shared by every window that shows one.
+SENSOR_LABELS = {
+    SensorId.IDEAL: "Ideal CGM (no noise)",
+    SensorId.BRETON: "Breton & Kovatchev 2008",
+    SensorId.FACCHINETTI: "Facchinetti et al. 2014",
+}
+
+
 @dataclass
 class FoodEvent:
     """A meal that recurs every simulated day at the same time of day.

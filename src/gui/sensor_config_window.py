@@ -28,13 +28,9 @@ from gui.bluetooth_window import BluetoothWindow
 from gui.device_target import DeviceTargetBar, await_send_confirmation, restart_board
 from gui.widgets import NoWheelDoubleSpinBox
 from models import sensors
+from models.types import SENSOR_LABELS as _SENSOR_LABELS
 from models.types import SensorId, SensorProfile
 
-_SENSOR_LABELS = {
-    SensorId.IDEAL: "Ideal CGM (no noise)",
-    SensorId.BRETON: "Breton & Kovatchev 2008",
-    SensorId.FACCHINETTI: "Facchinetti et al. 2014",
-}
 _SENSOR_DEFAULTS = {
     SensorId.IDEAL: sensors.ideal_default_params,
     SensorId.BRETON: sensors.breton_default_params,

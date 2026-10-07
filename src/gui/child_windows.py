@@ -35,7 +35,7 @@ class UsersDeps:
     live_sessions: Callable[[], list]
     reader: UserReader
     board_busy: Callable[[], bool]
-    on_open: Callable[[User, bool], None]
+    on_open: Callable[[User, bool], object]  # a window opener may return its window
 
 
 @dataclass

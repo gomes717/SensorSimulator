@@ -15,10 +15,10 @@ pytest.importorskip("PyQt6.QtWidgets")
 from PyQt6.QtWidgets import QApplication, QPushButton
 
 from api import protocol
-from gui import user_summary
+from gui.user_profile_window import UserProfileWindow
 from gui.users_window import UsersWindow
 from models import user_store
-from models.types import CsvTrack, ExerciseEvent, FoodEvent, ModelId, SensorId
+from models.types import ModelId
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -69,75 +69,69 @@ def test_the_app_state_has_the_migrated_users(win):
     assert all(u.id for u in win.state.users)
 
 
-# -- opening a user (interim, until the profile screen) --------------------------
+# -- opening a user opens its profile screen --------------------------------------------
 
 
-def test_opening_a_saved_user_shows_it_and_changes_nothing(win, monkeypatch):
-    shown = []
-    monkeypatch.setattr(user_summary, "show", lambda _p, user, draft: shown.append((user, draft)))
-    before = list(win.state.users)
-    win._on_user_open_requested(before[0], False)
-    assert shown == [(before[0], False)]
-    assert win.state.users == before
-
-
-def test_a_draft_the_person_saves_is_added_and_persisted(win, monkeypatch):
-    monkeypatch.setattr(user_summary, "show", lambda *_a: True)
-    draft = user_store.new_user("Ana (from the board)")
-    n = len(win.state.users)
-    win._on_user_open_requested(draft, True)
-    assert len(win.state.users) == n + 1
-    assert win.state.users[-1].name == "Ana (from the board)"
-    assert draft.name in [u.name for u in user_store.load()]  # on disk
-
-
-def test_a_draft_that_is_not_saved_is_dropped(win, monkeypatch):
-    monkeypatch.setattr(user_summary, "show", lambda *_a: False)
-    n = len(win.state.users)
-    win._on_user_open_requested(user_store.new_user("Ana"), True)
-    assert len(win.state.users) == n
-
-
-def test_a_saved_draft_with_a_taken_name_gets_a_free_one(win, monkeypatch):
-    monkeypatch.setattr(user_summary, "show", lambda *_a: True)
-    taken = win.state.users[0].name
-    win._on_user_open_requested(user_store.new_user(taken), True)
-    assert win.state.users[-1].name == f"{taken}#2"
-
-
-def test_the_window_list_refreshes_when_a_draft_is_saved(win, monkeypatch):
-    monkeypatch.setattr(user_summary, "show", lambda *_a: True)
+def _open(win, user, draft=False):
+    """Open *user* the way the Users window does, and return the profile screen."""
     win.windows.ensure("users")
-    window = win.windows.get("users")
-    assert isinstance(window, UsersWindow)
-    win._on_user_open_requested(user_store.new_user("Fresh"), True)
-    assert _texts(window)[-1] == "Fresh"
+    users_window = win.windows.get("users")
+    assert isinstance(users_window, UsersWindow)
+    users_window.open_requested.emit(user, draft)
+    screens = win.findChildren(UserProfileWindow)
+    return next(s for s in screens if s.user.id == user.id)
 
 
-# -- the summary text ---------------------------------------------------------
+def test_opening_a_saved_user_shows_its_profile_screen(win):
+    user = win.state.users[0]
+    screen = _open(win, user)
+    assert screen.user.name == user.name
+    assert screen.isVisible()
+    assert not screen.is_dirty
+    screen.close()
 
 
-def test_a_model_user_summary_names_its_model_sensor_and_schedule():
-    user = user_store.new_user("Ana")
-    user.model_id = ModelId.UVA_PADOVA
-    user.sensor_id = SensorId.BRETON
-    user.food_events = [FoodEvent(480, 60.0, 20), FoodEvent(720, 30.0, 15)]
-    user.exercise_events = [ExerciseEvent(1080, 45, 70.0)]
-    user.height_cm = 171.0
-    text = user_summary.summarize(user)
-    assert "Name: Ana" in text
-    assert "UVA/Padova" in text and "Breton" in text
-    assert "Meals: 2" in text and "Exercise: 1" in text
-    assert "Height: 171 cm" in text
+def test_opening_the_same_user_again_shows_the_same_screen(win):
+    user = win.state.users[0]
+    first = _open(win, user)
+    assert _open(win, user) is first
+    assert len([s for s in win.findChildren(UserProfileWindow) if s.user.id == user.id]) == 1
+    first.close()
 
 
-def test_a_csv_user_summary_says_when_the_window_is_not_available():
-    user = user_store.new_user("Csv")
-    user.mode = "csv"
-    assert "not available" in user_summary.summarize(user)
-    user.csv = CsvTrack(samples=[100] * 288, interval_s=300, foodlog=[])
-    text = user_summary.summarize(user)
-    assert "288 samples (24 h)" in text and "Meals" not in text
+def test_a_draft_is_added_only_when_the_screen_saves_it(win):
+    draft = user_store.new_user("From the board")
+    n = len(win.state.users)
+    screen = _open(win, draft, draft=True)
+    assert len(win.state.users) == n  # opening a draft saves nothing
+    assert screen.save() is True
+    assert win.state.users[-1].name == "From the board"
+    assert "From the board" in [u.name for u in user_store.load()]  # on disk
+    screen.close()
+
+
+def test_saving_refreshes_the_users_list_and_says_so(win):
+    win.windows.ensure("users")
+    users_window = win.windows.get("users")
+    assert isinstance(users_window, UsersWindow)
+    screen = _open(win, win.state.users[0])
+    screen.profile_page.name_edit.setText("Renamed")
+    screen.profile_page.name_edit.textEdited.emit("Renamed")
+    assert screen.save() is True
+    assert "Renamed" in _texts(users_window)
+    assert "Renamed" in win.statusBar().currentMessage()
+    screen.close()
+
+
+def test_closing_the_app_asks_about_an_unsaved_profile_screen_and_cancel_keeps_it_open(win):
+    screen = _open(win, win.state.users[0])
+    asked = []
+    screen._ask_unsaved = lambda: asked.append(1)  # Cancel
+    screen.profile_page.weight_spin.setValue(99.0)
+    assert win.close() is False
+    assert asked == [1]
+    screen._ask_unsaved = lambda: "discard"
+    assert win.close() is True
 
 
 # -- sharing the Sensor-select cursor with BoardMode --------------------------------

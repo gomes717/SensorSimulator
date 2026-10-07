@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QMainWindow
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
-from gui import run_controller, user_summary
+from gui import run_controller
 from gui.app_state import AppState
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
@@ -34,8 +34,10 @@ from gui.sensor_tabs import SensorTabs
 from gui.simulation import SimulationCoordinator
 from gui.start_push import StartPush
 from gui.toolbar import build_toolbar
+from gui.user_profile_window import ProfileDeps, UserProfileWindow
+from gui.user_profiles import UserProfiles
 from gui.user_reader import UserReader
-from models import user_match
+from gui.users_window import UsersWindow
 from models.types import PersonProfile, SensorProfile, User
 
 
@@ -141,6 +143,9 @@ class MainWindow(QMainWindow):
         c.theme_changed.connect(lambda: self.sensors.rebuild_for_theme())
         c.view_window_changed.connect(self._on_view_window_changed)
         self._configuration_window = ConfigurationWindow(c)
+        profiles = UserProfiles(
+            ProfileDeps(self.state.users, self.state.save_users, self._on_user_saved), self
+        )
         self.windows = ChildWindows(
             WindowDeps(
                 ble_log=self._ble_log,
@@ -161,7 +166,7 @@ class MainWindow(QMainWindow):
                     live_sessions=self._board.live_sessions,
                     reader=UserReader(parent=self),
                     board_busy=lambda: self._board_mode.busy,
-                    on_open=self._on_user_open_requested,
+                    on_open=profiles.open,
                 ),
             )
         )
@@ -228,20 +233,12 @@ class MainWindow(QMainWindow):
 
         self._start_push.run(pushed)
 
-    def _on_user_open_requested(self, user: User, is_draft: bool) -> None:
-        """Open a user from the Users window. Until the profile screen exists (slice 5) this
-        shows a summary, and offers to save a draft read from a board."""
-        if not user_summary.show(self, user, is_draft) or not is_draft:
-            return
-        taken = {u.name for u in self.state.users}
-        if user.name in taken:
-            user.name = user_match.next_free_name(user.name, taken)
-        self.state.users.append(user)
-        self.state.save_users()
+    def _on_user_saved(self, user: User) -> None:
+        """A profile screen saved *user*: refresh the Users list and say so."""
         users_window = self.windows.get("users")
-        if users_window is not None:
+        if isinstance(users_window, UsersWindow):
             users_window.refresh()
-            self._show_status(f'Saved "{user.name}".')
+        self._show_status(f'Saved "{user.name}".')
 
     def _disconnect_device(self, address: str) -> None:
         bt = self.windows.bluetooth
@@ -421,7 +418,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Stop the engine and any live BLE session, then close every child window."""
+        """Close the profile screens (each may ask about unsaved changes — Cancel keeps the
+        app open), stop the engine and any live BLE session, then close every child window."""
+        for screen in self.findChildren(UserProfileWindow):
+            if not screen.close():
+                event.ignore()
+                return
         self.sim.stop()
         self.windows.close_all()
         super().closeEvent(event)
