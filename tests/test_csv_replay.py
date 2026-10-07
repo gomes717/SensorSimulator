@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
+from user_helpers import user_of
 
 from models import dexcom_csv
 from models.engine import ModelStepper, load_csv_window
@@ -101,14 +102,15 @@ def test_app_csv_mode_hides_the_food_graph_and_runs_no_model():
         csv_person = _csv_profile(_DEXCOM_CSVS[0])
 
         w.state.model_only = True
-        w.state.active_person = csv_person
-        assert w.state.engine_slots() == {0: csv_person}
+        w.state.active_user = user_of(csv_person)
+        assert w.state.engine_slots()[0].data_source == "csv"
         assert ModelStepper(csv_person).mode == "csv"
+        assert ModelStepper(w.state.engine_slots()[0]).mode == "csv"  # the user's own window
         w.sensors.apply_csv_mode_view()
         assert w.sensors.current_page().graph.fe_canvas.isHidden()
 
         # ...and it flips back for a normal model person.
-        w.state.active_person = PersonProfile(name="m", model_id=ModelId.CAMBRIDGE)
+        w.state.active_user = user_of(PersonProfile(name="m", model_id=ModelId.CAMBRIDGE))
         w.sensors.apply_csv_mode_view()
         assert not w.sensors.current_page().graph.fe_canvas.isHidden()
     finally:

@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
+from user_helpers import user_of
 
 from api import protocol
 from gui import run_controller
@@ -126,11 +127,8 @@ def _connect(win, *sessions):
 
 def _assign(win, slot, person, sensor=None):
     """Save *person* (and *sensor*) in the app and record them on *slot*."""
-    win.state.person_profiles.append(person)
+    win.state.users.append(user_of(person, sensor))
     win.state.board_layout.slots[slot].person = person.name
-    if sensor is not None:
-        win.state.sensor_profiles.append(sensor)
-        win.state.board_layout.slots[slot].sensor = sensor.name
 
 
 def _person(name, model_id=ModelId.CAMBRIDGE, **kwargs):
@@ -232,15 +230,15 @@ def test_an_unassigned_sensor_gets_no_model_once_any_slot_is_assigned(win):
 
 def test_with_nothing_assigned_the_active_patient_stands_in(win):
     """A lost layout record must not leave connected sensors with no expected line."""
-    win.state.active_person = _person("active")
+    win.state.active_user = user_of(_person("active"))
     _connect(win, _Session(0, "S1"))
     assert win.sim._slots() == {0: win.state.active_person}
 
 
 def test_model_only_ignores_the_board(win):
     win.state.model_only = True
-    win.state.person_profiles[:] = [PersonProfile(name="m", model_id=ModelId.CAMBRIDGE)]
-    win.state.active_person = win.state.person_profiles[0]
+    win.state.users[:] = [user_of(PersonProfile(name="m", model_id=ModelId.CAMBRIDGE))]
+    win.state.active_user = win.state.users[0]
     (s0,) = _connect(win, _Session(0, "S1"))
     win._board_mode.refresh(0)
     s0.answer(ModelId.UVA_PADOVA)
@@ -264,7 +262,7 @@ def test_another_sensors_meals_never_reach_this_sensors_expected_model(win):
 
 
 def test_a_lone_unnumbered_sensor_still_feeds_its_engine(win):
-    win.state.active_person = _person("active")
+    win.state.active_user = user_of(_person("active"))
     _connect(win, _Session(None, "Nordic"))
     win.sim.restart()
     fed = []
@@ -303,7 +301,8 @@ def test_start_writes_each_sensors_profile_before_the_run_begins(win):
         "exercise",
         "exercise",
     ]
-    assert _writes(entries[1]) == ["person", "data_source", "food", "exercise"]  # no sensor
+    # every user has a sensor-noise model now, so each slot gets its sensor written too
+    assert _writes(entries[1]) == ["person", "sensor", "data_source", "food", "exercise"]
     sent = dict(entries[0]["writes"])
     assert sent["person"] == protocol.encode_person_config(person.model_id, person.params)
     assert not any(k == "run_state" for k, _ in s0.writes)  # nothing started yet
@@ -356,7 +355,7 @@ def test_the_expected_model_is_built_only_after_the_board_has_the_config(win):
 
 def test_model_only_start_pushes_nothing(win):
     win.state.model_only = True
-    win.state.active_person = _person("m")
+    win.state.active_user = user_of(_person("m"))
     (s0,) = _connect(win, _Session(0, "S1"))
     win._run.start()
     assert s0.pushes == []
@@ -366,7 +365,7 @@ def test_model_only_start_pushes_nothing(win):
 # --- choosing a patient is not a send ----------------------------------------
 
 
-def test_choosing_a_patient_does_not_reset_the_graphs(win):
+def test_opening_a_user_does_not_reset_the_graphs(win):
     win.sensors.on_new_message(
         {
             "user_id": "S1",
@@ -377,42 +376,41 @@ def test_choosing_a_patient_does_not_reset_the_graphs(win):
     )
     page = win.sensors.page_of_user("S1")
     page.add_received(5.0, 111.0)
-    other = PersonProfile(name="other", model_id=ModelId.CAMBRIDGE)
-    win.state.person_profiles.append(other)
-    win._on_person_selected(other)
-    assert win.state.active_person is other
+    other = user_of(PersonProfile(name="other", model_id=ModelId.CAMBRIDGE))
+    win.state.users.append(other)
+    win._activate_user(other)
+    assert win.state.active_user is other
     assert page.graph.buf.graph_y == [111.0]  # untouched
 
 
-def test_saving_a_profile_does_not_reset_the_graphs_with_a_board(win):
+def test_saving_a_user_does_not_reset_the_graphs_with_a_board(win):
     page = win.sensors.page_of_user("S1")
     page.add_received(5.0, 111.0)
-    win._on_profiles_changed()
+    win._on_user_saved(win.state.users[0], None)
     assert page.graph.buf.graph_y == [111.0]
 
 
-def test_model_only_still_restarts_when_the_patient_changes(win):
+def test_model_only_still_restarts_when_the_user_changes(win):
     win.state.model_only = True
     page = win.tabs.pages.default_page
     page.add_received(5.0, 111.0)
-    other = PersonProfile(name="other", model_id=ModelId.CAMBRIDGE)
-    win.state.person_profiles.append(other)
-    win._on_person_selected(other)
+    other = user_of(PersonProfile(name="other", model_id=ModelId.CAMBRIDGE))
+    win.state.users.append(other)
+    win._activate_user(other)
     assert page.graph.buf.graph_y == []
 
 
-def test_choosing_a_patient_refreshes_the_schedule_editors(win):
-    refreshed = []
+def test_renaming_a_user_moves_its_slot_along(win):
+    _assign(win, 0, _person("Ana"))
+    saved = win.state.users[-1]
+    saved.name = "Ana R"
+    win._on_user_saved(saved, "Ana")
+    assert win.state.board_layout.slots[0].person == "Ana R"
+    assert list(win.state.engine_slots()) == [0]  # still found, under its new name
 
-    class _Editor:
-        def refresh(self):
-            refreshed.append(1)
 
-    win.windows._windows["food"] = _Editor()
-    win.windows._windows["exercise"] = _Editor()
-    other = PersonProfile(name="other", model_id=ModelId.CAMBRIDGE)
-    win.state.person_profiles.append(other)
-    win._on_person_selected(other)
-    assert len(refreshed) == 2
-    win.windows._windows.pop("food")
-    win.windows._windows.pop("exercise")
+def test_deleting_a_user_takes_it_off_its_slot(win):
+    _assign(win, 0, _person("Ana"))
+    gone = win.state.users.pop()
+    win._on_user_deleted(gone)
+    assert win.state.board_layout.slots[0].person is None

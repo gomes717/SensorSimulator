@@ -55,6 +55,9 @@ def load_csv_window(profile: PersonProfile) -> tuple[list[int], int, list[tuple[
     by both the local replay engine and the board-upload path so they always
     agree on the bytes.
     """
+    track = getattr(profile, "csv_track", None)
+    if track is not None:
+        return list(track.samples), track.interval_s, list(track.foodlog)
     path = getattr(profile, "csv_path", None)
     start_iso = getattr(profile, "csv_window_start_iso", None)
     if not path or not start_iso:

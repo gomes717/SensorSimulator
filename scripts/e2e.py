@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import QApplication
 
 import gui.main_window as mw
 from api import protocol
-from models import cambridge
+from models import cambridge, user_store
 from models.types import ModelId, PersonProfile
 from services.ble_session import BleSession
 
@@ -513,14 +513,12 @@ def sig_stream(ctx: Ctx) -> list[float]:
 
 
 def new_person(w, name: str, model=ModelId.CAMBRIDGE, params=None) -> PersonProfile:
+    """Add a user running *model* and make it the active one. Not saved to disk: a harness must
+    not leave test users in the real users file."""
     p = PersonProfile(name=name, model_id=model, params=params or cambridge.default_params())
-    w.state.person_profiles.append(p)
-    w._on_profiles_changed()
-    cfg = w._configuration_window
-    for i in range(cfg.person_combo.count()):
-        if getattr(cfg.person_combo.itemData(i), "name", None) == name:
-            cfg.person_combo.setCurrentIndex(i)
-            break
+    [user] = user_store.migrate([p], [], [])
+    w.state.users.append(user)
+    w._activate_user(user)
     return p
 
 

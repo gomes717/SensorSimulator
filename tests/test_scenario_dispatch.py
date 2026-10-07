@@ -18,6 +18,7 @@ pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
 from scenario_dispatch import ScenarioDispatch
+from user_helpers import user_of
 
 from models.types import ModelId, PersonProfile
 
@@ -43,17 +44,15 @@ def test_speed_step_reaches_the_app(win):
     assert "x30" in line
 
 
-def test_person_step_selects_the_profile(win):
-    win.state.person_profiles.append(PersonProfile(name="Scn Pt", model_id=ModelId.CAMBRIDGE))
-    win._on_profiles_changed()
+def test_person_step_selects_the_user(win):
+    win.state.users.append(user_of(PersonProfile(name="Scn Pt", model_id=ModelId.CAMBRIDGE)))
     line = win.dispatch("person", {"person": "Scn Pt"})
     assert win.state.active_person is not None and win.state.active_person.name == "Scn Pt"
     assert "Scn Pt" in line
 
 
 def test_run_state_start_then_stop(win):
-    win.state.person_profiles.append(PersonProfile(name="Run Pt", model_id=ModelId.CAMBRIDGE))
-    win._on_profiles_changed()
+    win.state.users.append(user_of(PersonProfile(name="Run Pt", model_id=ModelId.CAMBRIDGE)))
     win.dispatch("person", {"person": "Run Pt"})
     win.dispatch("run_state", {"state": "start"})
     assert win._run.state == "running"
@@ -62,8 +61,7 @@ def test_run_state_start_then_stop(win):
 
 
 def test_insert_food_step_feeds_the_engine(win):
-    win.state.person_profiles.append(PersonProfile(name="Food Pt", model_id=ModelId.CAMBRIDGE))
-    win._on_profiles_changed()
+    win.state.users.append(user_of(PersonProfile(name="Food Pt", model_id=ModelId.CAMBRIDGE)))
     win.dispatch("person", {"person": "Food Pt"})
     win.dispatch("run_state", {"state": "start"})
     line = win.dispatch("insert_food", {"carbs_g": 40, "duration_min": 10})

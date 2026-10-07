@@ -235,3 +235,48 @@ def test_preview_of_a_csv_user_is_the_recorded_window():
 
 def test_preview_of_a_csv_user_with_no_data_is_empty():
     assert user_sim.preview_24h(_user(mode="csv", csv=None)) == ([], [])
+
+
+# -- the profiles the engine and the board push run on ------------------------------------------
+
+
+def test_a_model_users_profile_has_no_csv_window():
+    profile = user_sim.person_profile_of(_user())
+    assert profile.data_source == "model" and profile.csv_track is None
+
+
+def test_a_csv_users_profile_carries_its_window_not_a_file_path():
+    track = CsvTrack(samples=[100, 110, 120], interval_s=300, foodlog=[(600, 30.0)])
+    profile = user_sim.person_profile_of(_user(mode="csv", csv=track))
+    assert profile.data_source == "csv"
+    assert profile.csv_track is track
+    assert profile.csv_path is None
+
+
+def test_the_engine_replays_a_users_window_and_loops_it():
+    from models.engine import ModelStepper
+
+    track = CsvTrack(samples=[100, 110, 120], interval_s=300, foodlog=[])
+    stepper = ModelStepper(user_sim.person_profile_of(_user(mode="csv", csv=track)))
+    assert stepper.mode == "csv"
+    got = [round(stepper.tick(5.0, "2020-01-01T00:00:00+00:00").glucose) for _ in range(7)]
+    assert got == [100, 110, 120, 100, 110, 120, 100]  # one sample per 5 min, then it restarts
+
+
+def test_a_csv_user_with_no_window_runs_no_model():
+    from models.engine import ModelStepper
+
+    stepper = ModelStepper(user_sim.person_profile_of(_user(mode="csv", csv=None)))
+    assert stepper.mode == "idle"
+
+
+def test_the_sensor_profile_carries_the_users_noise_model():
+    user = _user(sensor_id=SensorId.BRETON, sensor_params={"sigma": 2.5})
+    sensor = user_sim.sensor_profile_of(user)
+    assert (sensor.sensor_id, sensor.params, sensor.name) == (
+        SensorId.BRETON,
+        {"sigma": 2.5},
+        "Ana",
+    )
+    sensor.params["sigma"] = 9.0
+    assert user.sensor_params["sigma"] == 2.5  # a copy

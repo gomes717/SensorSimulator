@@ -12,15 +12,16 @@ import contextlib
 import io
 
 from models.engine import ModelStepper
-from models.types import PersonProfile, User
+from models.types import PersonProfile, SensorProfile, User
 
 _MINUTES_PER_DAY = 1440
 _PREVIEW_STAMP = "1970-01-01T00:00:00+00:00"  # the stepper only stamps it onto a reading
 
 
 def person_profile_of(user: User) -> PersonProfile:
-    """The engine's profile for *user*'s model mode: its model, parameters (with the
-    user's weight as ``BW``), schedules and basal rate. A copy; *user* is untouched."""
+    """The engine's profile for *user*: its model, parameters (with the user's weight as
+    ``BW``), schedules and basal rate — and, in CSV mode, its recorded window (the engine
+    replays that, or runs no model when the user has none). A copy; *user* is untouched."""
     params = dict(user.model_params)
     if user.weight_kg is not None:
         params["BW"] = user.weight_kg
@@ -31,8 +32,14 @@ def person_profile_of(user: User) -> PersonProfile:
         food_events=list(user.food_events),
         exercise_events=list(user.exercise_events),
         basal_u_per_h=user.basal_u_per_h,
-        data_source="model",
+        data_source=user.mode,
+        csv_track=user.csv if user.mode == "csv" else None,
     )
+
+
+def sensor_profile_of(user: User) -> SensorProfile:
+    """The sensor-noise profile pushed to the board for *user* (a copy)."""
+    return SensorProfile(name=user.name, sensor_id=user.sensor_id, params=dict(user.sensor_params))
 
 
 def preview_24h(user: User) -> tuple[list[float], list[float]]:

@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
+from user_helpers import user_of
 
 from models.types import ModelId, PersonProfile
 
@@ -28,10 +29,10 @@ def win(app):
     import gui.main_window as mw
 
     w = mw.MainWindow()
-    w.state.person_profiles = [
-        PersonProfile(name="P0", model_id=ModelId.CAMBRIDGE),
-        PersonProfile(name="P1", model_id=ModelId.UVA_PADOVA),
-        PersonProfile(name="P2", model_id=ModelId.DEICHMANN),
+    w.state.users[:] = [
+        user_of(PersonProfile(name="P0", model_id=ModelId.CAMBRIDGE)),
+        user_of(PersonProfile(name="P1", model_id=ModelId.UVA_PADOVA)),
+        user_of(PersonProfile(name="P2", model_id=ModelId.DEICHMANN)),
     ]
     yield w
     w.sim.engines.stop_all()
@@ -40,7 +41,7 @@ def win(app):
 
 def test_model_only_is_one_slot(win):
     win.state.model_only = True
-    win.state.active_person = win.state.person_profiles[0]
+    win.state.active_user = win.state.users[0]
     win.sim.restart()
     assert win.sim.engines.slots == [0]
     assert win.sim.per_slot_expected is False

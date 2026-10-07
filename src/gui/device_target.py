@@ -1,14 +1,13 @@
-"""Shared 'Target device' combo box used by the four simulator config windows."""
+"""Helpers for pushing configuration to a board: restart it, and confirm it applied."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+from PyQt6.QtWidgets import QLabel
 
 from api import ble_uuids, protocol
-from gui.bluetooth_window import BluetoothWindow
 from services.ble_session import BleSession
 
 SEND_CONFIRMATION_TIMEOUT_MS = 3000
@@ -77,91 +76,3 @@ def await_send_confirmation(
 
     session.reset_sync.connect(on_sync)
     QTimer.singleShot(SEND_CONFIRMATION_TIMEOUT_MS, on_timeout)
-
-
-class DeviceTargetBar(QWidget):
-    """A 'Target device: [combo]' row backed by BluetoothWindow's live sessions.
-
-    The target slot is *not* a separate choice: each of a multi-sensor board's
-    BLE identities already represents one specific slot (the advertised name
-    ends in its number, e.g. "... Sensor 2" == slot 1), so picking the device
-    picks the slot. :meth:`begin` writes the sensor-select cursor to that slot
-    before the window's own write/read. Single-sensor targets have no slot and
-    get no cursor write. The device list refreshes itself (on show and on a
-    short timer), so sensors that connect after this window opened appear
-    without a manual rescan.
-    """
-
-    def __init__(self, get_bluetooth_window: Callable[[], BluetoothWindow], parent=None) -> None:
-        """*get_bluetooth_window* is called lazily so the window need not exist yet."""
-        super().__init__(parent)
-        self._get_bluetooth_window = get_bluetooth_window
-        self._addresses: list[str] = []
-        self._entries: list[tuple[str, str]] = []  # (address, label) last shown
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("Target device:"))
-        self.combo = QComboBox()
-        layout.addWidget(self.combo, 1)
-
-        self._poll = QTimer(self)
-        self._poll.timeout.connect(self.refresh)
-        self._poll.start(2000)
-        self.refresh()
-
-    def showEvent(self, event) -> None:
-        self.refresh()
-        super().showEvent(event)
-
-    def refresh(self) -> None:
-        """Repopulate the combo from currently connected BLE sessions.
-
-        Compares labels, not just addresses: re-pairing a slot to a different
-        patient renames the device without changing the connection, and the
-        combo would otherwise keep showing the old "patient — Sensor N".
-        """
-        bt_window = self._get_bluetooth_window()
-        entries = [(address, bt_window.display_name(address)) for address in bt_window.sessions()]
-        if entries == self._entries:
-            return
-        current = self.combo.currentData()
-        self._entries = entries
-        self._addresses = [address for address, _ in entries]
-        self.combo.blockSignals(True)
-        self.combo.clear()
-        for address, label in entries:
-            self.combo.addItem(label, address)
-        if current in self._addresses:
-            self.combo.setCurrentIndex(self._addresses.index(current))
-        self.combo.blockSignals(False)
-
-    def selected_session(self) -> BleSession | None:
-        """Return the currently selected target's live BleSession, or None if none connected."""
-        address = self.combo.currentData()
-        if address is None:
-            return None
-        return self._get_bluetooth_window().sessions().get(address)
-
-    def selected_slot(self) -> int | None:
-        """The target slot, derived from the selected device's own identity
-        (0-based), or None for a single-sensor target (no cursor write)."""
-        session = self.selected_session()
-        return session.slot_index if session is not None else None
-
-    def begin(self) -> BleSession | None:
-        """Resolve the target session and, for a multi-sensor board, queue the
-        sensor-select cursor write for that device's own slot. Call at the top
-        of every _send_to_board / _read_from_board in place of selected_session().
-
-        Returns None when the link is down: a dropped session still accepts
-        queue_write(), but nothing drains its queue, so the caller would report
-        a successful send that never happened.
-        """
-        session = self.selected_session()
-        if session is not None and not session.is_live:
-            return None
-        slot = self.selected_slot()
-        if session is not None and slot is not None:
-            session.queue_write("sensor_select", protocol.encode_sensor_select(slot))
-        return session

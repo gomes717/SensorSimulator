@@ -104,6 +104,7 @@ class UsersWindow(QWidget):
         board_busy: Callable[[], bool],
         ask_differs: Callable[[user_board.Differs], str | None] = _ask_what_to_do,
         confirm_delete: Callable[[User], bool] = _confirm_delete,
+        on_deleted: Callable[[User], None] = lambda _user: None,
         parent: QWidget | None = None,
     ) -> None:
         """*users* is the app's own list, changed in place; *save* persists it."""
@@ -117,6 +118,7 @@ class UsersWindow(QWidget):
         self._board_busy = board_busy
         self._ask_differs = ask_differs
         self._confirm_delete = confirm_delete
+        self._on_deleted = on_deleted
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -194,6 +196,7 @@ class UsersWindow(QWidget):
         user_store.delete(user)
         self._save()
         self.refresh()
+        self._on_deleted(user)
 
     # ------------------------------------------------------------------
     # Read from…

@@ -1,7 +1,7 @@
 """Interpret one scenario step — ``(kind, args) -> log line`` — by driving the app.
 
 Test tooling (not part of the app): it deliberately reaches into MainWindow's
-high-level actions (speed / run-state / person selection / comm profile) and
+high-level actions (speed / run-state / user selection / comm profile) and
 :class:`InstantEvents`, the same way a scripted operator would click through the
 UI. ``scripts/scenario.py``'s ``ScenarioRunner`` owns the *timing*; this owns the
 *vocabulary*, in one place instead of a 60-line ``if/elif`` chain on the god
@@ -19,6 +19,7 @@ class ScenarioDispatch:
             "speed": self._do_speed,
             "run_state": self._do_run_state,
             "person": self._do_person,
+            "user": self._do_person,
             "data_source": self._do_person,
             "insert_food": self._do_insert_food,
             "insert_exercise": self._do_insert_exercise,
@@ -49,15 +50,12 @@ class ScenarioDispatch:
 
     def _do_person(self, args: dict) -> str:
         h = self._host
-        name = args.get("person")
-        match = next((p for p in h.state.person_profiles if p.name == name), None)
+        name = args.get("person") or args.get("user")
+        match = h.state.user_by_name(name)
         if match is not None:
-            h._on_person_selected(match)
-            h._controller.notify_profiles_changed()
-        src = (
-            getattr(h.state.active_person, "data_source", "model") if h.state.active_person else "?"
-        )
-        return f"person → {name} ({src})"
+            h._activate_user(match)
+        active = h.state.active_user
+        return f"user → {name} ({active.mode if active else '?'})"
 
     def _do_insert_food(self, args: dict) -> str:
         carbs_g = float(args.get("carbs_g", 50))

@@ -34,11 +34,13 @@ from gui.sensor_tabs import SensorTabs
 from gui.simulation import SimulationCoordinator
 from gui.start_push import StartPush
 from gui.toolbar import build_toolbar
-from gui.user_profile_window import ProfileDeps, UserProfileWindow
+from gui.user_profile_window import ProfileDeps, SendDeps, UserProfileWindow
 from gui.user_profiles import UserProfiles
 from gui.user_reader import UserReader
+from gui.user_sender import UserSender
 from gui.users_window import UsersWindow
-from models.types import PersonProfile, SensorProfile, User
+from models import board_layout
+from models.types import User
 
 
 class MainWindow(QMainWindow):
@@ -118,45 +120,37 @@ class MainWindow(QMainWindow):
         self.tabs.connect_requested.connect(lambda: self.windows.open("bluetooth"))
 
         self.setCentralWidget(self.tabs)
-        # Populate the Configuration window's combos now that the graphs exist, then
-        # build the first set of engines (choosing a patient no longer does).
-        self._controller.notify_profiles_changed()
         self.sim.restart()
 
     def _build_config(self) -> None:
         """The Configuration window (via its controller) and every child window."""
-        self._controller = ConfigController(
-            self.state.person_profiles,
-            self.state.sensor_profiles,
-            lambda: self.state.active_person,
-            lambda: self.state.active_sensor,
-            lambda: self.state.speed_mult,
-        )
+        self._controller = ConfigController(lambda: self.state.speed_mult)
         c = self._controller
-        c.person_selected.connect(self._on_person_selected)
-        c.sensor_selected.connect(self._on_sensor_selected)
         c.speed_change_requested.connect(self._on_speed_changed)
         c.model_only_toggled.connect(self._on_model_only_toggled)
         c.cgms_only_toggled.connect(self._on_cgms_only_toggled)
-        c.editor_requested.connect(lambda which: self.windows.open(which))
         c.thresholds_saved.connect(self._on_thresholds_changed)
         c.theme_changed.connect(lambda: self.sensors.rebuild_for_theme())
         c.view_window_changed.connect(self._on_view_window_changed)
         self._configuration_window = ConfigurationWindow(c)
+        sender = UserSender(parent=self)
         profiles = UserProfiles(
-            ProfileDeps(self.state.users, self.state.save_users, self._on_user_saved), self
+            ProfileDeps(
+                self.state.users,
+                self.state.save_users,
+                self._on_user_saved,
+                send=SendDeps(
+                    live_sessions=self._board.live_sessions,
+                    send=sender.send,
+                    on_sent=self._on_user_sent,
+                    describe=self._describe_sensor,
+                ),
+            ),
+            self,
         )
         self.windows = ChildWindows(
             WindowDeps(
                 ble_log=self._ble_log,
-                person_profiles=self.state.person_profiles,
-                sensor_profiles=self.state.sensor_profiles,
-                person_for_slot=self._person_for_slot,
-                is_csv_for_slot=self._is_csv_for_slot,
-                on_profiles_changed=self._on_profiles_changed,
-                record_slot_assignment=self.record_slot_assignment,
-                on_person_selected=self._on_person_selected,
-                on_sensor_selected=self._on_sensor_selected,
                 on_bluetooth_created=lambda bt: bt.session_connected.connect(
                     self._on_session_ready
                 ),
@@ -166,7 +160,8 @@ class MainWindow(QMainWindow):
                     live_sessions=self._board.live_sessions,
                     reader=UserReader(parent=self),
                     board_busy=lambda: self._board_mode.busy,
-                    on_open=profiles.open,
+                    on_open=lambda user, draft: self._open_user(profiles, user, draft),
+                    on_deleted=self._on_user_deleted,
                 ),
             )
         )
@@ -233,12 +228,68 @@ class MainWindow(QMainWindow):
 
         self._start_push.run(pushed)
 
-    def _on_user_saved(self, user: User) -> None:
-        """A profile screen saved *user*: refresh the Users list and say so."""
+    def _open_user(self, profiles: UserProfiles, user: User, is_draft: bool) -> None:
+        """Open *user*'s profile screen; a saved user becomes the one Model Only runs."""
+        if not is_draft:
+            self._activate_user(user)
+        profiles.open(user, is_draft)
+
+    def _activate_user(self, user: User) -> None:
+        """Make *user* the active one (Model Only runs it; a lone board with nothing assigned too)."""
+        if self.state.active_user is user:
+            return
+        self.state.active_user = user
+        if self.state.model_only:
+            self.sim.restart()
+
+    def _on_user_saved(self, user: User, previous_name: str | None) -> None:
+        """A profile screen saved *user*: follow a rename on its slot, refresh the Users list, the
+        sensor labels and (in Model Only, where the profile itself runs) the engine."""
+        if previous_name is not None and previous_name != user.name:
+            self.state.rename_user_in_layout(previous_name, user.name)
+            self.state.save_layout()
+        if self.state.active_user is not None and self.state.active_user.id == user.id:
+            self.state.active_user = user  # the list holds the saved copy now
         users_window = self.windows.get("users")
         if isinstance(users_window, UsersWindow):
             users_window.refresh()
+        self._refresh_sensor_labels()
+        # Saving changes nothing on the board, so with a board connected the running graphs are
+        # left alone; Model Only runs the user itself.
+        if self.state.model_only:
+            self.sim.restart()
         self._show_status(f'Saved "{user.name}".')
+
+    def _describe_sensor(self, session) -> str:
+        """How the Send chooser names a sensor: its number and the user recorded on it."""
+        slot = session.slot_index if session.slot_index is not None else 0
+        running = (
+            self.state.board_layout.slots[slot].person if slot < board_layout.MAX_SLOTS else None
+        )
+        return (
+            f"Sensor {slot + 1} — now running {running}"
+            if running
+            else f"Sensor {slot + 1} — no user"
+        )
+
+    def _on_user_sent(self, slot: int, user: User, message: str) -> None:
+        """A user landed on *slot*'s sensor: record it (which also restarts the expected line and
+        re-asks the board what it runs) and say so."""
+        self.record_slot_assignment(slot, person=user.name)
+        self._show_status(message)
+
+    def _on_user_deleted(self, user: User) -> None:
+        """A user was deleted from the Users window: take it off its slot."""
+        self.state.forget_user(user)
+        self.state.save_layout()
+        self._refresh_sensor_labels()
+        self.sim.restart()
+
+    def _refresh_sensor_labels(self) -> None:
+        """Show the users' current names on the tabs and in the Bluetooth list."""
+        self.tabs.refresh_labels()
+        if self.windows.bluetooth is not None:
+            self.windows.bluetooth.relabel()
 
     def _disconnect_device(self, address: str) -> None:
         bt = self.windows.bluetooth
@@ -255,26 +306,8 @@ class MainWindow(QMainWindow):
         self.sensors.set_graph_title()
         self.sensors.apply_csv_mode_view()
 
-    def _person_for_slot(self, slot: int | None) -> PersonProfile | None:
-        """The patient the Food / Exercise editors work on for the target device's
-        *slot*: the one recorded for that slot, else the active patient."""
-        if slot is not None and 0 <= slot < len(self.state.board_layout.slots):
-            assigned = self.state.person_by_name(self.state.board_layout.slots[slot].person)
-            if assigned is not None:
-                return assigned
-        return self.state.active_person
-
-    def _is_csv_for_slot(self, slot: int | None, person: PersonProfile | None) -> bool:
-        """Whether that sensor replays a CSV: the board's answer when it has given one
-        (a person saved as CSV but never sent is not replaying anything), else the
-        saved profile."""
-        reported = self._board_mode.label(slot)
-        if reported is not None:
-            return reported == "CSV replay"
-        return person is not None and getattr(person, "data_source", "model") == "csv"
-
     # ------------------------------------------------------------------
-    # Settings and profiles
+    # Settings, users and slots
     # ------------------------------------------------------------------
 
     def _on_thresholds_changed(self) -> None:
@@ -285,61 +318,10 @@ class MainWindow(QMainWindow):
         """Reload the graph time-window preference and redraw."""
         self.tabs.pages.set_view_window(self.state.reload_view_window())
 
-    def _on_profiles_changed(self) -> None:
-        """Persist profiles to disk and refresh everything that depends on them."""
-        self.state.save_profiles()
-        # Repopulates the Configuration window's combos, keeping the current
-        # selection (signals blocked, so no spurious engine restart) and
-        # re-syncs its data-source group — otherwise it stays stale after an
-        # assignment made elsewhere (e.g. CSV Analysis → "Assign window to
-        # person…").
-        self._controller.notify_profiles_changed()
-        # Keep the per-person editors' CSV locks in sync when the data source
-        # changed here or in CSV Analysis.
-        person_window = self.windows.get("person")
-        if person_window is not None:
-            person_window.reload()
-        self._refresh_schedule_windows()
-        # Saving a profile changes nothing on the board, so with a board connected
-        # the running graphs are left alone; Model Only runs the profile itself.
-        if self.state.model_only:
-            self.sim.restart()
-
-    def _refresh_schedule_windows(self) -> None:
-        """Re-read the Food / Exercise editors for the (possibly new) active person."""
-        for key in ("food", "exercise"):
-            win = self.windows.get(key)
-            if win is not None:
-                win.refresh()
-
-    def _on_person_selected(self, person: PersonProfile | None) -> None:
-        """Switch the active person and restart the parallel simulation for them.
-
-        Fed by ConfigController.person_selected — the Configuration window's
-        Person combo, or a repopulate that had to move the selection.
-
-        Only choosing a patient: nothing has been sent anywhere, so with a board
-        connected the graphs are not touched. (They are reset by what actually
-        changes the run: Start, a Send to Board, speed, Model Only.) Model Only
-        runs the chosen patient locally, so it does restart.
-        """
-        if person is self.state.active_person:
-            return
-        self.state.active_person = person
-        self._refresh_schedule_windows()
-        if self.state.model_only:
-            self.sim.restart()
-
-    def _on_sensor_selected(self, sensor: SensorProfile | None) -> None:
-        """Switch the active sensor (used only when explicitly sent to a board)."""
-        self.state.active_sensor = sensor
-
-    def record_slot_assignment(
-        self, slot: int | None, *, person: str | None = None, sensor: str | None = None
-    ) -> None:
-        """Remember which profiles a just-sent config put on *slot* (see
+    def record_slot_assignment(self, slot: int | None, *, person: str | None = None) -> None:
+        """Remember which user a just-sent config put on *slot* (see
         AppState.record_slot_assignment), then refresh what depends on it."""
-        if not self.state.record_slot_assignment(slot, person=person, sensor=sensor):
+        if not self.state.record_slot_assignment(slot, person=person):
             return
         self._on_board_layout_changed()
         # A send can flip what the slot is actually running (e.g. model ->
@@ -353,10 +335,8 @@ class MainWindow(QMainWindow):
         a newly-assigned patient name shows there (and in the config windows'
         target combo)."""
         self.state.save_layout()
-        self.tabs.refresh_labels()
-        if self.windows.bluetooth is not None:
-            self.windows.bluetooth.relabel()
-        # Slots -> profiles changed: rebuild the engine pool wholesale (issue 04).
+        self._refresh_sensor_labels()
+        # Slots -> users changed: rebuild the engine pool wholesale (issue 04).
         self.sim.restart()
 
     # ------------------------------------------------------------------

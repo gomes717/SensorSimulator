@@ -19,8 +19,8 @@ Timed-action scripts for the **Scenario** window (toolbar → Scenario). Load a
 |---|---|---|
 | `speed` | `{ "multiplier": 1..1000 }` | sets the simulation speed slider |
 | `run_state` | `{ "state": "start" \| "stop" \| "pause" \| "resume" }` | drives Start/Stop/Pause |
-| `person` | `{ "person": "<profile name>" }` | selects that patient (no-op if not found) |
-| `data_source` | `{ "person": "<profile name>" }` | selects the patient (it reaches the board at the next Start) |
+| `person` (or `user`) | `{ "person": "<user name>" }` | makes that user the active one (no-op if not found) |
+| `data_source` | `{ "person": "<user name>" }` | makes that user the active one (a user's source, model or CSV, is part of the user; it reaches the board at the next Start or Send) |
 | `insert_food` | `{ "carbs_g": <g>, "duration_min": <min> }` | one-shot carb bolus (no reset) |
 | `insert_exercise` | `{ "duration_min": <min>, "intensity_pct": 0..100 }` | one-shot exercise bout |
 | `inject_fault` | `{ "fault": "pisa", "duration_min": <min>, "depth_frac": 0..1 }` | sensor fault; PISA = transient false low |
@@ -29,10 +29,10 @@ Notes:
 - `at_s` is **wall-clock** — under a high speed multiplier the *simulation*
   compresses but the schedule does not, so keep offsets small (x60 → 1 s ≈ 1
   sim-minute).
-- Model/CSV-specific scenarios expect the matching patient to exist. Create it
-  in **Person Configuration** first (or the `person` action is a no-op and the
-  scenario runs against whatever patient is active). The default seeded patient
-  is *Sample Patient* (Cambridge).
+- Model/CSV-specific scenarios expect the matching user to exist. Create it from
+  the **Users** window first (or the `person` action is a no-op and the scenario
+  runs against whatever user is active). Users migrated from the old profiles keep
+  their names. The default seeded user is *Sample Patient* (Cambridge).
 - These are also what `scripts/e2e.py` and the loop-runner replay.
 
 ## Files

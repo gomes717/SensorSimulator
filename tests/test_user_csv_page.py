@@ -159,7 +159,7 @@ def _menu_items(win) -> dict:
 
 def test_the_profile_screen_has_a_csv_page_that_is_only_usable_in_csv_mode():
     user = user_store.new_user("Ana")
-    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u: None))
+    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
     assert isinstance(win.pages["csv"], CsvPage)
     items = _menu_items(win)
     assert list(items) == ["Profile", "CSV", "Food", "Exercise", "Model"]
@@ -171,7 +171,7 @@ def test_the_profile_screen_has_a_csv_page_that_is_only_usable_in_csv_mode():
 def test_a_chosen_window_is_saved_with_the_user(tmp_path):
     user = user_store.new_user("Ana")
     users = [user]
-    deps = ProfileDeps(users, lambda: user_store.save(users), lambda _u: None)
+    deps = ProfileDeps(users, lambda: user_store.save(users), lambda _u, _old: None)
     win = UserProfileWindow(user, False, deps)
     page = win.pages["csv"]
     assert isinstance(page, CsvPage)

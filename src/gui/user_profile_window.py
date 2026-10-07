@@ -16,11 +16,13 @@ import copy
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -37,7 +39,7 @@ from gui.user_model_page import ModelPage
 from gui.user_preview_window import PreviewWindow
 from gui.user_profile_page import ProfilePage, choose_picture_file
 from gui.user_schedule_pages import EXERCISE, FOOD, SchedulePage
-from models import app_settings, user_edit, user_store
+from models import app_settings, user_edit, user_send, user_store
 from models.types import User
 
 PAGE_ORDER = ("profile", "csv", "food", "exercise", "model")
@@ -45,12 +47,34 @@ _HEADER_PICTURE = 96
 
 
 @dataclass
+class SendDeps:
+    """What **Send to…** needs from the app: the live sensors, how to push to one, who to tell
+    when it landed, and how to describe a sensor in the chooser (what is on it now)."""
+
+    live_sessions: Callable[[], list]
+    send: Callable[[Any, User, Callable[[bool, str], None]], bool]
+    on_sent: Callable[[int, User, str], None]  # (slot, the user that was sent, the message)
+    describe: Callable[[Any], str]
+
+
+@dataclass
 class ProfileDeps:
-    """What the screen needs from the app: the users list, how to persist it, and who to tell."""
+    """What the screen needs from the app: the users list, how to persist it, and who to tell.
+    *send* is None when the app cannot send (the Send button is then hidden)."""
 
     users: list[User]
     save: Callable[[], None]
-    on_saved: Callable[[User], None]
+    on_saved: Callable[[User, str | None], None]  # (the saved user, its name before this save)
+    send: SendDeps | None = None
+
+
+@dataclass
+class Dialogs:
+    """The questions the screen can ask. Injectable so tests answer them without a modal box."""
+
+    ask_unsaved: Callable[[], str | None]  # "save" | "discard" | None (cancel)
+    ask_save_before_send: Callable[[], str | None]  # "save" | "send" | None (cancel)
+    choose_sensor: Callable[[list, Callable[[Any], str]], Any]
 
 
 def _ask_unsaved() -> str | None:
@@ -69,6 +93,30 @@ def _ask_unsaved() -> str | None:
     return "discard" if clicked is discard else None
 
 
+def _ask_save_before_send() -> str | None:
+    """Save and send / Send without saving / Cancel for a send with unsaved changes."""
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Send with unsaved changes")
+    box.setText("This user has changes that are not saved.")
+    box.setInformativeText("Save them before sending, or send what is on screen as it is?")
+    save = box.addButton("Save and send", QMessageBox.ButtonRole.AcceptRole)
+    send = box.addButton("Send without saving", QMessageBox.ButtonRole.ActionRole)
+    box.addButton(QMessageBox.StandardButton.Cancel)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is save:
+        return "save"
+    return "send" if clicked is send else None
+
+
+def _choose_sensor(sessions: list, describe: Callable[[Any], str]) -> Any:
+    """Pick which live sensor to send to (None if cancelled)."""
+    labels = [describe(session) for session in sessions]
+    label, ok = QInputDialog.getItem(None, "Send to…", "Send to which sensor?", labels, 0, False)
+    return sessions[labels.index(label)] if ok else None
+
+
 class UserProfileWindow(QWidget):
     """Edit one user; Save writes it into the app's list."""
 
@@ -82,6 +130,8 @@ class UserProfileWindow(QWidget):
         deps: ProfileDeps,
         *,
         ask_unsaved: Callable[[], str | None] = _ask_unsaved,
+        ask_save_before_send: Callable[[], str | None] = _ask_save_before_send,
+        choose_sensor: Callable[[list, Callable[[Any], str]], Any] = _choose_sensor,
         choose_picture: Callable[[], Path | None] = choose_picture_file,
         parent: QWidget | None = None,
     ) -> None:
@@ -89,11 +139,10 @@ class UserProfileWindow(QWidget):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.resize(760, 560)
         self._deps = deps
-        self._ask_unsaved = ask_unsaved
+        self._dialogs = Dialogs(ask_unsaved, ask_save_before_send, choose_sensor)
         self._user = copy.deepcopy(user)
         self._saved: User | None = None if is_draft else copy.deepcopy(user)  # None = a draft
         self._picture_source: Path | None = None
-        self._labels: dict[str, str] = {}
         self.pages: dict[str, QWidget] = {}
 
         root = QHBoxLayout(self)
@@ -127,6 +176,11 @@ class UserProfileWindow(QWidget):
         save_button = QPushButton("Save")
         save_button.clicked.connect(self.save)
         bottom.addWidget(save_button)
+        self.send_button = QPushButton("Send to…")
+        self.send_button.setToolTip("Put this user on one of the connected sensors")
+        self.send_button.clicked.connect(self.send)
+        self.send_button.setVisible(deps.send is not None)
+        bottom.addWidget(self.send_button)
         right.addLayout(bottom)
         root.addLayout(right, 1)
 
@@ -160,21 +214,18 @@ class UserProfileWindow(QWidget):
     # ------------------------------------------------------------------
 
     def add_page(self, key: str, label: str, widget: QWidget) -> None:
-        """Register a page; the menu lists registered pages in :data:`PAGE_ORDER`."""
+        """Register a page; the menu lists registered pages in :data:`PAGE_ORDER` (a key not in
+        it has a page but no menu entry)."""
         self.pages[key] = widget
         self.stack.addWidget(widget)
-        self._labels[key] = label
-        self._rebuild_menu()
-
-    def _rebuild_menu(self) -> None:
+        if key not in PAGE_ORDER:
+            return
         current = self._current_key()
+        row = sum(1 for earlier in PAGE_ORDER[: PAGE_ORDER.index(key)] if earlier in self.pages)
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, key)
         self.menu.blockSignals(True)
-        self.menu.clear()
-        for key in PAGE_ORDER:
-            if key in self.pages:
-                item = QListWidgetItem(self._labels[key])
-                item.setData(Qt.ItemDataRole.UserRole, key)
-                self.menu.addItem(item)
+        self.menu.insertItem(row, item)
         self.menu.blockSignals(False)
         self._select(current or "profile")
         self._apply_gating()
@@ -251,6 +302,51 @@ class UserProfileWindow(QWidget):
         return window
 
     # ------------------------------------------------------------------
+    # Send to…
+    # ------------------------------------------------------------------
+
+    def _say(self, text: str, *, ok: bool = False) -> None:
+        """Show *text* under the page: red for a problem, green for something that worked."""
+        self.error.setStyleSheet("color: #2e7d32;" if ok else "color: #b00020;")
+        self.error.setText(text)
+
+    def send(self) -> None:
+        """Put the user on a connected sensor: choose it, offer to save first if there are
+        unsaved changes, then push. What goes to the board is what was saved (after *Save and
+        send*) or what is on screen (*Send without saving*)."""
+        deps = self._deps.send
+        if deps is None:
+            return
+        sessions = deps.live_sessions()
+        if not sessions:
+            self._say("Connect a sensor first (Bluetooth), then send.")
+            return
+        user_edit.normalize(self._user)
+        others = [u for u in self._deps.users if u.id != self._user.id]
+        problem = user_edit.validate(self._user, others) or user_send.refusal(self._user)
+        if problem:
+            self._say(problem)
+            return
+        session = self._dialogs.choose_sensor(sessions, deps.describe)
+        if session is None:
+            return
+        if self.is_dirty:
+            choice = self._dialogs.ask_save_before_send()
+            if choice is None or (choice == "save" and not self.save()):
+                return
+        sent = copy.deepcopy(self._user)
+        slot = session.slot_index if session.slot_index is not None else 0
+
+        def done(ok: bool, message: str) -> None:
+            self._say(message, ok=ok)
+            if ok:
+                deps.on_sent(slot, sent, message)
+
+        self._say("Sending…", ok=True)
+        if not deps.send(session, sent, done):
+            self._say("A send is already running.")
+
+    # ------------------------------------------------------------------
     # Save and close
     # ------------------------------------------------------------------
 
@@ -271,6 +367,7 @@ class UserProfileWindow(QWidget):
             except ValueError as exc:
                 self.error.setText(f"The picture could not be used: {exc}")
                 return False
+        previous_name = self._saved.name if self._saved is not None else None
         stored = copy.deepcopy(self._user)
         for index, existing in enumerate(self._deps.users):
             if existing.id == stored.id:
@@ -284,7 +381,7 @@ class UserProfileWindow(QWidget):
         self.error.setText("")
         self.profile_page.refresh()
         self._update_header()
-        self._deps.on_saved(stored)
+        self._deps.on_saved(stored, previous_name)
         self.saved.emit(stored)
         return True
 
@@ -294,7 +391,7 @@ class UserProfileWindow(QWidget):
         if event is None:
             return
         if self.is_dirty:
-            choice = self._ask_unsaved()
+            choice = self._dialogs.ask_unsaved()
             if choice == "save":
                 if not self.save():
                     event.ignore()

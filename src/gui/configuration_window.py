@@ -1,13 +1,11 @@
-"""Configuration window: the Person/Sensor selectors, their config buttons, the
-mode toggles that used to sit in the main window's bottom bar, the appearance
-settings (theme, graph time window — formerly the View window) and the glucose
-range thresholds editor.
+"""Configuration window: the mode toggles that used to sit in the main window's bottom
+bar, the appearance settings (theme, graph time window — formerly the View window) and
+the glucose range thresholds editor. Users (the person and the sensor noise) are edited
+from the Users window.
 
 Simulation / BLE state lives on :class:`MainWindow`; this window only hosts the
 widgets and talks to the app through a :class:`ConfigController` (a typed signal
-surface, issue 18) — it no longer takes ``MainWindow`` or reaches its private
-members. The per-person data source (model vs CSV region) moved to the Person
-Configuration window (issue 16), next to the model it replaces.
+surface, issue 18) — it no longer takes ``MainWindow`` or reaches its private members.
 """
 
 from __future__ import annotations
@@ -65,7 +63,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         # clips the lower groups (issue 16).
         body = QWidget()
         inner = QVBoxLayout(body)
-        inner.addWidget(self._build_selectors_group())
         inner.addWidget(self._build_modes_group())
         inner.addWidget(self._build_appearance_group())
         inner.addWidget(self._build_thresholds_group())
@@ -101,38 +98,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         width = min(body.minimumSizeHint().width() + chrome, available.width())
         height = body.heightForWidth(width - chrome) or body.sizeHint().height()
         self.resize(width, min(height + chrome, int(available.height() * 0.9)))
-
-    # ------------------------------------------------------------------
-    # Selectors + config buttons
-    # ------------------------------------------------------------------
-
-    def _build_selectors_group(self) -> QGroupBox:
-        group = QGroupBox("Patient / sensor")
-        outer = QVBoxLayout(group)
-
-        # No Person/Sensor combos: each editor owns its own profile list, and
-        # which profile a board slot runs is decided by that editor's own
-        # "Send to Board" (see MainWindow.record_slot_assignment).
-        person_btns = QHBoxLayout()
-        self.person_configure_btn = QPushButton("Person…")
-        self.person_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("person"))
-        person_btns.addWidget(self.person_configure_btn)
-        self.food_btn = QPushButton("Food…")
-        self.food_btn.clicked.connect(lambda: self._c.editor_requested.emit("food"))
-        person_btns.addWidget(self.food_btn)
-        self.exercise_btn = QPushButton("Exercise…")
-        self.exercise_btn.clicked.connect(lambda: self._c.editor_requested.emit("exercise"))
-        person_btns.addWidget(self.exercise_btn)
-        outer.addLayout(person_btns)
-
-        sensor_row = QHBoxLayout()
-        self.sensor_configure_btn = QPushButton("Sensor…")
-        self.sensor_configure_btn.clicked.connect(lambda: self._c.editor_requested.emit("sensor"))
-        sensor_row.addWidget(self.sensor_configure_btn)
-        sensor_row.addStretch(1)
-        outer.addLayout(sensor_row)
-
-        return group
 
     # ------------------------------------------------------------------
     # Mode toggles
@@ -207,10 +172,6 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         """CGMS-only mode: disable every control here that would send a
         now-rejected config write (see PROTOCOL_SPEC.md)."""
         for widget in (
-            self.person_configure_btn,
-            self.food_btn,
-            self.exercise_btn,
-            self.sensor_configure_btn,
             self.speed_combo,
             self.model_only_check,
         ):

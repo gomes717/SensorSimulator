@@ -1,9 +1,8 @@
 """CSV Analysis window: load a Dexcom CGM export, pick a 24 h window with a slider,
 zoom the trace, and read the range metrics (TIR/TBR/TAR, mean, variance) for it.
 
-Inspection only. Choosing the window a patient actually replays is done in the
-Person Configuration window's Data source group (``gui/data_source_group.py``),
-next to the CSV file chooser it belongs with.
+Inspection, and the picker behind the profile screen's CSV page: with ``on_pick`` it offers
+"Use this 24 h window", and the window chosen is copied into the user.
 """
 
 from __future__ import annotations

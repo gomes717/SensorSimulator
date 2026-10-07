@@ -4,8 +4,8 @@ A user's scalar fields and schedules live in ``users.json``; its recorded CSV
 window is its own file, ``data/users/<id>/csv.json``, so a 288-sample track does not
 bloat the index. (The profile picture goes in the same folder.)
 
-The first run of this store migrates the old Person / Sensor profiles
-(``profile_store``) and the board layout once; those files are left untouched as a
+The first run of this store migrates the old Person / Sensor profiles (``profile_store``) and the
+board layout (read raw, for the sensor each slot used) once; those files are left untouched as a
 backup and never read again.
 """
 
@@ -165,12 +165,12 @@ def delete(user: User) -> None:
 # -- migration from Person + Sensor profiles ----------------------------------
 
 
-def _slot_sensor_names(layout: board_layout.BoardLayout) -> dict[str, str]:
+def _slot_sensor_names(pairs: list[tuple[str | None, str | None]]) -> dict[str, str]:
     """person name -> the sensor profile its first slot used."""
     names: dict[str, str] = {}
-    for slot in layout.slots:
-        if slot.person and slot.sensor and slot.person not in names:
-            names[slot.person] = slot.sensor
+    for person, sensor in pairs:
+        if person and sensor and person not in names:
+            names[person] = sensor
     return names
 
 
@@ -190,12 +190,13 @@ def _csv_track_of(person: PersonProfile) -> CsvTrack | None:
 def migrate(
     persons: list[PersonProfile],
     sensors: list[SensorProfile],
-    layout: board_layout.BoardLayout,
+    slot_pairs: list[tuple[str | None, str | None]],
 ) -> list[User]:
-    """One User per Person. Its sensor is the one its slot used (the first slot, when a
-    person was on several), else the default Ideal sensor; a CSV person's window is
-    copied in, and a model person's leftover CSV choice is dropped."""
-    sensor_for = _slot_sensor_names(layout)
+    """One User per Person. Its sensor is the one its slot used (*slot_pairs* are each slot's
+    ``(person, sensor)`` names; the first slot, when a person was on several), else the default
+    Ideal sensor; a CSV person's window is copied in, and a model person's leftover CSV choice
+    is dropped."""
+    sensor_for = _slot_sensor_names(slot_pairs)
     sensor_by_name = {s.name: s for s in sensors}
     users: list[User] = []
     for person in persons:
@@ -237,6 +238,6 @@ def load_or_migrate() -> list[User]:
     if exists():
         return load()
     persons, sensors = profile_store.load()
-    users = migrate(persons, sensors, board_layout.load())
+    users = migrate(persons, sensors, board_layout.read_legacy_pairs())
     save(users)
     return users

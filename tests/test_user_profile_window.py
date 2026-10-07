@@ -41,7 +41,7 @@ class _Env:
         self.win = UserProfileWindow(
             self.user,
             draft,
-            ProfileDeps(self.users, self._save, self.saved_users.append),
+            ProfileDeps(self.users, self._save, lambda user, _old: self.saved_users.append(user)),
             ask_unsaved=self._ask,
             choose_picture=lambda: picture,
         )
@@ -375,7 +375,7 @@ def test_closing_unsaved_and_saving_a_refused_name_keeps_the_screen_open():
 
 def test_opening_the_same_user_twice_shows_one_window():
     users = [user_store.new_user("Ana")]
-    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u: None), None)
+    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u, _old: None), None)
     first = manager.open(users[0], False)
     assert manager.open(users[0], False) is first
     first.close()
@@ -383,7 +383,7 @@ def test_opening_the_same_user_twice_shows_one_window():
 
 def test_a_closed_window_is_forgotten_so_the_user_can_be_opened_again():
     users = [user_store.new_user("Ana")]
-    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u: None), None)
+    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u, _old: None), None)
     first = manager.open(users[0], False)
     first.close()
     assert manager.open(users[0], False) is not first
@@ -391,7 +391,7 @@ def test_a_closed_window_is_forgotten_so_the_user_can_be_opened_again():
 
 def test_different_users_get_their_own_windows():
     users = [user_store.new_user("Ana"), user_store.new_user("Bo")]
-    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u: None), None)
+    manager = UserProfiles(ProfileDeps(users, lambda: None, lambda _u, _old: None), None)
     a, b = manager.open(users[0], False), manager.open(users[1], False)
     assert a is not b
     a.close()

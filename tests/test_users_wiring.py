@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QApplication, QPushButton
 from api import protocol
 from gui.user_profile_window import UserProfileWindow
 from gui.users_window import UsersWindow
-from models import user_store
+from models import board_layout, user_store
 from models.types import ModelId
 
 
@@ -126,11 +126,11 @@ def test_saving_refreshes_the_users_list_and_says_so(win):
 def test_closing_the_app_asks_about_an_unsaved_profile_screen_and_cancel_keeps_it_open(win):
     screen = _open(win, win.state.users[0])
     asked = []
-    screen._ask_unsaved = lambda: asked.append(1)  # Cancel
+    screen._dialogs.ask_unsaved = lambda: asked.append(1)  # Cancel
     screen.profile_page.weight_spin.setValue(99.0)
     assert win.close() is False
     assert asked == [1]
-    screen._ask_unsaved = lambda: "discard"
+    screen._dialogs.ask_unsaved = lambda: "discard"
     assert win.close() is True
 
 
@@ -143,6 +143,9 @@ class _Signal:
 
     def connect(self, slot):
         self.slots.append(slot)
+
+    def disconnect(self, slot):
+        self.slots.remove(slot)
 
     def emit(self, *args):
         for slot in list(self.slots):
@@ -171,6 +174,12 @@ class _Bluetooth:
     def sessions(self):
         return self._sessions
 
+    def relabel(self):
+        pass
+
+    def display_name(self, address):
+        return address
+
     def stop_all_sessions(self):
         pass
 
@@ -187,3 +196,72 @@ def test_board_mode_is_busy_from_a_refresh_until_the_board_answers(win):
     session.config_read.emit("a", "data_source", protocol.encode_data_source(False))
     session.config_read.emit("a", "person", protocol.encode_person_config(ModelId.CAMBRIDGE, {}))
     assert not win._board_mode.busy
+
+
+# -- Send to… through the main window ------------------------------------
+
+
+class _SendSession(_LiveSession):
+    """A live sensor that records what Send pushed and lets the test play the board's answer."""
+
+    def __init__(self, slot_index):
+        super().__init__(slot_index)
+        self.board_layout_finished = _Signal()
+        self.pushes: list = []
+
+    def exposes(self, key):
+        return key == "user_name"
+
+    def send_board_layout(self, entries, *, run=True):
+        self.pushes.append((entries, run))
+
+    def finish(self, ok=True, message="done"):
+        self.board_layout_finished.emit("a", ok, message)
+
+
+def _screen_with_sensor(win, slot):
+    """An open profile screen for a model user of our own (not whatever is saved on this machine)
+    and a live fake sensor, with an empty slot record."""
+    win.state.board_layout = board_layout.BoardLayout()
+    user = user_store.new_user("Sender")
+    win.state.users.append(user)
+    session = _SendSession(slot)
+    win.windows.bluetooth = _Bluetooth({"a": session})
+    screen = _open(win, user)
+    screen._dialogs.choose_sensor = lambda sessions, _describe: sessions[0]
+    return screen, session, user
+
+
+def test_the_profile_screen_has_a_send_button_in_the_real_app(win):
+    screen = _open(win, win.state.users[0])
+    assert not screen.send_button.isHidden()
+    screen.close()
+
+
+def test_sending_pushes_the_user_to_the_chosen_sensor_and_records_the_slot(win):
+    screen, session, user = _screen_with_sensor(win, slot=1)
+    screen.send()
+    [(entries, run)] = session.pushes
+    assert [e["slot"] for e in entries] == [1] and run is True
+    assert win.state.board_layout.slots[1].person is None  # nothing is recorded before it lands
+    session.finish(True)
+    assert win.state.board_layout.slots[1].person == user.name
+    assert f'Sent "{user.name}" to sensor 2' in win.statusBar().currentMessage()
+    screen.close()
+
+
+def test_a_failed_send_records_nothing(win):
+    screen, session, _user = _screen_with_sensor(win, slot=1)
+    screen.send()
+    session.finish(False, "the board said no")
+    assert win.state.board_layout.slots[1].person is None
+    assert "the board said no" in screen.error.text()
+    screen.close()
+
+
+def test_the_chooser_tells_what_each_sensor_is_running_now(win):
+    win.state.board_layout = board_layout.BoardLayout()
+    win.state.board_layout.slots[2].person = "Someone"
+    assert "Someone" in win._describe_sensor(_LiveSession(2))
+    assert "no user" in win._describe_sensor(_LiveSession(0))
+    assert "Sensor 3" in win._describe_sensor(_LiveSession(2))

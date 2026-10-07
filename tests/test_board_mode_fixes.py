@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
+from user_helpers import user_of
 
 from api import protocol
 from models import board_layout as bl
@@ -37,9 +38,9 @@ def win(app):
 
     w = mw.MainWindow()
     w.state.model_only = False
-    w.state.person_profiles[:] = [
-        PersonProfile(name="modelPt", model_id=ModelId.UVA_PADOVA),
-        PersonProfile(name="csvPt", model_id=ModelId.CAMBRIDGE, data_source="csv"),
+    w.state.users[:] = [
+        user_of(PersonProfile(name="modelPt", model_id=ModelId.UVA_PADOVA)),
+        user_of(PersonProfile(name="csvPt", model_id=ModelId.CAMBRIDGE, data_source="csv")),
     ]
     w.state.board_layout = bl.BoardLayout(
         [bl.SlotAssignment(person="modelPt"), bl.SlotAssignment(person="csvPt")]

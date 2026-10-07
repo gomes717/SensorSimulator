@@ -356,7 +356,7 @@ class BluetoothWindow(QWidget):
     def sessions(self) -> dict[str, BleSession]:
         """Return the currently connected BLE sessions, keyed by address.
 
-        Used by the simulator config windows' DeviceTargetBar to populate a
+        Used to populate a
         "send to this device" combo without needing their own session tracking.
         """
         return dict(self._sessions)

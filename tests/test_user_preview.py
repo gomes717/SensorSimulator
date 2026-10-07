@@ -81,7 +81,7 @@ def test_the_preview_says_it_has_no_sensor_noise():
 
 
 def _screen(user):
-    return UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u: None))
+    return UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
 
 
 def test_the_profile_screen_previews_the_unsaved_edits():

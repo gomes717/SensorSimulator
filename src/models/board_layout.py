@@ -1,9 +1,9 @@
-"""Which saved Person/Sensor profile drives each of the board's sensor slots.
+"""Which saved user runs on each of the board's sensor slots.
 
 The multi-sensor firmware runs up to :data:`MAX_SLOTS` fully independent sensor
 slots (see ``PROTOCOL_SPEC.md`` §7); this is the app-side record of "slot *i* =
-person X + sensor noise Y". Persisted to ``data/board_layout.json`` by name, so
-it survives a restart and follows a renamed/edited profile by identity of name.
+user X", written when a user is sent to a sensor. Persisted to ``data/board_layout.json`` by
+the user's name (renaming a user moves its slot along: ``AppState.rename_user_in_layout``).
 Applied to a board by :meth:`services.ble_session.BleSession.send_board_layout`.
 """
 
@@ -40,10 +40,9 @@ _LAYOUT_FILE = _DATA_DIR / "board_layout.json"
 
 @dataclass
 class SlotAssignment:
-    """One slot's assignment: the saved profile names, or None when unused."""
+    """One slot's assignment: the name of the user it runs, or None when unused."""
 
-    person: str | None = None
-    sensor: str | None = None
+    person: str | None = None  # a user's name (the field keeps its old name so saved files load)
 
 
 @dataclass
@@ -70,11 +69,23 @@ def load() -> BoardLayout:
         data = json.loads(_LAYOUT_FILE.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return BoardLayout()
-    slots = [
-        SlotAssignment(person=d.get("person"), sensor=d.get("sensor"))
-        for d in data.get("slots", [])
-    ]
+    slots = [SlotAssignment(person=d.get("person")) for d in data.get("slots", [])]
     return BoardLayout(slots=slots)
+
+
+def read_legacy_pairs() -> list[tuple[str | None, str | None]]:
+    """Each slot's ``(person, sensor)`` profile names as the old layout file recorded them.
+
+    Only the one-time migration to users (``user_store.load_or_migrate``) reads this: a slot used
+    to name a Person *and* a Sensor profile, and a migrated user takes the sensor its slot used.
+    Empty when there is no layout file."""
+    if not _LAYOUT_FILE.exists():
+        return []
+    try:
+        data = json.loads(_LAYOUT_FILE.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    return [(d.get("person"), d.get("sensor")) for d in data.get("slots", [])]
 
 
 def save(layout: BoardLayout) -> None:

@@ -46,7 +46,7 @@ _FUNCTIONAL_NOTIFY_UUIDS = frozenset(
 
 # Maps each simulator config characteristic's UUID to the short key used by
 # BleSession.queue_write()/request_read() and by the config windows
-# (person_config_window.py etc.) — must match src/config_service.c's
+# (the profile screen, the Users window) — must match src/config_service.c's
 # characteristic UUIDs exactly.
 CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.PERSON_CONFIG_UUID: "person",  # read + write

@@ -25,7 +25,7 @@ class UvaPadovaState:
 
 
 # Single source of truth for this model's parameter order (api.protocol +
-# gui.person_config_window reference it, no copies). Order must match
+# gui.user_model_page reference it, no copies). Order must match
 # UvaPadovaParams in firmware/peripheral_cgms/src/models/cgmsim_uva_padova.h —
 # pinned by tests/test_param_order.py against tests/param_order/uva_padova.golden.
 PARAM_NAMES = [

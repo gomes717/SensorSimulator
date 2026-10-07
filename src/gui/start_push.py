@@ -22,6 +22,7 @@ from PyQt6.QtCore import QObject, QTimer
 
 from api import protocol
 from gui.app_state import AppState
+from models import user_send
 from models.types import PersonProfile, SensorProfile
 
 # The board applies (and saves to flash) every write; a four-sensor push with
@@ -35,21 +36,10 @@ def slot_entry(slot: int, person: PersonProfile, sensor: SensorProfile | None) -
     The schedules are cleared before they are written — the board keeps what an
     earlier session left, and a stale meal on the board is exactly how the two models
     drift apart. ``data_source`` is set to the model: sending parameters alone does
-    not switch a slot off a CSV it replayed earlier.
+    not switch a slot off a CSV it replayed earlier. (The writes are shared with
+    Send to…: :func:`models.user_send.model_writes`.)
     """
-    writes: list[tuple[str, bytes]] = [
-        ("person", protocol.encode_person_config(person.model_id, person.params))
-    ]
-    if sensor is not None:
-        writes.append(("sensor", protocol.encode_sensor_config(sensor.sensor_id, sensor.params)))
-    writes += [
-        ("data_source", protocol.encode_data_source(False)),
-        ("food", protocol.encode_clear_food()),
-        *(("food", protocol.encode_food_event(ev)) for ev in person.food_events),
-        ("exercise", protocol.encode_clear_exercise()),
-        *(("exercise", protocol.encode_exercise_event(ev)) for ev in person.exercise_events),
-    ]
-    return {"slot": slot, "writes": writes, "csv": None}
+    return {"slot": slot, "writes": user_send.model_writes(person, sensor), "csv": None}
 
 
 class StartPush(QObject):

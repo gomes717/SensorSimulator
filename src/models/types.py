@@ -72,6 +72,18 @@ class ExerciseEvent:
 
 
 @dataclass
+class CsvTrack:
+    """A recorded 24 h glucose window kept *inside* a user (not a path to the file it
+    came from), so the user can be rebuilt, saved and sent without the original CSV."""
+
+    samples: list[int]  # integer mg/dL on a fixed grid, forward-filled
+    interval_s: int
+    foodlog: list[tuple[int, float]]  # (offset_s, carbs_g), report-only
+    start_iso: str | None = None  # where in the source recording the window starts
+    source_name: str | None = None  # the source file's name, for display only
+
+
+@dataclass
 class PersonProfile:
     """A saved simulated patient: which model to run, its parameters, and its schedule."""
 
@@ -92,6 +104,9 @@ class PersonProfile:
     # Optional matching Food Log CSV (D1NAMO-style) for the same 24 h window —
     # replayed report-only alongside the glucose trace when data_source == "csv".
     food_log_path: str | None = None
+    # The recorded window itself, when the profile is derived from a User (which keeps its
+    # window inside it): the engine replays this instead of reading csv_path.
+    csv_track: CsvTrack | None = None
 
 
 @dataclass
@@ -101,18 +116,6 @@ class SensorProfile:
     name: str
     sensor_id: SensorId
     params: dict[str, float] = field(default_factory=dict)
-
-
-@dataclass
-class CsvTrack:
-    """A recorded 24 h glucose window kept *inside* a user (not a path to the file it
-    came from), so the user can be rebuilt, saved and sent without the original CSV."""
-
-    samples: list[int]  # integer mg/dL on a fixed grid, forward-filled
-    interval_s: int
-    foodlog: list[tuple[int, float]]  # (offset_s, carbs_g), report-only
-    start_iso: str | None = None  # where in the source recording the window starts
-    source_name: str | None = None  # the source file's name, for display only
 
 
 @dataclass

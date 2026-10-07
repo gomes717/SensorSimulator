@@ -167,7 +167,7 @@ def test_refresh_follows_changes_made_elsewhere():
 
 def test_the_profile_screen_has_every_page_in_menu_order():
     user = _user()
-    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u: None))
+    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
     items = [win.menu.item(i) for i in range(win.menu.count())]
     assert [item.text() for item in items if item is not None] == [
         "Profile",
@@ -181,7 +181,7 @@ def test_the_profile_screen_has_every_page_in_menu_order():
 def test_a_meal_added_in_the_screen_makes_it_unsaved_and_saves_with_it():
     user = _user()
     users = [user]
-    win = UserProfileWindow(user, False, ProfileDeps(users, lambda: None, lambda _u: None))
+    win = UserProfileWindow(user, False, ProfileDeps(users, lambda: None, lambda _u, _old: None))
     page = win.pages["food"]
     assert isinstance(page, SchedulePage)
     page.time_edit.setTime(QTime(8, 0))

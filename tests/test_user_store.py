@@ -52,9 +52,21 @@ def _sensor(name="Breton") -> SensorProfile:
     return SensorProfile(name=name, sensor_id=SensorId.BRETON, params={"a": 1.5})
 
 
-def _layout(*assignments: tuple[str | None, str | None]) -> board_layout.BoardLayout:
-    return board_layout.BoardLayout(
-        slots=[board_layout.SlotAssignment(person=p, sensor=s) for p, s in assignments]
+def _pairs(*assignments: tuple[str | None, str | None]) -> list[tuple[str | None, str | None]]:
+    """What the old layout file recorded: each slot's (person, sensor) profile names."""
+    return list(assignments)
+
+
+def _layout(*people: str | None) -> board_layout.BoardLayout:
+    """The layout now: each slot records only the user it runs."""
+    return board_layout.BoardLayout(slots=[board_layout.SlotAssignment(person=p) for p in people])
+
+
+def _write_legacy_layout(*assignments: tuple[str | None, str | None]) -> None:
+    """Put an old-format layout file (person + sensor per slot) where the app reads it."""
+    board_layout._LAYOUT_FILE.write_text(
+        json.dumps({"slots": [{"person": p, "sensor": s} for p, s in assignments]}),
+        encoding="utf-8",
     )
 
 
@@ -143,7 +155,7 @@ def test_delete_of_a_user_that_was_never_saved_is_harmless():
 
 def test_a_person_becomes_a_user_with_its_models_and_schedule():
     person = _model_person()
-    [user] = user_store.migrate([person], [], _layout())
+    [user] = user_store.migrate([person], [], _pairs())
     assert (user.name, user.model_id, user.mode) == ("Ana", ModelId.UVA_PADOVA, "model")
     assert user.model_params == person.params
     assert user.food_events == person.food_events
@@ -155,22 +167,22 @@ def test_a_person_becomes_a_user_with_its_models_and_schedule():
 
 def test_the_user_takes_the_sensor_its_slot_used():
     [user] = user_store.migrate(
-        [_model_person()], [_sensor()], _layout((None, None), ("Ana", "Breton"))
+        [_model_person()], [_sensor()], _pairs((None, None), ("Ana", "Breton"))
     )
     assert user.sensor_id == SensorId.BRETON
     assert user.sensor_params == {"a": 1.5}
 
 
 def test_an_unassigned_person_gets_the_default_ideal_sensor():
-    [user] = user_store.migrate([_model_person()], [_sensor()], _layout())
+    [user] = user_store.migrate([_model_person()], [_sensor()], _pairs())
     assert user.sensor_id == SensorId.IDEAL
     assert user.sensor_params == sensor_defaults.ideal_default_params()
 
 
 def test_a_person_on_several_slots_takes_the_first_slots_sensor():
     other = SensorProfile(name="Other", sensor_id=SensorId.FACCHINETTI, params={})
-    layout = _layout(("Ana", "Breton"), ("Ana", "Other"))
-    [user] = user_store.migrate([_model_person()], [_sensor(), other], layout)
+    pairs = _pairs(("Ana", "Breton"), ("Ana", "Other"))
+    [user] = user_store.migrate([_model_person()], [_sensor(), other], pairs)
     assert user.sensor_id == SensorId.BRETON
 
 
@@ -184,7 +196,7 @@ def test_a_csv_person_gets_the_window_copied_into_the_user(tmp_path):
         csv_path=str(path),
         csv_window_start_iso="2020-01-01T00:00:00",
     )
-    [user] = user_store.migrate([person], [], _layout())
+    [user] = user_store.migrate([person], [], _pairs())
     samples, interval_s, foodlog = load_csv_window(person)
     assert user.mode == "csv"
     assert user.csv == CsvTrack(
@@ -206,7 +218,7 @@ def test_a_csv_person_whose_file_is_gone_keeps_csv_mode_with_no_data(tmp_path):
         csv_path=str(tmp_path / "missing.csv"),
         csv_window_start_iso="2020-01-01T00:00:00",
     )
-    [user] = user_store.migrate([person], [], _layout())
+    [user] = user_store.migrate([person], [], _pairs())
     assert user.mode == "csv"
     assert user.csv is None
 
@@ -215,15 +227,15 @@ def test_a_model_person_that_once_picked_a_csv_does_not_carry_it_over(tmp_path):
     person = _model_person()
     person.csv_path = str(_write_dexcom(tmp_path))
     person.csv_window_start_iso = "2020-01-01T00:00:00"
-    [user] = user_store.migrate([person], [], _layout())
+    [user] = user_store.migrate([person], [], _pairs())
     assert user.mode == "model"
     assert user.csv is None
 
 
 def test_slot_user_ids_follow_the_old_layout_by_name():
-    users = user_store.migrate([_model_person("Ana"), _model_person("Bo")], [], _layout())
+    users = user_store.migrate([_model_person("Ana"), _model_person("Bo")], [], _pairs())
     ana, bo = users
-    layout = _layout(("Bo", None), ("Gone", None), ("Ana", None))
+    layout = _layout("Bo", "Gone", "Ana")
     assert user_store.slot_user_ids(users, layout) == [bo.id, None, ana.id]
     assert user_store.slot_user_ids(users, _layout()) == [None, None, None]
 
@@ -235,7 +247,7 @@ def test_first_load_migrates_the_old_profiles_and_saves_them():
     from models import profile_store
 
     profile_store.save([_model_person()], [_sensor()])
-    board_layout.save(_layout(("Ana", "Breton")))
+    _write_legacy_layout(("Ana", "Breton"))
     users = user_store.load_or_migrate()
     assert [u.name for u in users] == ["Ana"]
     assert user_store.load() == users  # now on disk

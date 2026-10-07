@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtWidgets import QApplication
+from user_helpers import user_of
 
 from models.types import ModelId, PersonProfile
 
@@ -33,7 +34,7 @@ def win(app):
 
 
 def test_title_is_plain_without_a_csv_person(win):
-    win.state.active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
+    win.state.active_user = user_of(PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE))
     win.sensors.apply_csv_mode_view()
     win.sensors.current_page().graph.redraw_food_ex()
     assert win.sensors.current_page().graph.fe_ax.get_title() == "Food / Exercise"
@@ -43,14 +44,14 @@ def test_title_is_plain_without_a_csv_person(win):
 def test_title_says_report_only_for_any_csv_person(win, model_only):
     """A CSV-backed person runs no model, Model Only or board-connected."""
     win.state.model_only = model_only
-    win.state.active_person = PersonProfile(
-        name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv"
+    win.state.active_user = user_of(
+        PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
     )
     win.sensors.apply_csv_mode_view()
     win.sensors.current_page().graph.redraw_food_ex()
     assert "report-only" in win.sensors.current_page().graph.fe_ax.get_title().lower()
 
-    win.state.active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
+    win.state.active_user = user_of(PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE))
     win.sensors.apply_csv_mode_view()
     win.sensors.current_page().graph.redraw_food_ex()
     assert win.sensors.current_page().graph.fe_ax.get_title() == "Food / Exercise"
@@ -72,7 +73,7 @@ def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
     csv_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
     model_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
     win.state.model_only = False
-    win.state.person_profiles[:] = [csv_person, model_person]
+    win.state.users[:] = [user_of(csv_person), user_of(model_person)]
     win.state.board_layout = bl.BoardLayout(
         [bl.SlotAssignment(person="CSV Pt"), bl.SlotAssignment(person="Model Pt")]
     )

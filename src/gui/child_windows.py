@@ -17,13 +17,9 @@ from PyQt6.QtWidgets import QWidget
 from core.ble_message_log import BleMessageLog
 from gui.bluetooth_window import BluetoothWindow
 from gui.debug_window import DebugWindow
-from gui.exercise_config_window import ExerciseConfigWindow
-from gui.food_config_window import FoodConfigWindow
-from gui.person_config_window import PersonConfigWindow
-from gui.sensor_config_window import SensorConfigWindow
 from gui.user_reader import UserReader
 from gui.users_window import UsersWindow
-from models.types import PersonProfile, User
+from models.types import User
 
 
 @dataclass
@@ -36,6 +32,7 @@ class UsersDeps:
     reader: UserReader
     board_busy: Callable[[], bool]
     on_open: Callable[[User, bool], object]  # a window opener may return its window
+    on_deleted: Callable[[User], None]
 
 
 @dataclass
@@ -43,14 +40,6 @@ class WindowDeps:
     """What the secondary windows need from the app, handed over once."""
 
     ble_log: BleMessageLog
-    person_profiles: list
-    sensor_profiles: list
-    person_for_slot: Callable[[int | None], PersonProfile | None]
-    is_csv_for_slot: Callable[[int | None, PersonProfile | None], bool]
-    on_profiles_changed: Callable[[], None]
-    record_slot_assignment: Callable[..., None]
-    on_person_selected: Callable[[PersonProfile | None], None]
-    on_sensor_selected: Callable
     on_bluetooth_created: Callable[[BluetoothWindow], None]
     users: UsersDeps
 
@@ -66,26 +55,6 @@ class ChildWindows:
             "debug": lambda: DebugWindow(d.ble_log),
             "users": lambda: self._build_users(d.users),
             "bluetooth": lambda: BluetoothWindow(d.ble_log),
-            "person": lambda: PersonConfigWindow(
-                d.person_profiles,
-                d.on_profiles_changed,
-                self.ensure_bluetooth,
-                d.record_slot_assignment,
-                d.on_person_selected,
-            ),
-            "sensor": lambda: SensorConfigWindow(
-                d.sensor_profiles,
-                d.on_profiles_changed,
-                self.ensure_bluetooth,
-                d.record_slot_assignment,
-                d.on_sensor_selected,
-            ),
-            "food": lambda: FoodConfigWindow(
-                d.person_for_slot, d.is_csv_for_slot, d.on_profiles_changed, self.ensure_bluetooth
-            ),
-            "exercise": lambda: ExerciseConfigWindow(
-                d.person_for_slot, d.is_csv_for_slot, d.on_profiles_changed, self.ensure_bluetooth
-            ),
         }
 
     @staticmethod
@@ -96,6 +65,7 @@ class ChildWindows:
             live_sessions=d.live_sessions,
             reader=d.reader,
             board_busy=d.board_busy,
+            on_deleted=d.on_deleted,
         )
         window.open_requested.connect(d.on_open)
         return window
