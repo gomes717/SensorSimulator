@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QMainWindow
+from PyQt6.QtWidgets import QApplication, QMainWindow
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
@@ -39,6 +39,7 @@ from gui.user_profiles import UserProfiles
 from gui.user_reader import UserReader
 from gui.user_sender import UserSender
 from gui.users_window import UsersWindow
+from gui.widgets import CenterOnMain
 from models import board_layout
 from models.types import User
 
@@ -52,6 +53,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("TCC App")
         self.resize(1100, 750)
+        # Every other window and dialog opens centred on this one.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(CenterOnMain(self))
 
         self.state = AppState()
         self.directory = SensorDirectory(

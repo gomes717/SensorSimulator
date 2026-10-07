@@ -9,16 +9,21 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from typing import Any
+
 import pytest
 
 pytest.importorskip("PyQt6.QtCore")
 
 from PyQt6.QtCore import QCoreApplication
-from PyQt6.QtTest import QTest
+from PyQt6.QtTest import QTest as _QTest
 
 import services.ble_session as bs
 
 _CLOSED = "[WinError -2147483629] O objeto foi fechado."
+
+
+QTest: Any = _QTest  # the PyQt6 stubs reject valid QTest calls
 
 
 @pytest.fixture(scope="module", autouse=True)

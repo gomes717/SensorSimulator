@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PyQt6.QtWidgets import QComboBox, QGroupBox, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QGroupBox, QScrollArea, QVBoxLayout, QWidget
 
 from gui.param_form import ParamForm
+from gui.widgets import NoWheelComboBox
 from models import user_edit
 from models.types import MODEL_LABELS, SENSOR_LABELS, ModelId, SensorId, User
 
@@ -30,7 +31,7 @@ class ModelPage(QWidget):
 
         glucose = QGroupBox("Glucose model")
         glucose_layout = QVBoxLayout(glucose)
-        self.model_combo = QComboBox()
+        self.model_combo = NoWheelComboBox()
         for model_id in ModelId:
             self.model_combo.addItem(MODEL_LABELS[model_id], model_id)
         self.model_combo.currentIndexChanged.connect(self._model_chosen)
@@ -42,7 +43,7 @@ class ModelPage(QWidget):
 
         sensor = QGroupBox("CGM sensor noise")
         sensor_layout = QVBoxLayout(sensor)
-        self.sensor_combo = QComboBox()
+        self.sensor_combo = NoWheelComboBox()
         for sensor_id in SensorId:
             self.sensor_combo.addItem(SENSOR_LABELS[sensor_id], sensor_id)
         self.sensor_combo.currentIndexChanged.connect(self._sensor_chosen)

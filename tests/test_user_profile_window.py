@@ -9,19 +9,23 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from typing import Any
+
 import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtTest import QTest
+from PyQt6.QtTest import QTest as _QTest
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from gui.user_profile_window import ProfileDeps, UserProfileWindow
 from gui.user_profiles import UserProfiles
 from models import user_store
 from models.types import SENSOR_LABELS, ModelId, SensorId
+
+QTest: Any = _QTest  # the PyQt6 stubs reject valid QTest calls
 
 
 @pytest.fixture(scope="module", autouse=True)

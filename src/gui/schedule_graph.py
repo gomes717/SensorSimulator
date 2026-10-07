@@ -28,7 +28,10 @@ class ScheduleGraph(FigureCanvas):
         foreground = palette.color(QPalette.ColorRole.WindowText).name()
         self._color = color
         self._filled = filled
-        figure = Figure(facecolor=background)
+        # Constrained layout hugs the edges, so the plot lines up with the table under it and no
+        # blank band is left below the x label (a fixed margin wasted a third of a tall graph).
+        figure = Figure(facecolor=background, layout="constrained")
+        figure.get_layout_engine().set(w_pad=0.03, h_pad=0.03)
         super().__init__(figure)
         self.setMinimumHeight(_MIN_HEIGHT_PX)
         self.ax = figure.add_subplot(111, facecolor=background)
@@ -41,10 +44,13 @@ class ScheduleGraph(FigureCanvas):
         for spine in self.ax.spines.values():
             spine.set_color(foreground)
         self.ax.grid(True, color=foreground, alpha=0.15)
-        figure.subplots_adjust(left=0.1, right=0.98, top=0.88, bottom=0.25)
         self.values: list[float] = [0.0] * 1440
         self._fill = None
         self.set_values(self.values)
+
+    def wheelEvent(self, event) -> None:  # Qt naming
+        """Let the wheel / a two-finger touchpad scroll the page the graph sits in."""
+        event.ignore()
 
     def set_values(self, values: list[float]) -> None:
         """Draw *values* (one per minute of the day) as a filled step curve."""

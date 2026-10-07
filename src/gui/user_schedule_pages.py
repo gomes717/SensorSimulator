@@ -19,13 +19,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from gui.schedule_graph import ScheduleGraph
-from gui.widgets import NoWheelDoubleSpinBox, wrapped_label
+from gui.widgets import NoWheelDoubleSpinBox, NoWheelTimeEdit, wrapped_label
 from models import user_edit, user_schedule
 from models.types import ExerciseEvent, FoodEvent, User
 
@@ -148,7 +147,7 @@ class SchedulePage(QWidget):
         layout.addWidget(self.table, 1)
 
         add_row = QHBoxLayout()
-        self.time_edit = QTimeEdit(kind.default_time)
+        self.time_edit = NoWheelTimeEdit(kind.default_time)
         add_row.addWidget(QLabel("Time:"))
         add_row.addWidget(self.time_edit)
         self.first_spin = _spin(kind.first)
