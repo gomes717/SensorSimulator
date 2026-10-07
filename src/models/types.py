@@ -93,3 +93,41 @@ class SensorProfile:
     name: str
     sensor_id: SensorId
     params: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class CsvTrack:
+    """A recorded 24 h glucose window kept *inside* a user (not a path to the file it
+    came from), so the user can be rebuilt, saved and sent without the original CSV."""
+
+    samples: list[int]  # integer mg/dL on a fixed grid, forward-filled
+    interval_s: int
+    foodlog: list[tuple[int, float]]  # (offset_s, carbs_g), report-only
+    start_iso: str | None = None  # where in the source recording the window starts
+    source_name: str | None = None  # the source file's name, for display only
+
+
+@dataclass
+class User:
+    """One simulated user: who they are, which glucose source they run, and its inputs.
+
+    Replaces the old Person + Sensor pair. ``mode`` picks the source: ``"model"``
+    runs the physiological model (``model_*``, ``sensor_*``, the schedules) and
+    ``"csv"`` replays ``csv``. The inputs of the mode not in use are kept, not
+    cleared, so switching back loses nothing.
+    """
+
+    id: str  # stable: names the user's data folder; the name is not
+    name: str  # what the board is told (30 characters)
+    height_cm: float | None = None  # app-only, display only
+    weight_kg: float | None = None  # written into the model's ``BW`` parameter
+    picture: str | None = None  # file name inside the user's data folder
+    mode: str = "model"  # "model" | "csv"
+    model_id: ModelId = ModelId.CAMBRIDGE
+    model_params: dict[str, float] = field(default_factory=dict)
+    sensor_id: SensorId = SensorId.IDEAL
+    sensor_params: dict[str, float] = field(default_factory=dict)
+    food_events: list[FoodEvent] = field(default_factory=list)
+    exercise_events: list[ExerciseEvent] = field(default_factory=list)
+    basal_u_per_h: float | None = None
+    csv: CsvTrack | None = None
