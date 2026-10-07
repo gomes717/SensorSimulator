@@ -19,7 +19,8 @@ from types import ModuleType
 from api import protocol
 from models import cambridge, deichmann, royparker, user_match, uva_padova
 from models import sensors as sensor_defaults
-from models.types import ModelId, SensorId, User
+from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId, User
+from models.user_schedule import MAX_EVENTS
 
 MODEL_MODULES: dict[ModelId, ModuleType] = {
     ModelId.CAMBRIDGE: cambridge,
@@ -122,6 +123,37 @@ def model_param_names(user: User) -> list[str]:
 def sensor_param_names(user: User) -> list[str]:
     """The parameter names of the user's sensor-noise model, in the board's order."""
     return protocol.sensor_param_names(user.sensor_id)
+
+
+# -- schedules ---------------------------------------------------------------------
+
+
+def add_food_event(user: User, event: FoodEvent) -> None:
+    """Add a daily meal, keeping the list in time order. The board holds 32; a 33rd raises."""
+    if len(user.food_events) >= MAX_EVENTS:
+        raise ValueError(f"The board holds at most {MAX_EVENTS} meals.")
+    user.food_events.append(event)
+    user.food_events.sort(key=lambda e: e.time_of_day_min)
+
+
+def remove_food_event(user: User, index: int) -> None:
+    """Remove the meal at *index* (nothing happens for a position that is not there)."""
+    if 0 <= index < len(user.food_events):
+        del user.food_events[index]
+
+
+def add_exercise_event(user: User, event: ExerciseEvent) -> None:
+    """Add a daily exercise bout, in time order. The board holds 32; a 33rd raises."""
+    if len(user.exercise_events) >= MAX_EVENTS:
+        raise ValueError(f"The board holds at most {MAX_EVENTS} exercise bouts.")
+    user.exercise_events.append(event)
+    user.exercise_events.sort(key=lambda e: e.time_of_day_min)
+
+
+def remove_exercise_event(user: User, index: int) -> None:
+    """Remove the exercise bout at *index* (nothing happens for a position that is not there)."""
+    if 0 <= index < len(user.exercise_events):
+        del user.exercise_events[index]
 
 
 # -- saving ------------------------------------------------------------------------

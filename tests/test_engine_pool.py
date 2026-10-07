@@ -55,14 +55,29 @@ def test_pool_emits_per_slot_and_instants_route_by_slot(app):
         paused=False,
     )
     assert pool.slots == [1, 3]
+
+    def wait_for(condition, seconds=30.0):
+        """Wait for *condition* instead of a fixed time: the engines tick on real 1 Hz timers
+        that slip when the machine is busy, which made fixed waits intermittently too short."""
+        waited = 0.0
+        while waited < seconds and not condition():
+            QTest.qWait(250)  # pyright: ignore[reportCallIssue]  (PyQt6 QTest stub)
+            waited += 0.25
+        return condition()
+
     try:
-        QTest.qWait(4000)  # pyright: ignore[reportCallIssue]  (PyQt6 QTest stub)
+        assert wait_for(lambda: any(s == 1 for s, _ in got) and any(s == 3 for s, _ in got))
         base_by_slot = {s: [g for sl, g in got if sl == s] for s in (1, 3)}
         assert base_by_slot[1] and base_by_slot[3]  # both slots ticked
 
         n_before = len(got)
         pool.add_instant_pisa(1, 6.0, 0.5)  # slot 1 only
-        QTest.qWait(6000)  # pyright: ignore[reportCallIssue]
+        wait_for(
+            lambda: (
+                any(s == 1 and g < base_by_slot[1][-1] - 10.0 for s, g in got[n_before:])
+                and any(s == 3 for s, _ in got[n_before:])
+            )
+        )
         after = got[n_before:]
         s1 = [g for s, g in after if s == 1]
         s3 = [g for s, g in after if s == 3]
