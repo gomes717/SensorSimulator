@@ -170,6 +170,7 @@ without creating a dependency on the GUI or BLE stack.
 | Term | Meaning |
 |---|---|
 | **Sensor** | One simulated CGM on the board — a BLE identity, a CGMS service instance and a config. The board runs 3. |
+| **User** | A simulated person as the app edits and sends it: name, picture, weight (the model's `BW`), a source (glucose model + sensor noise + food/exercise, or a recorded CSV window). Replaces the Person + Sensor profile pair (ADR 0006); edited on the profile screen opened from the **Users** button. |
 | **Slot** | A sensor's 0-based index on the board. A numbered advertised name (`"Nordic Glucose Sensor 3"`) is slot 2. A single-sensor board has no slot (`None`). |
 | **Session** | One `BleSession` — the live connection to one BLE identity. Its `user_id` is the label every message it emits carries. |
 | **Tab** | One sensor in the browser-style strip: avatar, name, alert icon (no number — the tooltip has the value). |

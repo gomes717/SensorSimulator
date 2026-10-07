@@ -499,9 +499,9 @@ instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.
 
 ## 12. Users: one profile per simulated person (in progress)
 
-Status (2026-10-06): the model layer, the firmware's name field and the Users screen with
-read-from-board are done and hardware-tested; the profile screen (Profile / CSV / Food /
-Exercise / Model pages, Preview, Save, Send to) is not built yet. Plan and slice list:
+Status (2026-10-07): the model layer, the firmware's name field, the Users screen with
+read-from-board (hardware-tested) and the profile screen's shell with its Profile and Model
+pages and Save are done; the Food / Exercise / CSV pages, Preview and Send to are not built yet. Plan and slice list:
 [`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:
 [ADR 0006](adr/0006-users-replace-person-and-sensor.md).
 
@@ -534,8 +534,18 @@ list, **+ Read from…**, **+ New**, Open and Delete. `UserReader` (`gui/user_re
 read — the cursor write plus six GATT reads on one session's FIFO, one read at a time, answers
 taken only from the session asked, all-or-nothing with a message naming what was missing — and
 `models/user_board.py` turns the reading into the outcome. `BoardMode.busy` makes a read wait
-while a tab refresh holds the cursor. Until the profile screen exists, opening a user shows a
-read-only summary (`gui/user_summary.py`) that can save a draft.
+while a tab refresh holds the cursor.
+
+**The profile screen** (`gui/user_profile_window.py`, one window per user via
+`gui/user_profiles.py`): the picture, the name and a menu on the left; the chosen page on the
+right; Save at the bottom. Mode gates the menu — model mode enables Profile, Food, Exercise and
+Model; CSV mode only Profile and CSV (`user_edit.pages_for`); the other mode's inputs are kept.
+It edits a **copy** and writes it into the app's list only on Save (closing asks Save / Discard /
+Cancel), and a draft read from a board is added by its first Save. Weight is the model's `BW`
+(shown read-only on the Model page, edited on the Profile page); switching model keeps it. Save
+refuses a blank, over-long (30 bytes) or duplicate name, since users are recognised by name.
+Pages are registered with `add_page`, so the Food / Exercise / CSV pages of the next slices plug
+in without changing the shell.
 
 **Read from the board.** One slot is read under the Sensor-select cursor (name, data
 source, person config, sensor config, food and exercise lists), turned into a *board
