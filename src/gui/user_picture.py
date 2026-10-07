@@ -36,6 +36,20 @@ def store_picture(dest_dir: Path, source: Path) -> str:
     return PICTURE_NAME
 
 
+def stored_pixmap(user: User, size: int) -> QPixmap | None:
+    """The user's stored picture at *size* pixels, or None when it has none (or the file is gone)."""
+    if not user.picture:
+        return None
+    pixmap = QPixmap(str(user_store.user_dir(user) / user.picture))
+    if pixmap.isNull():
+        return None
+    return pixmap.scaled(
+        QSize(size, size),
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
 def pixmap_for(user: User, size: int, pending: Path | None = None) -> QPixmap:
     """The picture to show for *user* at *size* pixels: the *pending* (chosen, unsaved) file, else
     its stored picture, else the initials disc."""

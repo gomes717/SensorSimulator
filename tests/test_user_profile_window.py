@@ -87,7 +87,7 @@ def test_a_page_registered_later_joins_the_menu_in_its_place():
 def test_clicking_a_menu_entry_shows_its_page():
     env = _Env()
     env.win.menu.setCurrentRow(4)  # Model
-    assert env.win.stack.currentWidget() is env.win.pages["model"]
+    assert env.win.current_page() is env.win.pages["model"]
 
 
 # -- mode gating ----------------------------------------------------------------------
@@ -128,7 +128,7 @@ def test_switching_to_csv_leaves_a_page_that_is_no_longer_enabled():
     env = _Env()
     env.win.menu.setCurrentRow(4)  # Model
     env.win.profile_page.csv_radio.setChecked(True)
-    assert env.win.stack.currentWidget() is env.win.pages["profile"]
+    assert env.win.current_page() is env.win.pages["profile"]
 
 
 def test_switching_back_to_model_enables_the_pages_again():

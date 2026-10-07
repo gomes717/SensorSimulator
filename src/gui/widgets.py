@@ -10,7 +10,14 @@ be under the cursor, with nothing to show it happened.
 from __future__ import annotations
 
 from PyQt6.QtGui import QWheelEvent
-from PyQt6.QtWidgets import QDoubleSpinBox, QLabel, QSizePolicy, QSpinBox
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QLabel,
+    QSizePolicy,
+    QSpinBox,
+    QWidget,
+)
 
 
 def wrapped_label(text: str = "", *, muted: bool = False) -> QLabel:
@@ -49,3 +56,14 @@ class NoWheelSpinBox(_NoWheelMixin, QSpinBox):
 
 class NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
     """A QDoubleSpinBox whose value the mouse wheel cannot change."""
+
+
+def fit_to_screen(window: QWidget, width: int, height: int, share: float = 0.9) -> None:
+    """Resize *window* to *width* x *height*, but never beyond *share* of the screen it is on, so a
+    window that was comfortable on a big monitor is not taller than a laptop's screen."""
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen is None:
+        window.resize(width, height)
+        return
+    area = screen.availableGeometry()
+    window.resize(min(width, int(area.width() * share)), min(height, int(area.height() * share)))

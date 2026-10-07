@@ -60,7 +60,8 @@ def test_the_users_button_opens_the_users_window_listing_the_users(win):
     window = win.windows.get("users")
     assert isinstance(window, UsersWindow)
     assert window.isVisible()
-    assert _texts(window) == [u.name for u in win.state.users]
+    # each entry starts with the user's name (and may say which sensor it is on)
+    assert [text.split("  ·  ")[0] for text in _texts(window)] == [u.name for u in win.state.users]
     window.close()
 
 

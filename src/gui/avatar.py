@@ -7,6 +7,7 @@ color across reconnects. No image assets.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
@@ -15,6 +16,8 @@ _CACHE: dict[tuple[str, str, int], QIcon] = {}
 
 
 def _initials(label: str) -> str:
+    # "Ana Rodrigues — Sensor 2" is the user "Ana Rodrigues": the sensor suffix is not a name.
+    label = re.sub(r"\s+[—-]\s+Sensor\s+\d+$", "", label)
     parts = [p for p in label.replace("·", " ").split() if p]
     if not parts:
         return "?"

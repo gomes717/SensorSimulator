@@ -21,6 +21,7 @@ from typing import Any
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -28,17 +29,20 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from gui import user_picture
+from gui.avatar_picker import choose_avatar
 from gui.user_csv_page import CsvPage
 from gui.user_model_page import ModelPage
 from gui.user_preview_window import PreviewWindow
-from gui.user_profile_page import ProfilePage, choose_picture_file
+from gui.user_profile_page import ProfilePage
 from gui.user_schedule_pages import EXERCISE, FOOD, SchedulePage
+from gui.widgets import fit_to_screen
 from models import app_settings, user_edit, user_send, user_store
 from models.types import User
 
@@ -132,12 +136,12 @@ class UserProfileWindow(QWidget):
         ask_unsaved: Callable[[], str | None] = _ask_unsaved,
         ask_save_before_send: Callable[[], str | None] = _ask_save_before_send,
         choose_sensor: Callable[[list, Callable[[Any], str]], Any] = _choose_sensor,
-        choose_picture: Callable[[], Path | None] = choose_picture_file,
+        choose_picture: Callable[[], Path | None] = choose_avatar,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.resize(760, 560)
+        fit_to_screen(self, 760, 560)
         self._deps = deps
         self._dialogs = Dialogs(ask_unsaved, ask_save_before_send, choose_sensor)
         self._user = copy.deepcopy(user)
@@ -217,7 +221,13 @@ class UserProfileWindow(QWidget):
         """Register a page; the menu lists registered pages in :data:`PAGE_ORDER` (a key not in
         it has a page but no menu entry)."""
         self.pages[key] = widget
-        self.stack.addWidget(widget)
+        # Each page scrolls inside the window instead of stretching it: a page taller than the
+        # screen (the graphs and tables) must not make the whole window taller than the screen.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        self.stack.addWidget(scroll)
         if key not in PAGE_ORDER:
             return
         current = self._current_key()
@@ -230,6 +240,18 @@ class UserProfileWindow(QWidget):
         self._select(current or "profile")
         self._apply_gating()
 
+    def _show(self, key: str) -> None:
+        """Bring *key*'s page forward (the stack holds each page inside its scroll area)."""
+        viewport = self.pages[key].parentWidget()
+        scroll = viewport.parentWidget() if viewport is not None else None
+        if scroll is not None:
+            self.stack.setCurrentWidget(scroll)
+
+    def current_page(self) -> QWidget | None:
+        """The page now showing."""
+        scroll = self.stack.currentWidget()
+        return scroll.widget() if isinstance(scroll, QScrollArea) else scroll
+
     def _current_key(self) -> str | None:
         item = self.menu.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
@@ -239,13 +261,13 @@ class UserProfileWindow(QWidget):
             item = self.menu.item(row)
             if item is not None and item.data(Qt.ItemDataRole.UserRole) == key:
                 self.menu.setCurrentRow(row)
-                self.stack.setCurrentWidget(self.pages[key])
+                self._show(key)
                 return
 
     def _show_menu_page(self, row: int) -> None:
         item = self.menu.item(row)
         if item is not None:
-            self.stack.setCurrentWidget(self.pages[item.data(Qt.ItemDataRole.UserRole)])
+            self._show(item.data(Qt.ItemDataRole.UserRole))
 
     def _apply_gating(self) -> None:
         """Enable the pages the mode allows; leave one that just got switched off."""

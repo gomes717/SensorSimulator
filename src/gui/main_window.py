@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QMainWindow
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
-from gui import run_controller
+from gui import run_controller, user_picture
 from gui.app_state import AppState
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
             self._clock,
             self.directory.label,
             show_points=self.state.show_points,
+            picture_for=self._tab_picture,
         )
         self.tabs.show_points_changed.connect(self.state.set_show_points)
         self.sim = SimulationCoordinator(
@@ -162,6 +163,8 @@ class MainWindow(QMainWindow):
                     board_busy=lambda: self._board_mode.busy,
                     on_open=lambda user, draft: self._open_user(profiles, user, draft),
                     on_deleted=self._on_user_deleted,
+                    label=self._sensor_label,
+                    where=self._where_is,
                 ),
             )
         )
@@ -279,17 +282,49 @@ class MainWindow(QMainWindow):
         self._show_status(message)
 
     def _on_user_deleted(self, user: User) -> None:
-        """A user was deleted from the Users window: take it off its slot."""
-        self.state.forget_user(user)
+        """A user was deleted from the Users window: take it off its slot. Only a user the run was
+        using restarts it — deleting one nothing runs must not reset the graphs."""
+        was_running = self.state.forget_user(user)
         self.state.save_layout()
         self._refresh_sensor_labels()
-        self.sim.restart()
+        if was_running:
+            self.sim.restart()
 
     def _refresh_sensor_labels(self) -> None:
-        """Show the users' current names on the tabs and in the Bluetooth list."""
+        """Show the users' current names and pictures on the tabs, in the Bluetooth list and in
+        the Users list (which says which sensor each user is on)."""
         self.tabs.refresh_labels()
         if self.windows.bluetooth is not None:
             self.windows.bluetooth.relabel()
+        users_window = self.windows.get("users")
+        if isinstance(users_window, UsersWindow):
+            users_window.refresh()
+
+    def _sensor_label(self, session) -> str:
+        """A sensor's current name: its user and number ("Rafael — Sensor 1"), or its advertised
+        name while no user is recorded on it. (The session's own name is frozen at connect.)"""
+        if session.slot_index is None:
+            return session.user_id
+        return board_layout.device_label(
+            board_layout.advert_name(session.slot_index), self.state.board_layout
+        )
+
+    def _where_is(self, user: User) -> str:
+        """Which sensor(s) the slot record has *user* on: "Sensor 3", "Sensors 1, 3" or ""."""
+        slots = [
+            str(i + 1) for i, s in enumerate(self.state.board_layout.slots) if s.person == user.name
+        ]
+        if not slots:
+            return ""
+        return f"Sensor{'s' if len(slots) > 1 else ''} {', '.join(slots)}"
+
+    def _tab_picture(self, key: str, _address: str | None):
+        """The picture of the user on the sensor behind tab *key*, or None (initials disc)."""
+        slot = self.directory.slot_of_user(key)
+        if slot is None or not 0 <= slot < len(self.state.board_layout.slots):
+            return None
+        user = self.state.user_by_name(self.state.board_layout.slots[slot].person)
+        return user_picture.stored_pixmap(user, 22) if user is not None else None
 
     def _disconnect_device(self, address: str) -> None:
         bt = self.windows.bluetooth

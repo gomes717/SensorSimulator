@@ -110,6 +110,9 @@ class _Bt:
     def display_name(self, address):
         return address
 
+    def relabel(self):
+        pass
+
 
 @pytest.fixture
 def win(app):
@@ -447,3 +450,38 @@ def test_deleting_a_user_takes_it_off_its_slot(win):
     gone = win.state.users.pop()
     win._on_user_deleted(gone)
     assert win.state.board_layout.slots[0].person is None
+
+
+def test_deleting_a_user_no_sensor_runs_does_not_reset_the_graphs(win):
+    _assign(win, 0, _person("Ana"))
+    unused = user_of(_person("Unused"))
+    win.state.users.append(unused)
+    _connect(win, _Session(0, "S1"))
+    win.sim.restart()
+    page = win.sensors.page_of_user("S1")
+    page.add_received(5.0, 111.0)
+    win._on_user_deleted(unused)
+    assert page.graph.buf.graph_y == [111.0]  # untouched
+    assert win.state.board_layout.slots[0].person == "Ana"  # and Ana keeps her sensor
+
+
+def test_deleting_the_user_a_sensor_runs_does_reset_that_run(win):
+    _assign(win, 0, _person("Ana"))
+    _connect(win, _Session(0, "S1"))
+    win.sim.restart()
+    assert win.sim.engines.slots == [0]
+    win._on_user_deleted(win.state.users.pop())
+    assert win.sim.engines.slots != [0] or win.state.board_layout.slots[0].person is None
+
+
+def test_deleting_the_active_user_resets_model_only_but_not_a_board_run(win):
+    win.state.model_only = True
+    active = user_of(_person("Active"))
+    win.state.users.append(active)
+    win.state.active_user = active
+    page = win.tabs.pages.default_page
+    page.add_received(5.0, 111.0)
+    win.state.users.remove(active)
+    win._on_user_deleted(active)
+    assert page.graph.buf.graph_y == []  # Model Only was running that user
+    assert win.state.active_user is not active

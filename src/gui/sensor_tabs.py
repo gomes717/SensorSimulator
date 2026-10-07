@@ -83,11 +83,13 @@ def alert_icon(level: alerts.Level) -> QPixmap:
 class TabHeader(QWidget):
     """What a tab shows: avatar, name, latest value, alert icon."""
 
-    def __init__(self, user_id: str, name: str) -> None:
+    def __init__(self, user_id: str, name: str, picture: QPixmap | None = None) -> None:
         super().__init__()
+        self._user_id = user_id
+        self._picture_shown = False
         self._avatar = QLabel()
-        self._avatar.setPixmap(avatar_icon(user_id, user_id).pixmap(22, 22))
         self._name = QLabel(name)
+        self.set_picture(picture)
         self._icon = QLabel()
         self._icon.setFixedSize(_ICON, _ICON)
         layout = QHBoxLayout(self)
@@ -123,12 +125,27 @@ class TabHeader(QWidget):
         """Whether the warning triangle is currently visible."""
         return not self._icon.pixmap().isNull()
 
+    @property
+    def shows_picture(self) -> bool:
+        """Whether the avatar is the user's picture (not the generated initials disc)."""
+        return self._picture_shown
+
+    def set_picture(self, picture: QPixmap | None) -> None:
+        """Show the user's *picture* as the avatar, or the initials disc when there is none."""
+        self._picture_shown = picture is not None and not picture.isNull()
+        if self._picture_shown and picture is not None:
+            self._avatar.setPixmap(picture)
+        else:
+            self._avatar.setPixmap(avatar_icon(self._user_id, self._name.text()).pixmap(22, 22))
+
     def set_name(self, name: str) -> bool:
         """The sensor's current name (it can change when a slot is re-assigned).
         Returns whether it changed, in which case the tab needs re-laying out."""
         if name == self._name.text():
             return False
         self._name.setText(name)
+        if not self._picture_shown:
+            self._avatar.setPixmap(avatar_icon(self._user_id, name).pixmap(22, 22))
         self.fit()
         return True
 
@@ -319,10 +336,13 @@ class SensorTabs(QWidget):
         parent=None,
         *,
         show_points: bool = False,
+        picture_for: Callable[[str, str | None], QPixmap | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._thresholds = thresholds
         self._label_for = label_for or (lambda user_id, _dev_id: user_id)
+        # (key, address) -> the user's picture for that tab, or None (the initials disc)
+        self._picture_for = picture_for or (lambda _user_id, _dev_id: None)
         self.pages = SensorPages(thresholds, view_window_s, clock, show_points=show_points)
         self.pages.show_points_changed.connect(self.show_points_changed)
 
@@ -418,7 +438,7 @@ class SensorTabs(QWidget):
         page = self.pages.ensure(key, slot)
         if key not in self._headers:
             self._ids.setdefault(key, len(self._ids) + 1)
-            header = TabHeader(key, self.label_of(key))
+            header = TabHeader(key, self.label_of(key), self._picture_for(key, self._dev.get(key)))
             self._headers[key] = header
             first = self._bar.count() == 0
             # Qt announces the first tab as "current" from inside addTab(), before
@@ -512,8 +532,9 @@ class SensorTabs(QWidget):
         return self._label_for(key, self._dev.get(key)) or key
 
     def refresh_labels(self) -> None:
-        """Re-resolve every tab's name (a slot was re-assigned)."""
+        """Re-resolve every tab's name and picture (a slot was re-assigned, a user was saved)."""
         for key, header in self._headers.items():
+            header.set_picture(self._picture_for(key, self._dev.get(key)))
             self._rename(key, header)
 
     def _rename(self, key: str, header: TabHeader) -> None:

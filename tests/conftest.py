@@ -1,12 +1,11 @@
 """Keep the test suite away from the user's real data/ folder.
 
-The app persists profiles, settings and the board layout under data/, and
-several tests drive code that saves them. Without this, a plain `pytest` run
-rewrote the user's own uncommitted edits to those files. Each test now gets a
-private copy of data/ and the three persistence modules are pointed at it.
+The app persists users, profiles, settings and the board layout under data/, and several
+tests drive code that saves them. Without this, a plain `pytest` run rewrote the user's own
+uncommitted edits to those files. Each test now gets its own EMPTY data folder (so no test
+depends on what is saved on this machine either) and the persistence modules are pointed at it.
 """
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -20,12 +19,10 @@ sys.path.insert(0, str(_ROOT / "src"))
 def _private_data_dir(tmp_path, monkeypatch):
     from models import app_settings, board_layout, profile_store, user_store
 
+    # An EMPTY data folder: the app seeds its defaults like a first run. Tests must not depend on
+    # whoever's profiles, users or slot layout happen to be saved on this machine.
     data = tmp_path / "data"
-    real = _ROOT / "data"
-    if real.exists():
-        shutil.copytree(real, data)
-    else:
-        data.mkdir()
+    data.mkdir()
     for module, file_attr, name in (
         (app_settings, "_SETTINGS_FILE", "settings.json"),
         (board_layout, "_LAYOUT_FILE", "board_layout.json"),

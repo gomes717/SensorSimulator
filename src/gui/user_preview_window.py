@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
-from gui.widgets import wrapped_label
+from gui.widgets import fit_to_screen, wrapped_label
 from models import user_sim
 from models.types import User
 
@@ -31,7 +31,7 @@ class PreviewWindow(QWidget):
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(f"Preview — {user.name}")
-        self.resize(760, 420)
+        fit_to_screen(self, 760, 420)
 
         self.minutes, self.glucose = user_sim.preview_24h(user)
         self.meal_marks = 0

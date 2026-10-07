@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from PyQt6.QtWidgets import QWidget
 
@@ -33,6 +34,8 @@ class UsersDeps:
     board_busy: Callable[[], bool]
     on_open: Callable[[User, bool], object]  # a window opener may return its window
     on_deleted: Callable[[User], None]
+    label: Callable[[Any], str]
+    where: Callable[[User], str]
 
 
 @dataclass
@@ -66,6 +69,8 @@ class ChildWindows:
             reader=d.reader,
             board_busy=d.board_busy,
             on_deleted=d.on_deleted,
+            label=d.label,
+            where=d.where,
         )
         window.open_requested.connect(d.on_open)
         return window

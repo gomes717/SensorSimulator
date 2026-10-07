@@ -67,13 +67,20 @@ class AppState:
             return None
         return next((u for u in self.users if u.name == name), None)
 
-    def forget_user(self, user: User) -> None:
-        """Take a deleted *user* off any slot that was recorded as running it."""
+    def forget_user(self, user: User) -> bool:
+        """Take a deleted *user* off any slot that was recorded as running it. Returns whether the
+        run depended on it — it was on a slot, or it was the active user that Model Only (or a lone
+        board with nothing assigned) runs — so the caller restarts the engines only then."""
+        cleared = False
         for assignment in self.board_layout.slots:
             if assignment.person == user.name:
                 assignment.person = None
-        if self.active_user is user:
+                cleared = True
+        was_active = self.active_user is user
+        if was_active:
             self.active_user = self.users[0] if self.users else None
+        nothing_assigned = self.board_layout.assigned_count() == 0
+        return cleared or (was_active and (self.model_only or nothing_assigned))
 
     def rename_user_in_layout(self, old_name: str, new_name: str) -> None:
         """Follow a renamed user: the slots recorded under *old_name* now run *new_name*."""

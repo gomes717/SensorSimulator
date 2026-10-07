@@ -14,7 +14,7 @@ that exists only in memory until that screen saves it.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from PyQt6.QtCore import QPoint, pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -105,6 +105,8 @@ class UsersWindow(QWidget):
         ask_differs: Callable[[user_board.Differs], str | None] = _ask_what_to_do,
         confirm_delete: Callable[[User], bool] = _confirm_delete,
         on_deleted: Callable[[User], None] = lambda _user: None,
+        label: Callable[[Any], str] = lambda session: session.user_id,
+        where: Callable[[User], str] = lambda _user: "",
         parent: QWidget | None = None,
     ) -> None:
         """*users* is the app's own list, changed in place; *save* persists it."""
@@ -119,6 +121,8 @@ class UsersWindow(QWidget):
         self._ask_differs = ask_differs
         self._confirm_delete = confirm_delete
         self._on_deleted = on_deleted
+        self._label = label
+        self._where = where
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -160,7 +164,10 @@ class UsersWindow(QWidget):
         keep = self._selected_user()
         self.list.clear()
         for user in self._users:
-            item = QListWidgetItem(_icon_for(user), user.name)
+            where = self._where(user)
+            item = QListWidgetItem(
+                _icon_for(user), f"{user.name}  ·  {where}" if where else user.name
+            )
             self.list.addItem(item)
         if keep is not None and keep in self._users:
             self.list.setCurrentRow(self._users.index(keep))
@@ -212,7 +219,7 @@ class UsersWindow(QWidget):
         else:
             menu = QMenu(self)
             for session in sessions:
-                menu.addAction(session.user_id, lambda s=session: self.read_from(s))
+                menu.addAction(self._label(session), lambda s=session: self.read_from(s))
             menu.exec(self.read_button.mapToGlobal(QPoint(0, self.read_button.height())))
 
     def read_from(self, session) -> None:
@@ -221,7 +228,7 @@ class UsersWindow(QWidget):
             self.status.setText("The board is busy answering another read — try again in a moment.")
             return
         self.read_button.setEnabled(False)
-        self.status.setText(f"Reading {session.user_id}…")
+        self.status.setText(f"Reading {self._label(session)}…")
         if not self._reader.read(
             session, lambda reading, error: self._on_read_done(session, reading, error)
         ):

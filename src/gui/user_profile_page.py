@@ -8,7 +8,6 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QButtonGroup,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
@@ -18,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.avatar_picker import choose_avatar
 from gui.widgets import NoWheelDoubleSpinBox, wrapped_label
 from models import user_edit
 from models.types import User
@@ -29,14 +29,6 @@ _MODE_HELP = (
 )
 
 
-def choose_picture_file() -> Path | None:
-    """Ask for an image file (None if cancelled)."""
-    name, _filter = QFileDialog.getOpenFileName(
-        None, "Choose a picture", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif)"
-    )
-    return Path(name) if name else None
-
-
 class ProfilePage(QWidget):
     """Name, height, weight, source and the picture button for the user being edited."""
 
@@ -45,7 +37,7 @@ class ProfilePage(QWidget):
         user: User,
         changed: Callable[[], None],
         on_picture: Callable[[Path], None],
-        choose_picture: Callable[[], Path | None] = choose_picture_file,
+        choose_picture: Callable[[], Path | None] = choose_avatar,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -58,7 +50,7 @@ class ProfilePage(QWidget):
         outer = QVBoxLayout(self)
         form = QFormLayout()
         outer.addLayout(form)
-        self.picture_button = QPushButton("Choose picture…")
+        self.picture_button = QPushButton("Choose avatar…")
         self.picture_button.clicked.connect(self._pick_picture)
         form.addRow("Picture:", self.picture_button)
 
