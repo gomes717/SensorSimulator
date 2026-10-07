@@ -535,6 +535,50 @@ refreshed. The scripts discover with `use_cached_services=False` (`hw_common.con
 | `hw_csv_loop.py` | **CSV playback loops** when its window ends: a 1 h, a synthetic 24 h and a real 24 h `Dexcom_001` window (+ Food Log) each play past the end at x60 / x1000; every console sample must equal `floor(t·60/interval) mod rows`, and the meals must fire again in the next window. Uses the last slot; restores it (model source, no CSV) and the speed (x60) afterwards. ~13 min. | A, B pass 2026-10-06 (see FIRMWARE.md) |
 | `hw_user_read.py` | The Users screen's **read-from-board** path through the *real* `BleSession` + `UserReader`: on the last slot it writes a known user (UVA/Padova, Breton, a meal, an exercise bout, values that are not float32-exact), reads it back and checks the three outcomes — same content → **Matches** (float32-aware on real wire data), a changed parameter → **Differs** `['model parameters']`, another name → **Unknown** — then renames the board's user (what *Create* does) and restores what the slot held. | 9/9, 2026-10-06 |
 
+## 10c. Overnight Users test — `scripts/overnight_users.py`
+
+The whole Users-era app against the real 3-sensor board, cycle after cycle with seeded variety
+(`--seed`). It drives the real `MainWindow` headless (offscreen) in a **private data folder** — the
+user's own `data/` is never touched — answering every modal question itself (a stray modal is
+closed and recorded as a failure). Files: `overnight_users.py` (runner, cycle, scoring),
+`overnight_flows.py` (the app flows), `overnight_analysis.py` (pure scoring, unit-tested in
+`tests/test_overnight_analysis.py`).
+
+```
+uv run python scripts/overnight_users.py --until 08:00     # the app closed; board + COM10 free
+uv run python scripts/overnight_users.py --smoke           # one 6 min cycle at x250
+uv run python scripts/overnight_users.py --smoke --start-cycle 2   # an even (loop-checking) cycle
+uv run python scripts/overnight_users.py --no-board        # frontend flows only
+```
+
+**A cycle** (about 28 min): *setup* — connect the three sensors from the Bluetooth window; create
+three users with **+ New** (every page, avatar from the gallery, Preview, Save, on-disk check);
+**Send to…** each sensor (plain; *save before send* answered Save; answered Send-without-saving then
+saved) and check the board holds what was sent; **+ Read from…** every case (matches, unknown →
+draft, differs → Overwrite, differs → Create "Name#2" and the board's user renamed). *Run* — 25 min at
+x60 (25 simulated hours): frontend work while it runs (create/delete an unused user without
+restarting the graphs, change an avatar and see the tab picture, Configuration, tabs); Insert Food /
+Exercise / PISA from each sensor's Commands panel; a tab closed and the sensor reconnected.
+*After* — Pause holds the clock, Resume continues, Stop resets, Start streams again.
+
+**Odd and even cycles differ on purpose.** A Send restarts every sensor's clock (shared clocks), so
+**odd cycles** make one mid-run change (new meals/exercise, or model ↔ CSV) and Send it, early; **even
+cycles** send nothing during the run, so each CSV plays through 25 h and **the loop is checked**.
+
+**Scored per sensor:** BLE complete; every BLE value a board push; the board's model against the host
+model (`lg.parity`); the app's expected model against the board's (host time, best shift ≤ 8 s, only
+for engines that started with the board's segment); the sensor-noise model; each event took effect.
+Per CSV sensor: it plays its window; past 24 h it replays it from the start; the food log shows as
+carbs. Notes (not failures) record what a read leaves in the slot record.
+
+**First night, 2026-10-07 (10 cycles, 6 clean):** the CSV loop held on every even cycle (61–62 of
+62 ticks past the end). Failures: Deichmann app-vs-board gaps at extreme glucose (up to 701 mg/dL with
+default parameters — worth checking its defaults), one CSV window mismatch after a Send (cause
+unknown; the harness now logs how it differs), one Roy & Parker board-vs-host divergence (undiagnosed).
+Open product questions: reads do not record the slot, so after *Create "Name#2"* Start would write
+the original user over the board's copy; CSV food-log meals showed as one tick on one sensor and ~15
+on another.
+
 ## 11. Appendix — 5-minute manual smoke (no harness)
 
 1. `firmware\scripts\flash.ps1`; open COM10, see `model_tick:` at `dt=0.0167`.

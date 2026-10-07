@@ -95,7 +95,8 @@ SensorSimulator/
 ├── scripts/          # e2e.py (single-sensor harness), e2e_4sensor.py (multi-sensor harness),
 │                     #   e2e_long_3sensor.py / e2e_overnight_3sensor.py (long runs),
 │                     #   ble_soak.py / ble_ab_batch.py / watchdog_check.py (BLE reliability),
-│                     #   ui_smoke.py, validate_ble_stream.py
+│                     #   ui_smoke.py, validate_ble_stream.py,
+│                     #   overnight_users.py (overnight Users test: docs/E2E_TEST_PLAN.md §10c)
 ├── firmware/         # peripheral_cgms firmware source (git-tracked, builds/flashes from here)
 ├── cgmsim/           # Standalone CLI simulator — source of truth for the model math
 ├── data/             # Saved profiles.json, board_layout.json, settings.json
