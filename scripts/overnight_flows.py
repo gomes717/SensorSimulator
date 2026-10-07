@@ -406,8 +406,24 @@ class Flows:
         if isinstance(outcome, user_board.Matches):
             return True, f"{reading.name!r} matches"
         if isinstance(outcome, user_board.Differs):
-            return False, f"differs in {outcome.differences}"
+            return False, f"differs in {outcome.differences}" + self._csv_diff(user, reading)
         return False, f"the board holds {reading.name!r}, expected {user.name!r}"
+
+    @staticmethod
+    def _csv_diff(user: User, reading) -> str:
+        """How a CSV window that came back differs from the one sent (for the report)."""
+        sent, got = user.csv, reading.csv
+        if sent is None or got is None:
+            return f"; window sent: {sent is not None}, board's: {got is not None}"
+        first = next(
+            (i for i, (a, b) in enumerate(zip(sent.samples, got.samples, strict=False)) if a != b),
+            None,
+        )
+        return (
+            f"; samples {len(sent.samples)} sent / {len(got.samples)} back, first difference at "
+            f"{first}, interval {sent.interval_s}/{got.interval_s}s, meals "
+            f"{len(sent.foodlog)}/{len(got.foodlog)}, start {sent.start_iso}/{got.start_iso}"
+        )
 
     def send_from_screen(
         self,
