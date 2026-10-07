@@ -7,6 +7,8 @@ behind the cursor write, so they answer for the slot asked about — the cursor 
 on the board shared by every connection, which is why only one read runs at a time and why
 the answers are taken only from the session that was asked.
 
+A board that replays a recording is then asked for it too (``BleSession.start_csv_download``).
+
 The read is all-or-nothing: a missing or unreadable answer fails it with a message that says
 what was missing, rather than building a user from a guess (a half-read user that "matched"
 would let an overwrite silently wipe the saved one's missing parts).
@@ -15,14 +17,18 @@ would let an overwrite silently wipe the saved one's missing parts).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
 
 from PyQt6.QtCore import QObject, QTimer
 
 from api import protocol
+from models import user_csv
 from models.user_board import BoardReading
 
 READS = ("user_name", "data_source", "person", "sensor", "food_list", "exercise_list")
 _DEFAULT_TIMEOUT_MS = 8000  # six reads behind a cursor write, at the board's own pace
+_DOWNLOAD_TIMEOUT_MS = 60_000  # a 24 h recording is ~3 chunks per track, each a round trip
 
 DoneCallback = Callable[[BoardReading | None, str], None]
 
@@ -33,8 +39,10 @@ class UserReader(QObject):
     def __init__(self, timeout_ms: int = _DEFAULT_TIMEOUT_MS, parent: QObject | None = None):
         super().__init__(parent)
         self._timeout_ms = timeout_ms
+        self._slot = 0
+        self._partial: BoardReading | None = None  # the six reads, waiting for the recording
         self._wired: set[int] = set()  # id() of sessions already connected to
-        self._session: object | None = None
+        self._session: Any = None
         self._on_done: DoneCallback | None = None
         self._got: dict[str, bytes] = {}
         self._generation = 0
@@ -64,6 +72,7 @@ class UserReader(QObject):
         self._generation += 1
         token = self._generation
         slot = session.slot_index if session.slot_index is not None else 0
+        self._slot = slot
         session.queue_write("sensor_select", protocol.encode_sensor_select(slot))
         for key in READS:
             session.request_read(key)
@@ -89,6 +98,11 @@ class UserReader(QObject):
         )
         session.write_failed.connect(
             lambda _address, key, error, s=session: self._on_failed(s, key, error)
+        )
+        session.csv_download_finished.connect(
+            lambda _address, ok, message, tracks, s=session: self._on_download(
+                s, ok, message, tracks
+            )
         )
         self._wired.add(id(session))
 
@@ -147,7 +161,36 @@ class UserReader(QObject):
             food_events=protocol.decode_food_events(got["food_list"]),
             exercise_events=protocol.decode_exercise_events(got["exercise_list"]),
         )
-        self._complete(reading, "")
+        if is_csv:
+            self._await_recording(reading)
+        else:
+            self._complete(reading, "")
+
+    # ------------------------------------------------------------------
+    # The recording of a board that replays one
+    # ------------------------------------------------------------------
+
+    def _await_recording(self, reading: BoardReading) -> None:
+        """The six reads are in and the board replays a recording: ask it for that too. The read
+        is not finished until it arrives — a half-read user must not look complete."""
+        self._partial = reading
+        token = self._generation
+        assert self._session is not None
+        self._session.start_csv_download(self._slot)
+        QTimer.singleShot(_DOWNLOAD_TIMEOUT_MS, lambda: self._download_timed_out(token))
+
+    def _on_download(self, session, ok: bool, message: str, tracks: dict) -> None:
+        if self._partial is None or session is not self._session:
+            return
+        if not ok:
+            self._fail(f"The board would not send its recording ({message}).")
+            return
+        reading, self._partial = self._partial, None
+        self._complete(replace(reading, csv=user_csv.track_from_download(tracks)), "")
+
+    def _download_timed_out(self, token: int) -> None:
+        if token == self._generation and self._partial is not None:
+            self._fail("The board did not send its recording in time.")
 
     def _fail(self, message: str) -> None:
         self._complete(None, message)
@@ -156,6 +199,7 @@ class UserReader(QObject):
         on_done = self._on_done
         self._on_done = None
         self._session = None
+        self._partial = None
         self._got = {}
         if on_done is not None:
             on_done(reading, error)

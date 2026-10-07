@@ -61,6 +61,8 @@ static struct bt_uuid_128 sensor_select_uuid = BT_UUID_INIT_128(
 
 static struct bt_uuid_128 user_name_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0016, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 csv_read_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0017, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 
 /* Config writes are rejected while CGMS-only mode is active — see
  * model_thread.h's model_thread_set_cgms_only() comment. Deliberately does
@@ -240,6 +242,17 @@ static ssize_t write_user_name(struct bt_conn *conn, const struct bt_gatt_attr *
 		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
 	}
 	return len;
+}
+
+/* ── CSV readback: read-only, the chunk the last CSV_OP_READ staged ─────── */
+
+static ssize_t read_csv_readback(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				  void *buf, uint16_t len, uint16_t offset)
+{
+	struct csv_readback_wire chunk;
+	uint16_t total = comm_thread_copy_csv_readback(&chunk);
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &chunk, total);
 }
 
 /* ── Speed multiplier: read + write (float32, x1..x1000) ────────────── */
@@ -745,6 +758,12 @@ BT_GATT_SERVICE_DEFINE(sim_config_svc,
 		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
 		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
 		read_user_name, write_user_name, NULL),
+
+	/* After user_name, again last: every earlier handle keeps its number. */
+	BT_GATT_CHARACTERISTIC(&csv_read_uuid.uuid,
+		BT_GATT_CHRC_READ,
+		BT_GATT_PERM_READ,
+		read_csv_readback, NULL, NULL),
 );
 
 /* Finds the VALUE attribute (not the declaration attribute) for a

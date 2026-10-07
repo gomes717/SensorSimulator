@@ -48,10 +48,10 @@ def test_a_reading_becomes_a_user_with_the_boards_inputs():
     assert user.height_cm is None and user.picture is None and user.csv is None
 
 
-def test_a_csv_reading_is_a_csv_user_with_no_data():
+def test_a_csv_reading_with_no_recording_is_a_csv_user_with_no_window():
     user = user_board.user_from_reading(_reading(is_csv=True))
     assert user.mode == "csv"
-    assert user.csv is None  # the board cannot send the track back yet
+    assert user.csv is None  # the board held no recording to send
 
 
 def test_a_board_with_no_name_gives_an_unknown_user():
@@ -135,3 +135,33 @@ def test_create_skips_names_already_taken():
     outcome = user_board.classify([saved, taken], _reading(food_events=[]))
     assert isinstance(outcome, user_board.Differs)
     assert user_board.create_copy([saved, taken], outcome).name == "Ana#3"
+
+
+# -- the recorded window comes with the reading -------------------------------------------------
+
+
+def test_a_csv_reading_carries_its_window_into_the_user():
+    from models.types import CsvTrack
+
+    track = CsvTrack(samples=[100, 110], interval_s=300, foodlog=[(600, 30.0)])
+    user = user_board.user_from_reading(_reading(is_csv=True, csv=track))
+    assert user.mode == "csv" and user.csv is track
+
+
+def test_a_csv_board_that_matches_a_saved_user_with_the_same_window_is_a_match():
+    from models.types import CsvTrack
+
+    track = CsvTrack(samples=[100, 110], interval_s=300, foodlog=[])
+    saved = replace(user_board.user_from_reading(_reading(is_csv=True, csv=track)), id="saved")
+    outcome = user_board.classify([saved], _reading(is_csv=True, csv=track))
+    assert isinstance(outcome, user_board.Matches)
+
+
+def test_a_csv_board_with_another_window_differs_in_the_window():
+    from models.types import CsvTrack
+
+    mine = CsvTrack(samples=[100, 110], interval_s=300, foodlog=[])
+    theirs = CsvTrack(samples=[100, 111], interval_s=300, foodlog=[])
+    saved = replace(user_board.user_from_reading(_reading(is_csv=True, csv=mine)), id="saved")
+    outcome = user_board.classify([saved], _reading(is_csv=True, csv=theirs))
+    assert isinstance(outcome, user_board.Differs) and outcome.differences == ["CSV window"]

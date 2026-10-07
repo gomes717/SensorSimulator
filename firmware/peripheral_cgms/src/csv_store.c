@@ -385,6 +385,52 @@ int csv_store_clear(uint8_t slot, uint8_t track)
 	return 0;
 }
 
+int csv_store_readback(uint8_t slot, uint8_t track, uint32_t offset, uint16_t max_len,
+		       struct csv_readback_wire *out)
+{
+	struct csv_manifest m;
+
+	if (slot >= MAX_SIM_SENSORS || track >= CSV_TRACK_COUNT || !out) {
+		return -EINVAL;
+	}
+	memset(out, 0, sizeof(*out));
+	out->track = track;
+	out->offset = offset;
+
+	if (manifest_read(&m) != 0 || m.magic != CSV_MANIFEST_MAGIC ||
+	    m.version != CSV_MANIFEST_VERSION) {
+		return 0; /* no manifest: nothing committed anywhere */
+	}
+	const struct csv_track_manifest *tm = &m.track[slot][track];
+
+	if (!tm->present) {
+		return 0;
+	}
+	out->present = 1;
+	out->interval_s = tm->interval_s;
+	out->row_count = tm->row_count;
+	out->base_epoch_s = tm->base_epoch_s;
+	out->byte_len = tm->byte_len;
+
+	if (offset >= tm->byte_len) {
+		return 0;
+	}
+	uint32_t n = MIN((uint32_t)MIN(max_len, (uint16_t)CSV_READBACK_MAX), tm->byte_len - offset);
+	const struct flash_area *fa;
+	int err = flash_area_open(CSV_PARTITION_ID, &fa);
+
+	if (err) {
+		return err;
+	}
+	err = flash_area_read(fa, region_off(slot, track) + offset, out->data, n);
+	flash_area_close(fa);
+	if (err) {
+		return err;
+	}
+	out->len = (uint16_t)n;
+	return 0;
+}
+
 uint32_t csv_store_received(void)
 {
 	return staging.active ? staging.received : 0;

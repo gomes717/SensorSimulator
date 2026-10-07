@@ -354,6 +354,61 @@ def encode_csv_status(track: int) -> bytes:
     return struct.pack("<BB", CSV_OP_STATUS, track & 0xFF)
 
 
+# CSV readback (see ble_uuids.CSV_READ_UUID). A chunk is small enough that header + data fits one
+# ATT read at the board's MTU.
+CSV_OP_READ = 0x06
+CSV_READBACK_CHUNK = 200
+_CSV_READ_REQ_FMT = "<BBIH"  # opcode, track, offset, length
+_CSV_READBACK_HDR_FMT = (
+    "<BBHIIIIH"  # track, present, interval_s, rows, base_epoch_s, bytes, offset, len
+)
+_CSV_READBACK_HDR_LEN = struct.calcsize(_CSV_READBACK_HDR_FMT)  # 22
+
+
+def encode_csv_read(track: int, offset: int, length: int = CSV_READBACK_CHUNK) -> bytes:
+    """CSV control READ: ask the board to stage *length* bytes of *track* from *offset* of the
+    selected slot, for the next read of the csv_read characteristic."""
+    return struct.pack(_CSV_READ_REQ_FMT, CSV_OP_READ, track & 0xFF, offset & 0xFFFFFFFF, length)
+
+
+def decode_csv_readback(data: bytes) -> dict | None:
+    """Decode a csv_read value: the track's header (``present``, ``interval_s``, ``row_count``,
+    ``base_epoch_s``, ``byte_len``) and the staged chunk (``offset``, ``data``). None if the value
+    is truncated (shorter than its own header or the length it claims)."""
+    if len(data) < _CSV_READBACK_HDR_LEN:
+        return None
+    track, present, interval_s, rows, epoch, byte_len, offset, length = struct.unpack_from(
+        _CSV_READBACK_HDR_FMT, data
+    )
+    chunk = data[_CSV_READBACK_HDR_LEN : _CSV_READBACK_HDR_LEN + length]
+    if len(chunk) != length:
+        return None
+    return {
+        "track": track,
+        "present": bool(present),
+        "interval_s": interval_s,
+        "row_count": rows,
+        "base_epoch_s": epoch,
+        "byte_len": byte_len,
+        "offset": offset,
+        "data": bytes(chunk),
+    }
+
+
+def parse_glucose_blob(blob: bytes) -> list[int]:
+    """The int16 mg/dL samples of a glucose track (inverse of build_glucose_track)."""
+    count = len(blob) // 2
+    return list(struct.unpack(f"<{count}h", blob[: count * 2]))
+
+
+def parse_foodlog_blob(blob: bytes) -> list[tuple[int, float]]:
+    """The ``(offset_s, carbs_g)`` meals of a food-log track (inverse of build_foodlog_track)."""
+    return [
+        (offset_s, carbs_g)
+        for offset_s, carbs_g in struct.iter_unpack("<If", blob[: len(blob) // 8 * 8])
+    ]
+
+
 def encode_csv_data(offset: int, chunk: bytes) -> bytes:
     """CSV data write: u32 offset (into the track) + raw track bytes."""
     return struct.pack("<I", offset & 0xFFFFFFFF) + chunk

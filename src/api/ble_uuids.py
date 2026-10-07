@@ -100,6 +100,13 @@ SENSOR_SELECT_UUID = "5b2c0015-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # ("Nordic Glucose Sensor N") is unchanged. See PROTOCOL_SPEC.md's "User name" section.
 # Registered last in the GATT table so every existing handle number stays put.
 USER_NAME_UUID = "5b2c0016-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+# Read-only. The readback of the selected slot's uploaded CSV tracks: write CSV_OP_READ
+# (track, offset, length) to CSV_CONTROL, wait for its notification, then read this characteristic
+# for a 22-byte header (track, present, interval, row count, base epoch, byte length, offset,
+# length) followed by that chunk of the track. Served from RAM, filled by the comm thread — like
+# every other readback, no flash access on the Bluetooth read path. Registered after USER_NAME
+# so every earlier handle keeps its number. See PROTOCOL_SPEC.md's "CSV readback" section.
+CSV_READ_UUID = "5b2c0017-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 
 # Basic Dexcom-style profile (see ble_session.py / PROTOCOL_SPEC.md). NOT a real
 # Dexcom implementation — no J-PAKE/AES auth, realtime glucose message only.

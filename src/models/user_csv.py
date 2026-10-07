@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from api import protocol
 from models import dexcom_csv, food_log_csv
 from models.types import CsvTrack
 
@@ -45,3 +46,27 @@ def _meals(glucose_path: Path, start: datetime) -> list[tuple[int, float]]:
         return food_log_csv.slice_window(food_log_csv.read_food_log(food_path), start)
     except (ValueError, OSError):
         return []
+
+
+def track_from_download(tracks: dict[int, dict]) -> CsvTrack | None:
+    """The window a board sent back, as a user's :class:`CsvTrack`; None if the board holds no
+    glucose recording for the slot, or sent fewer rows than it claims (never a guess).
+
+    *tracks* maps a track number to ``{"present", "interval_s", "row_count", "base_epoch_s",
+    "blob"}`` (what ``BleSession.start_csv_download`` collects). The start time is the board's
+    base epoch; the board holds no file name, so the window says where it came from."""
+    glucose = tracks.get(protocol.CSV_TRACK_GLUCOSE)
+    if glucose is None or not glucose["present"]:
+        return None
+    samples = protocol.parse_glucose_blob(glucose["blob"])
+    if len(samples) != glucose["row_count"] or not samples:
+        return None
+    meals = tracks.get(protocol.CSV_TRACK_FOODLOG)
+    foodlog = protocol.parse_foodlog_blob(meals["blob"]) if meals and meals["present"] else []
+    return CsvTrack(
+        samples=samples,
+        interval_s=glucose["interval_s"],
+        foodlog=foodlog,
+        start_iso=datetime.fromtimestamp(glucose["base_epoch_s"]).isoformat(),
+        source_name="read from the board",
+    )

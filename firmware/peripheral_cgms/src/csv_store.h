@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <zephyr/toolchain.h>
 
 #include "sim_config.h" /* MAX_SIM_SENSORS */
 
@@ -50,6 +51,34 @@ struct csv_upload_header {
 struct csv_food_hit {
 	float carbs_g;
 };
+
+/* CSV readback (CSV_OP_READ + the csv_read characteristic, PROTOCOL_SPEC.md): one chunk of a
+ * committed track plus the track's header, so the app can rebuild what a slot is replaying.
+ * Wire layout, little-endian; 22 bytes of header then `len` bytes of the track. */
+#define CSV_READBACK_MAX 200
+#define CSV_READBACK_HDR 22
+
+struct csv_readback_wire {
+	uint8_t track;
+	uint8_t present;       /* 0: nothing committed for this slot/track (len is then 0) */
+	uint16_t interval_s;
+	uint32_t row_count;
+	uint32_t base_epoch_s;
+	uint32_t byte_len;     /* the whole track, so the app knows when it has all of it */
+	uint32_t offset;       /* where in the track `data` starts */
+	uint16_t len;          /* bytes of `data` that follow */
+	uint8_t data[CSV_READBACK_MAX];
+} __packed;
+
+BUILD_ASSERT(offsetof(struct csv_readback_wire, data) == CSV_READBACK_HDR,
+	     "csv_readback_wire header must stay 22 bytes (the app parses it)");
+
+/* Fill *out with slot/track's header and up to *max_len* bytes (<= CSV_READBACK_MAX) of it from
+ * *offset*. A slot/track with nothing committed gives present = 0 and len = 0 (not an error);
+ * an offset past the end gives len = 0. Reads flash: call from comm_thread, not the BT host
+ * context. Returns 0, or a negative errno on a bad argument or a flash error. */
+int csv_store_readback(uint8_t slot, uint8_t track, uint32_t offset, uint16_t max_len,
+		       struct csv_readback_wire *out);
 
 /* Begin an upload into *slot*'s track: validates the header, erases just enough
  * sectors for total_bytes, arms the write cursor. Returns 0 on success. */

@@ -3,8 +3,8 @@
 What the board returns has been through float32 (the wire format), so a saved
 user's 82.3 kg never equals the board's 82.30000305…; every float is rounded to
 float32 on both sides before it is compared. Only what the board can hold is
-compared — not the picture, the height or the id — and while the board cannot send
-a CSV back (not built yet) the recorded track is not compared either.
+compared — not the picture, the height or the id. A CSV user's recorded window is
+compared too (the board sends it back); a board that could not send one is not.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import struct
 from dataclasses import replace
 
 from api import protocol
-from models.types import ExerciseEvent, FoodEvent, User
+from models.types import CsvTrack, ExerciseEvent, FoodEvent, User
 
 MAX_NAME_BYTES = protocol.MAX_USER_NAME_BYTES  # what the board's name field holds
 _NUMBERED = re.compile(r"#\d+$")
@@ -36,18 +36,39 @@ def _exercise(events: list[ExerciseEvent]) -> list[tuple[int, int, float]]:
     return sorted((e.time_of_day_min, e.duration_min, _f32(e.intensity_pct)) for e in events)
 
 
+def _foodlog(track: CsvTrack) -> list[tuple[int, float]]:
+    return sorted((offset, _f32(carbs)) for offset, carbs in track.foodlog)
+
+
+def _compare_windows(saved: User, board: User) -> list[str]:
+    """The recorded windows of two CSV users. A board that could not send its recording (an older
+    firmware) is not compared; one that did must hold exactly the saved window — the samples, the
+    interval and the meals (carbs through float32). The file name and start time are not compared:
+    the board holds neither."""
+    if board.csv is None:
+        return []
+    if saved.csv is None:
+        return ["CSV window"]
+    same = (
+        saved.csv.samples == board.csv.samples
+        and saved.csv.interval_s == board.csv.interval_s
+        and _foodlog(saved.csv) == _foodlog(board.csv)
+    )
+    return [] if same else ["CSV window"]
+
+
 def compare(saved: User, board: User) -> list[str]:
     """What differs between *saved* and what the *board* runs; empty when they match.
 
     A different mode is the only difference reported (the other mode's inputs are
-    kept but unused, so comparing them would only add noise). In CSV mode nothing else
-    is compared; in model mode: the model and its parameters, the sensor and its
+    kept but unused, so comparing them would only add noise). In CSV mode the recorded
+    windows are compared; in model mode: the model and its parameters, the sensor and its
     parameters, and the two schedules (order does not matter).
     """
     if saved.mode != board.mode:
         return ["mode"]
     if saved.mode == "csv":
-        return []
+        return _compare_windows(saved, board)
     differences: list[str] = []
     if saved.model_id != board.model_id:
         differences.append("model")

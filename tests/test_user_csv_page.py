@@ -132,7 +132,7 @@ def test_a_user_read_from_a_csv_board_explains_the_missing_window():
     user = user_store.new_user("From board")
     user.mode = "csv"
     env = _Env(user)
-    assert "cannot send" in env.page.info.text()
+    assert "no recording" in env.page.info.text()
 
 
 def test_a_window_already_in_the_user_is_shown():

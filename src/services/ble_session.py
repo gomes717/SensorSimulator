@@ -62,6 +62,7 @@ CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.SPEED_UUID: "speed",  # read + write, persisted (x1..x1000 multiplier)
     ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted (SIG CGMS vs Dexcom)
     ble_uuids.SENSOR_SELECT_UUID: "sensor_select",  # read + write, not persisted; per-slot cursor
+    ble_uuids.CSV_READ_UUID: "csv_read",  # read-only; chunks of a track, after a CSV_OP_READ
     ble_uuids.USER_NAME_UUID: "user_name",  # read + write, persisted per slot; no sim reset
     ble_uuids.CSV_CONTROL_UUID: "csv_control",  # write + notify, chunked CSV upload control
     ble_uuids.CSV_DATA_UUID: "csv_data",  # write-only, CSV upload data chunks
@@ -225,6 +226,8 @@ class BleSession(QThread):
     reset_sync = pyqtSignal(str)  # address — see ble_uuids.RESET_SYNC_UUID
     csv_upload_progress = pyqtSignal(str, int, int)  # address, sent_bytes, total_bytes
     csv_upload_finished = pyqtSignal(str, bool, str)  # address, ok, message
+    # address, ok, message, tracks: {track: {present, interval_s, row_count, base_epoch_s, blob}}
+    csv_download_finished = pyqtSignal(str, bool, str, object)
     board_layout_progress = pyqtSignal(str, int, int)  # address, slots_done, slots_total
     board_layout_finished = pyqtSignal(str, bool, str)  # address, ok, message
     # address, silent: True when the CGM Measurement subscription has delivered
@@ -632,6 +635,72 @@ class BleSession(QThread):
             self.csv_upload_finished.emit(self._address, False, "not connected")
             return
         asyncio.run_coroutine_threadsafe(self._do_csv_upload(uploads), self._loop)
+
+    def start_csv_download(self, slot: int) -> None:
+        """Thread-safe: read back the CSV tracks (glucose and food log) the board holds for *slot*.
+
+        The slot is selected first, inside the transfer, so nothing queued ahead can leave the
+        cursor elsewhere. The outcome arrives on csv_download_finished (address, ok, message,
+        tracks); a slot with nothing uploaded gives ``present=False`` tracks, not an error.
+        """
+        if self._loop is None:
+            self.csv_download_finished.emit(self._address, False, "not connected", {})
+            return
+        asyncio.run_coroutine_threadsafe(self._do_csv_download(slot), self._loop)
+
+    async def _download_track(self, track: int) -> dict:
+        """One track of the selected slot: READ chunks until the board's byte count is reached."""
+        ctrl = self._config_characteristics.get("csv_control")
+        reader = self._config_characteristics.get("csv_read")
+        if ctrl is None or reader is None or self._client is None:
+            raise RuntimeError("device does not expose the CSV readback characteristic")
+        info: dict | None = None
+        blob = bytearray()
+        offset = 0
+        while True:
+            while not self._csv_ctrl_queue.empty():
+                self._csv_ctrl_queue.get_nowait()
+            await self._client.write_gatt_char(
+                ctrl, protocol.encode_csv_read(track, offset), response=True
+            )
+            status, _ = await self._await_csv_ctrl()
+            if status != protocol.CSV_CTRL_STATUS_OK:
+                raise RuntimeError(f"board rejected READ for track {track}")
+            chunk = protocol.decode_csv_readback(bytes(await self._client.read_gatt_char(reader)))
+            if chunk is None or chunk["track"] != track:
+                raise RuntimeError(f"unreadable READ answer for track {track}")
+            info = info or chunk
+            if not chunk["present"]:
+                return {**info, "blob": b""}
+            if chunk["offset"] != offset:
+                raise RuntimeError(f"board answered offset {chunk['offset']}, asked {offset}")
+            blob += chunk["data"]
+            offset += len(chunk["data"])
+            if offset >= info["byte_len"]:
+                return {**info, "blob": bytes(blob[: info["byte_len"]])}
+            if not chunk["data"]:
+                raise RuntimeError(f"board sent no data at offset {offset} of track {track}")
+
+    async def _do_csv_download(self, slot: int) -> None:
+        sel = self._config_characteristics.get("sensor_select")
+        if sel is None or self._client is None:
+            self.csv_download_finished.emit(
+                self._address, False, "device does not expose sensor_select", {}
+            )
+            return
+        try:
+            await self._layout_write(sel, protocol.encode_sensor_select(slot))
+            tracks = {
+                track: await self._download_track(track)
+                for track in (protocol.CSV_TRACK_GLUCOSE, protocol.CSV_TRACK_FOODLOG)
+            }
+            self.csv_download_finished.emit(self._address, True, "recording read", tracks)
+        except (Exception, asyncio.CancelledError) as exc:  # pylint: disable=broad-except
+            # CancelledError on purpose, as in _do_csv_upload: this runs detached, and anything
+            # uncaught would leave the reader waiting for a recording that never reports.
+            self.csv_download_finished.emit(
+                self._address, False, str(exc) or "link dropped mid-download", {}
+            )
 
     async def _await_csv_ctrl(self, timeout: float = 5.0) -> tuple[int, int]:
         """Wait for the next CSV control notification (status, received_bytes)."""

@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, replace
 
 from models import user_match
-from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId, User
+from models.types import CsvTrack, ExerciseEvent, FoodEvent, ModelId, SensorId, User
 
 UNKNOWN_NAME = "Unknown"  # what a board user with no name is called until the user renames it
 
@@ -37,6 +37,9 @@ class BoardReading:
     sensor_params: dict[str, float]
     food_events: list[FoodEvent]
     exercise_events: list[ExerciseEvent]
+    # The recording the board replays, read back from it; None when the board is not replaying one
+    # or could not send it (an older firmware).
+    csv: CsvTrack | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,7 @@ Outcome = Unknown | Matches | Differs
 
 def user_from_reading(reading: BoardReading) -> User:
     """A new user (fresh id) holding what *reading* says. Height and picture are unknown to
-    the board, a CSV board's track cannot be read back yet, so ``csv`` is None."""
+    the board; a CSV board's recording comes with the reading (None if it held none)."""
     return User(
         id=uuid.uuid4().hex,
         name=reading.name or UNKNOWN_NAME,
@@ -79,6 +82,7 @@ def user_from_reading(reading: BoardReading) -> User:
         sensor_params=dict(reading.sensor_params),
         food_events=list(reading.food_events),
         exercise_events=list(reading.exercise_events),
+        csv=reading.csv,
     )
 
 

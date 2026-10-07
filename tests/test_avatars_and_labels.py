@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtGui import QColor, QImage
+from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from gui import avatar_picker, user_picture
@@ -149,7 +149,6 @@ def _tabs(picture_for=None):
 
 
 def test_a_tab_shows_the_users_picture_when_it_has_one():
-    from PyQt6.QtGui import QPixmap
 
     pixmap = QPixmap(22, 22)
     pixmap.fill(QColor("blue"))
@@ -167,9 +166,8 @@ def test_a_tab_without_a_picture_shows_the_initials_disc():
 
 
 def test_a_tab_picks_up_a_picture_chosen_later():
-    from PyQt6.QtGui import QPixmap
 
-    state = {"pixmap": None}
+    state: dict[str, QPixmap | None] = {"pixmap": None}
     tabs, _names = _tabs(lambda _key, _dev: state["pixmap"])
     tabs.ensure_tab("S1")
     header = tabs.header("S1")
@@ -211,8 +209,10 @@ def test_the_disc_follows_the_label_it_is_given():
 def test_a_window_is_never_larger_than_the_screen():
     widget = QWidget()
     fit_to_screen(widget, 100_000, 100_000)
-    screen = widget.screen().availableGeometry()
-    assert widget.width() <= screen.width() and widget.height() <= screen.height()
+    screen = widget.screen()
+    assert screen is not None
+    area = screen.availableGeometry()
+    assert widget.width() <= area.width() and widget.height() <= area.height()
 
 
 def test_a_window_smaller_than_the_screen_keeps_its_size():
@@ -224,7 +224,9 @@ def test_a_window_smaller_than_the_screen_keeps_its_size():
 def test_the_profile_screen_can_be_made_small_enough_for_any_screen():
     user = user_store.new_user("Ana")
     win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
-    screen = win.screen().availableGeometry()
+    screen_obj = win.screen()
+    assert screen_obj is not None
+    screen = screen_obj.availableGeometry()
     assert win.minimumSizeHint().height() < screen.height()
     assert win.minimumSizeHint().width() < screen.width()
     assert win.height() <= screen.height() and win.width() <= screen.width()

@@ -20,8 +20,8 @@ from models.types import User
 
 _NONE_YET = "No CSV window chosen yet — choose a Dexcom file and the 24 h region to replay."
 _BOARD_NO_DATA = (
-    "This user was read from a board that is replaying a recording. The board cannot send "
-    "that recording back yet, so there is no window here — choose a file to replace it."
+    "This user was read from a board that is replaying a recording, but no recording could "
+    "be read from it (nothing is committed on that sensor) — choose a file to give it one."
 )
 
 

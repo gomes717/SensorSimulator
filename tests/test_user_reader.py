@@ -47,6 +47,8 @@ class _Session:
         self.is_live = live
         self.config_read = _Signal()
         self.write_failed = _Signal()
+        self.csv_download_finished = _Signal()
+        self.downloads: list[int] = []  # the slots asked for
         self.sent: list[tuple] = []  # ("write", key, payload) / ("read", key), in order
 
     def queue_write(self, key, payload):
@@ -55,8 +57,14 @@ class _Session:
     def request_read(self, key):
         self.sent.append(("read", key))
 
+    def start_csv_download(self, slot):
+        self.downloads.append(slot)
+
     def answer(self, key, data):
         self.config_read.emit("AA:BB", key, data)
+
+    def deliver(self, tracks, ok=True, message="done"):
+        self.csv_download_finished.emit("AA:BB", ok, message, tracks)
 
 
 def _answers() -> dict[str, bytes]:
@@ -108,13 +116,112 @@ def test_the_answers_become_a_reading_once_all_six_arrive():
     assert reading.exercise_events == [ExerciseEvent(1080, 45, 70.0)]
 
 
-def test_a_board_in_csv_mode_reads_as_csv():
+def _csv_answers():
+    return _answers() | {"data_source": protocol.encode_data_source(True)}
+
+
+def _tracks(samples=(100, 110, 120), foodlog=((600, 30.0),)):
+    tracks = {
+        protocol.CSV_TRACK_GLUCOSE: {
+            "present": True,
+            "interval_s": 300,
+            "row_count": len(samples),
+            "base_epoch_s": 1_600_000_000,
+            "blob": protocol.build_glucose_track(list(samples)),
+        }
+    }
+    if foodlog:
+        tracks[protocol.CSV_TRACK_FOODLOG] = {
+            "present": True,
+            "interval_s": 0,
+            "row_count": len(foodlog),
+            "base_epoch_s": 1_600_000_000,
+            "blob": protocol.build_foodlog_track(list(foodlog)),
+        }
+    return tracks
+
+
+def test_a_model_board_does_not_download_a_recording():
     session = _Session()
     _, _, done = _read(session)
-    answers = _answers() | {"data_source": protocol.encode_data_source(True)}
-    for key, data in answers.items():
+    for key, data in _answers().items():
         session.answer(key, data)
-    assert done[0][0] is not None and done[0][0].is_csv is True
+    assert session.downloads == []
+    assert done[0][0] is not None and done[0][0].csv is None
+
+
+def test_a_board_in_csv_mode_is_asked_for_its_recording_for_the_slot_that_was_read():
+    session = _Session(slot_index=2)
+    reader, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    assert session.downloads == [2]
+    assert done == [] and reader.busy  # not finished until the recording arrives
+
+
+def test_the_recording_arrives_and_completes_the_reading():
+    session = _Session()
+    reader, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    session.deliver(_tracks())
+    [(reading, error)] = done
+    assert error == "" and reading is not None
+    assert reading.is_csv is True
+    assert reading.csv is not None
+    assert reading.csv.samples == [100, 110, 120]
+    assert reading.csv.foodlog == [(600, 30.0)]
+    assert not reader.busy
+
+
+def test_a_csv_board_with_no_track_yet_reads_as_csv_with_no_window():
+    session = _Session()
+    _, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    session.deliver({})  # source says CSV but nothing was committed
+    assert done[0][0] is not None and done[0][0].is_csv and done[0][0].csv is None
+
+
+def test_a_refused_download_fails_the_read_with_the_reason():
+    session = _Session()
+    reader, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    session.deliver({}, ok=False, message="board rejected READ")
+    assert done[0][0] is None
+    assert "recording" in done[0][1] and "board rejected READ" in done[0][1]
+    assert not reader.busy
+
+
+def test_a_recording_that_never_arrives_times_out():
+    session = _Session()
+    reader, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    reader._download_timed_out(reader._generation)
+    assert done[0][0] is None and "recording" in done[0][1]
+    assert not reader.busy
+
+
+def test_a_late_recording_after_the_read_gave_up_is_ignored():
+    session = _Session()
+    reader, _, done = _read(session)
+    for key, data in _csv_answers().items():
+        session.answer(key, data)
+    reader._download_timed_out(reader._generation)
+    session.deliver(_tracks())
+    assert len(done) == 1
+
+
+def test_a_download_from_another_session_is_ignored():
+    mine, other = _Session(slot_index=1), _Session(slot_index=2)
+    reader, _, done = _read(mine)
+    reader.read(other, lambda *_a: None)  # refused: busy
+    for key, data in _csv_answers().items():
+        mine.answer(key, data)
+    other.deliver(_tracks())
+    assert done == []
 
 
 def test_a_board_with_no_name_reads_as_an_empty_name():

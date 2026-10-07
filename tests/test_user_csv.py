@@ -127,3 +127,99 @@ def test_an_empty_window_draws_nothing():
     assert (
         user_schedule.csv_series(CsvTrack(samples=[], interval_s=300, foodlog=[])) == [0.0] * 1440
     )
+
+
+# -- the window rebuilt from what the board sent back ---------------------
+
+
+def _download(samples=(100, 110, 120), foodlog=((600, 30.0),), epoch=1_600_000_000, interval=300):
+    from api import protocol
+
+    tracks = {
+        protocol.CSV_TRACK_GLUCOSE: {
+            "present": True,
+            "interval_s": interval,
+            "row_count": len(samples),
+            "base_epoch_s": epoch,
+            "blob": protocol.build_glucose_track(list(samples)),
+        }
+    }
+    if foodlog:
+        tracks[protocol.CSV_TRACK_FOODLOG] = {
+            "present": True,
+            "interval_s": 0,
+            "row_count": len(foodlog),
+            "base_epoch_s": epoch,
+            "blob": protocol.build_foodlog_track(list(foodlog)),
+        }
+    return tracks
+
+
+def test_a_downloaded_recording_becomes_the_users_window():
+    track = user_csv.track_from_download(_download())
+    assert track is not None
+    assert track.samples == [100, 110, 120]
+    assert track.interval_s == 300
+    assert track.foodlog == [(600, 30.0)]
+
+
+def test_the_start_time_is_the_boards_base_epoch():
+    track = user_csv.track_from_download(_download(epoch=1_600_000_000))
+    assert track is not None
+    assert track.start_iso is not None
+    assert datetime.fromisoformat(track.start_iso).timestamp() == 1_600_000_000
+
+
+def test_a_downloaded_window_says_it_came_from_the_board():
+    track = user_csv.track_from_download(_download())
+    assert track is not None and track.source_name == "read from the board"
+
+
+def test_a_recording_with_no_food_log_has_no_meals():
+    track = user_csv.track_from_download(_download(foodlog=()))
+    assert track is not None and track.foodlog == []
+
+
+def test_a_board_with_no_glucose_track_has_no_window():
+    from api import protocol
+
+    tracks = _download()
+    tracks[protocol.CSV_TRACK_GLUCOSE]["present"] = False
+    assert user_csv.track_from_download(tracks) is None
+    assert user_csv.track_from_download({}) is None
+
+
+def test_a_glucose_track_shorter_than_it_claims_is_refused_not_guessed():
+    from api import protocol
+
+    tracks = _download()
+    tracks[protocol.CSV_TRACK_GLUCOSE]["row_count"] = 5  # claims 5 rows, has 3
+    assert user_csv.track_from_download(tracks) is None
+
+
+def test_a_round_trip_through_the_upload_builder_returns_the_same_window(tmp_path):
+    """What Send uploads is what a read gets back (the blob layout is shared)."""
+    from api import protocol
+
+    sent = CsvTrack(
+        samples=[90 + i % 40 for i in range(288)],
+        interval_s=300,
+        foodlog=[(3600, 45.0), (7200, 20.5)],
+        start_iso="2020-01-01T00:00:00",
+    )
+    assert sent.start_iso is not None
+    uploads = protocol.build_csv_uploads(sent.samples, 300, sent.foodlog, sent.start_iso)
+    tracks = {
+        u["track"]: {
+            "present": True,
+            "interval_s": u["interval_s"],
+            "row_count": u["row_count"],
+            "base_epoch_s": u["base_epoch_s"],
+            "blob": u["blob"],
+        }
+        for u in uploads
+    }
+    got = user_csv.track_from_download(tracks)
+    assert got is not None
+    assert (got.samples, got.interval_s, got.foodlog) == (sent.samples, 300, sent.foodlog)
+    assert got.start_iso == sent.start_iso

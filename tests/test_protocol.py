@@ -193,3 +193,67 @@ def test_user_name_decode_stops_at_the_first_nul():
 def test_user_name_decode_tolerates_bad_bytes():
     assert protocol.decode_user_name(b"\xff\xfeA") == "��A"
     assert protocol.decode_user_name(b"") == ""
+
+
+# -- CSV readback: CSV_OP_READ + the csv_read characteristic (5b2c0017) --------------------------
+
+
+def _readback(
+    track=0, present=True, interval=300, rows=3, epoch=1_600_000_000, byte_len=6, offset=0, data=b""
+):
+    return (
+        struct.pack(
+            "<BBHIIIIH", track, int(present), interval, rows, epoch, byte_len, offset, len(data)
+        )
+        + data
+    )
+
+
+def test_csv_read_request_layout():
+    assert protocol.encode_csv_read(1, 400, 200) == struct.pack("<BBIH", 0x06, 1, 400, 200)
+
+
+def test_csv_read_request_defaults_to_the_chunk_size():
+    assert protocol.encode_csv_read(0, 0)[-2:] == struct.pack("<H", protocol.CSV_READBACK_CHUNK)
+
+
+def test_csv_readback_chunk_decodes():
+    data = protocol.build_glucose_track([100, 110, 120])
+    got = protocol.decode_csv_readback(_readback(rows=3, byte_len=6, data=data))
+    assert got is not None
+    assert got["present"] is True and got["track"] == 0
+    assert (got["interval_s"], got["row_count"], got["byte_len"], got["offset"]) == (300, 3, 6, 0)
+    assert got["base_epoch_s"] == 1_600_000_000
+    assert got["data"] == data
+
+
+def test_csv_readback_of_an_empty_slot_is_not_present():
+    got = protocol.decode_csv_readback(_readback(present=False, rows=0, byte_len=0, epoch=0))
+    assert got is not None and got["present"] is False and got["data"] == b""
+
+
+def test_a_truncated_csv_readback_is_refused():
+    assert protocol.decode_csv_readback(b"\x00" * 5) is None
+    short = _readback(byte_len=6, data=b"\x01\x02\x03\x04")[:-2]  # claims 4 bytes, has 2
+    assert protocol.decode_csv_readback(short) is None
+
+
+def test_glucose_blob_is_the_inverse_of_build_glucose_track():
+    values = [100, 99, 250, 40, 401]
+    blob = protocol.build_glucose_track([float(v) for v in values])
+    assert protocol.parse_glucose_blob(blob) == values
+
+
+def test_foodlog_blob_is_the_inverse_of_build_foodlog_track():
+    events = [(3600, 30.0), (7200, 45.5)]
+    assert protocol.parse_foodlog_blob(protocol.build_foodlog_track(events)) == events
+
+
+def test_blobs_ignore_a_ragged_tail():
+    assert protocol.parse_glucose_blob(protocol.build_glucose_track([100, 110]) + b"\x07") == [
+        100,
+        110,
+    ]
+    assert protocol.parse_foodlog_blob(
+        protocol.build_foodlog_track([(60, 10.0)]) + b"\x01\x02"
+    ) == [(60, 10.0)]

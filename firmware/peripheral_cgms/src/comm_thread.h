@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <bluetooth/services/cgms.h>
 
+#include "csv_store.h"
 #include "sim_config.h"
 
 enum cfg_msg_type {
@@ -82,6 +83,9 @@ void comm_thread_copy_config(struct sim_config *out);
 void comm_thread_copy_selected_slot(struct sensor_slot *out);
 /* Copies the selected slot's user name (always NUL-terminated) into out. */
 void comm_thread_copy_selected_user_name(char out[SIM_USER_NAME_MAX]);
+/* Copies the staged CSV readback chunk (the last CSV_OP_READ's answer) into *out and returns how
+ * many bytes of it are meaningful: CSV_READBACK_HDR plus its `len`. */
+uint16_t comm_thread_copy_csv_readback(struct csv_readback_wire *out);
 uint8_t comm_thread_comm_profile(void);
 float comm_thread_speed_mult(void);
 

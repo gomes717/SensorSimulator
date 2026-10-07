@@ -40,6 +40,7 @@ struct cfg_msg {
 #define CSV_OP_ABORT  0x03
 #define CSV_OP_CLEAR  0x04
 #define CSV_OP_STATUS 0x05
+#define CSV_OP_READ   0x06
 
 struct csv_begin_wire {
 	uint8_t op;
@@ -54,6 +55,13 @@ struct csv_begin_wire {
 struct csv_track_op_wire {
 	uint8_t op;
 	uint8_t track;
+} __packed;
+
+struct csv_read_op_wire {
+	uint8_t op;
+	uint8_t track;
+	uint32_t offset;
+	uint16_t len;
 } __packed;
 
 struct csv_data_wire {
@@ -118,6 +126,19 @@ void comm_thread_copy_selected_user_name(char out[SIM_USER_NAME_MAX])
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
 	memcpy(out, working_cfg.user_name[working_sel], SIM_USER_NAME_MAX);
 	k_mutex_unlock(&working_cfg_lock);
+}
+
+/* The chunk the last CSV_OP_READ staged, served to the csv_read characteristic from RAM (the
+ * flash read happens in process_csv_control, on this thread — never in a GATT callback). */
+static K_MUTEX_DEFINE(csv_readback_lock);
+static struct csv_readback_wire csv_readback;
+
+uint16_t comm_thread_copy_csv_readback(struct csv_readback_wire *out)
+{
+	k_mutex_lock(&csv_readback_lock, K_FOREVER);
+	*out = csv_readback;
+	k_mutex_unlock(&csv_readback_lock);
+	return CSV_READBACK_HDR + out->len;
 }
 
 uint8_t comm_thread_comm_profile(void)
@@ -302,6 +323,29 @@ static void process_csv_control(const uint8_t *data, uint16_t len)
 	case CSV_OP_STATUS:
 		config_service_notify_csv_control(CSV_CTRL_STATUS_OK, csv_store_received());
 		break;
+	case CSV_OP_READ: {
+		struct csv_read_op_wire w;
+		struct csv_readback_wire chunk;
+
+		if (len < sizeof(w)) {
+			config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+			return;
+		}
+		memcpy(&w, data, sizeof(w));
+		int err = csv_store_readback(comm_thread_selected_slot(), w.track, w.offset, w.len,
+					     &chunk);
+
+		if (err) {
+			config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
+			break;
+		}
+		k_mutex_lock(&csv_readback_lock, K_FOREVER);
+		csv_readback = chunk;
+		k_mutex_unlock(&csv_readback_lock);
+		/* The app reads the csv_read characteristic only after this arrives. */
+		config_service_notify_csv_control(CSV_CTRL_STATUS_OK, chunk.len);
+		break;
+	}
 	default:
 		config_service_notify_csv_control(CSV_CTRL_STATUS_ERR, 0);
 		break;

@@ -280,3 +280,47 @@ def test_the_sensor_profile_carries_the_users_noise_model():
     )
     sensor.params["sigma"] = 9.0
     assert user.sensor_params["sigma"] == 2.5  # a copy
+
+
+# -- comparing a recorded window now the board can send it back ----------------------------------
+
+
+def _csv_user(samples=(100, 110, 120), foodlog=((600, 30.0),), **changes):
+    track = CsvTrack(samples=list(samples), interval_s=300, foodlog=list(foodlog))
+    return _user(mode="csv", csv=track, **changes)
+
+
+def test_the_same_recorded_window_matches():
+    saved = _csv_user(foodlog=((600, 30.1),))
+    board = _csv_user(foodlog=((600, _f32(30.1)),))  # carbs came back through float32
+    assert user_match.compare(saved, board) == []
+
+
+def test_a_different_recorded_sample_is_reported():
+    assert user_match.compare(_csv_user(), _csv_user(samples=(100, 111, 120))) == ["CSV window"]
+
+
+def test_a_different_interval_or_length_is_reported():
+    saved = _csv_user()
+    longer = _csv_user(samples=(100, 110, 120, 130))
+    assert user_match.compare(saved, longer) == ["CSV window"]
+
+
+def test_a_different_food_log_is_reported():
+    assert user_match.compare(_csv_user(), _csv_user(foodlog=((600, 99.0),))) == ["CSV window"]
+
+
+def test_a_saved_user_with_no_window_differs_from_a_board_that_has_one():
+    saved = _user(mode="csv", csv=None)
+    assert user_match.compare(saved, _csv_user()) == ["CSV window"]
+
+
+def test_a_board_that_could_not_send_its_window_is_not_compared():
+    board = _user(mode="csv", csv=None)  # e.g. an older firmware
+    assert user_match.compare(_csv_user(), board) == []
+
+
+def test_overwrite_takes_the_boards_window():
+    saved = _csv_user()
+    board = _csv_user(samples=(1, 2, 3))
+    assert user_match.apply_board(saved, board).csv == board.csv
