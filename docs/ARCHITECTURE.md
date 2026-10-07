@@ -499,8 +499,9 @@ instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.
 
 ## 12. Users: one profile per simulated person (in progress)
 
-Status (2026-10-06): the model layer and the firmware's name field are done and
-tested; the screens are not built yet. Plan and slice list:
+Status (2026-10-06): the model layer, the firmware's name field and the Users screen with
+read-from-board are done and hardware-tested; the profile screen (Profile / CSV / Food /
+Exercise / Model pages, Preview, Save, Send to) is not built yet. Plan and slice list:
 [`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:
 [ADR 0006](adr/0006-users-replace-person-and-sensor.md).
 
@@ -527,6 +528,14 @@ sensor) record. It is what you create, edit, preview, save and send:
 schedules; `apply_board` to overwrite; `next_free_name` → `Ana#2`, `clip_name`);
 `user_sim` (the engine profile for a user and `preview_24h`, which steps the same
 noise-free `ModelStepper` as the expected line).
+
+**In the app.** The toolbar's **Users** button opens `UsersWindow` (`gui/users_window.py`): the
+list, **+ Read from…**, **+ New**, Open and Delete. `UserReader` (`gui/user_reader.py`) does the
+read — the cursor write plus six GATT reads on one session's FIFO, one read at a time, answers
+taken only from the session asked, all-or-nothing with a message naming what was missing — and
+`models/user_board.py` turns the reading into the outcome. `BoardMode.busy` makes a read wait
+while a tab refresh holds the cursor. Until the profile screen exists, opening a user shows a
+read-only summary (`gui/user_summary.py`) that can save a draft.
 
 **Read from the board.** One slot is read under the Sensor-select cursor (name, data
 source, person config, sensor config, food and exercise lists), turned into a *board

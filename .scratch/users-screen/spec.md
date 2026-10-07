@@ -1,6 +1,6 @@
 # Users screen — one "User" replaces Person + Sensor, read from the board, preview, save, send
 
-Status (2026-10-06): slices 0–3 done and committed (base, User type + store + migration, pure logic, firmware/protocol user name — hardware-verified 12/12); slices 4–10 (the screens) not started. The six open questions were answered the same day (see *Decisions you made*); none left. The board has **3** sensors, not 4 — see *Three sensors*.
+Status (2026-10-06): slices 0–4 done and committed (base, User type + store + migration, pure logic, firmware/protocol user name, reader + Users screen + toolbar button — hardware-verified); slices 5–10 (the profile screen onwards) not started. The six open questions were answered the same day (see *Decisions you made*); none left. The board has **3** sensors, not 4 — see *Three sensors*.
 
 ## What changes, in one paragraph
 
@@ -94,7 +94,7 @@ Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…)
 1. **User type + store + migration** *(done — `c3c790a`)* (`models/types.py`, `models/user_store.py`). Pure; tests for round-trip and for migrating the current `profiles.json` + `board_layout.json`.
 2. **Pure logic** *(done — `2046f8c`)*: `user_match.compare(saved, board_user)` (float32-aware), `next_free_name("Ana") -> "Ana#2"`, `preview_24h(user)`. Tests first (TDD).
 3. **Firmware + protocol: user name** *(done; hardware 12/12 on 2026-10-06)*. Flashed; name written per slot and read back, other slots untouched, the 30-byte limit enforced (31 refused), UTF-8 round-trips, survives a J-Link reset, and a name write does not reset the sim clock. Verification script: `scripts/hw_user_name.py`. A v5 flash image is **migrated** (slots kept, names empty), not wiped.
-4. **Reader + Users screen + toolbar button.** `user_reader` (one slot, serialized), the three outcomes of read-from, the overwrite/create popup. Test the flow against `FakeSession`s the way `test_board_mode_fixes.py` / `test_send_confirmation.py` do.
+4. **Reader + Users screen + toolbar button** *(done; hardware 9/9 on 2026-10-06)*. `models/user_board.py` (pure: `BoardReading` → user, `classify` → `Unknown` / `Matches` / `Differs`, `overwrite`, `create_copy`); `gui/user_reader.py` (one slot, six reads behind the cursor write, all-or-nothing, one at a time, answers taken only from the session asked); `gui/users_window.py` (list, **+ Read from…**, **+ New**, Open, Delete, the overwrite/create question); the **Users** toolbar button; `BoardMode.busy` so a read waits for the shared cursor. **Interim:** Open shows a read-only summary (`gui/user_summary.py`) and offers to save a draft — slice 5 replaces it with the profile screen. Verification: `scripts/hw_user_read.py` through the real `BleSession` + `UserReader`.
 5. **User Profile shell + Profile + Model pages**, mode gating, Save.
 6. **Food + Exercise pages** with their 24 h graphs (reuse the instant-event/food graph code from `glucose_graph.py` where it fits).
 7. **CSV page** with the 24 h window copied into the user's folder on pick (the path to the original file is not kept).

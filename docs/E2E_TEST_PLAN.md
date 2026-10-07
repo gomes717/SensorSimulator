@@ -520,10 +520,17 @@ Windows' dropped links, and `checked_slot()` — the board clamps a missing slot
 test aimed at "slot 3" would silently hit slot 0). All need the board connected, COM10 free
 and nothing else holding its links. Logs go to `test-artifacts/hw/`.
 
+**Windows' GATT cache.** After a firmware update that adds a characteristic, Windows serves its
+cached copy of the board's services on the first connection to each identity, so the new
+characteristic is missing (`device does not expose this characteristic`) until the cache has
+refreshed. The scripts discover with `use_cached_services=False` (`hw_common.connect` /
+`refresh_gatt_cache`); the app itself does not (see `docs/TODO.md`).
+
 | Script | Checks | Last run |
 |---|---|---|
 | `hw_user_name.py` | The per-slot **User name** (`5b2c0016`): reads back on its slot; other slots untouched; 30 B accepted, 31 B refused; UTF-8; persists across a J-Link reset; an empty write clears; **a name write does not reset the sim clock**. Leaves slots 1–2 unnamed. | 12/12, 2026-10-06 |
 | `hw_csv_loop.py` | **CSV playback loops** when its window ends: a 1 h, a synthetic 24 h and a real 24 h `Dexcom_001` window (+ Food Log) each play past the end at x60 / x1000; every console sample must equal `floor(t·60/interval) mod rows`, and the meals must fire again in the next window. Uses the last slot; restores it (model source, no CSV) and the speed (x60) afterwards. ~13 min. | A, B pass 2026-10-06 (see FIRMWARE.md) |
+| `hw_user_read.py` | The Users screen's **read-from-board** path through the *real* `BleSession` + `UserReader`: on the last slot it writes a known user (UVA/Padova, Breton, a meal, an exercise bout, values that are not float32-exact), reads it back and checks the three outcomes — same content → **Matches** (float32-aware on real wire data), a changed parameter → **Differs** `['model parameters']`, another name → **Unknown** — then renames the board's user (what *Create* does) and restores what the slot held. | 9/9, 2026-10-06 |
 
 ## 11. Appendix — 5-minute manual smoke (no harness)
 

@@ -479,6 +479,11 @@ empty value means "no user on this slot".
   `sim_clock_min` or the instant events, so naming a user mid-run does not disturb it.
 - **Blocked in CGMS-only mode**, like every config write.
 - **Registered last in the GATT table**, so every earlier attribute keeps its handle number.
+- **A stale Windows GATT cache hides it after an update.** Windows serves its cached copy of a
+  board's services on the first connection to each identity after a firmware update, so a client
+  that discovers with the cache allowed does not see `5b2c0016` (the app reports "does not
+  expose 'user_name'") until a connection has refreshed the cache; `use_cached_services=False`
+  forces it. Seen on hardware 2026-10-06.
 - **The advertised BLE name is unchanged** ("Nordic Glucose Sensor N"): the app derives
   identity → slot from it, and the pairing work depends on it.
 
