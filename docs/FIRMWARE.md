@@ -162,12 +162,19 @@ Load/save cycle:
   expects, it falls back to `sim_config_set_defaults()` (Cambridge model +
   Ideal CGM sensor, no scheduled events, normal mode) — so a blank/corrupt/
   incompatible flash never prevents boot, it just starts from a known state.
+  The one exception is **v5 → v6** (the per-slot user names): `user_name[]` was
+  appended after `slots[]`, so a v5 image keeps every slot and gets empty names
+  (`sim_config: migrated v5 -> v6` on the console) instead of being wiped.
 - **Every config write** (`comm_thread.c`'s `process_cfg_msg()`): the
   in-RAM `working_cfg` is updated, then the *entire* struct is erased and
   rewritten to flash (`sim_config_save_to_flash()`) before being handed to
   `model_thread`. Wholesale erase+rewrite (not incremental) is simple and
   fast enough at ~715 B/4 KB, and matches how infrequently config actually
   changes relative to the 1 Hz simulation tick.
+- **User name writes** (`CFG_MSG_USER_NAME`, characteristic `5b2c0016`) are saved to
+  flash like any config write but **skip `model_thread_apply_config()`**: a name is
+  metadata, and applying it would reset `sim_clock_min` and the instant events the way a
+  model write does. See [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)'s "User name" section.
 - **Instant food/exercise/PISA events** (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)'s
   "Instant … event" sections) are the one exception — they never touch flash
   at all, by design, since they're meant to be transient, mid-run injections,
@@ -185,8 +192,8 @@ last saved — the app is a remote control, not a required component.
 
 ### 4.1 Advertising & connection
 
-`N = CONFIG_APP_SENSOR_COUNT` (1–4; the Kconfig default is 4 and the shipped
-`prj.conf` builds 3) BLE identities, each with its
+`N = CONFIG_APP_SENSOR_COUNT` (1–3; the Kconfig default and the shipped `prj.conf`
+are 3) BLE identities, each with its
 own extended advertising set (`BT_LE_ADV_OPT_CONN`,
 `BT_GAP_ADV_FAST_INT_MIN_2`/`MAX_2`, `adv_param.id = i`), advertising the
 standard CGMS (0x181F) and Device Information (0x180A) 16-bit service UUIDs
@@ -203,8 +210,9 @@ single-identity behaviour.
 
 **Choosing N.** `CONFIG_APP_SENSOR_COUNT`, `CONFIG_BT_EXT_ADV_MAX_ADV_SET`,
 `CONFIG_BT_ID_MAX`, `CONFIG_BT_MAX_CONN` and `CONFIG_BT_CGMS_INSTANCE_COUNT` must
-all agree. The shipped `prj.conf` sets them to 3, which frees one of the board's
-connection slots; set the five back to 4 for the four-sensor build. (Verified on
+all agree. The shipped `prj.conf` sets them to 3, the supported configuration. The
+storage layout (`MAX_SIM_SENSORS`) still reserves a fourth slot so the flash layout never
+moved, but a four-sensor build is no longer supported (Kconfig `range 1 3`). (Verified on
 hardware: a two-hour run at x10 delivered 100 % of the notifications on all three
 sensors.)
 
@@ -249,7 +257,7 @@ Kconfig is `default y if APP_SENSOR_COUNT > 1`, swaps the CGMS `*_AUTHEN`
 perms for plain `BT_GATT_PERM_READ/WRITE` so all N identities stream with no
 pairing at all. Single-sensor builds keep it off (identity 0 pairs fine) and
 the CGMS attribute table stays byte-identical to upstream. Verified on
-hardware: all four identities connect unpaired and stream their own slot's
+hardware: every identity connects unpaired and streams their own slot's
 glucose. See `PROTOCOL_SPEC.md` §7.
 
 ### 4.3 CGMS — the standard Continuous Glucose Monitoring Service
@@ -399,7 +407,9 @@ row = (uint32_t)(sim_clock_min * 60.0 / interval_s) % row_count;
 ```
 
 read 2 bytes at a time straight from `sim_csv_partition` (`csv_glucose_lookup()`).
-The window **loops** when it ends, so a 24 h upload demos indefinitely. A higher
+The window **loops** when it ends, so a 24 h upload demos indefinitely (verified on
+hardware 2026-10-06 across more than two windows at x1000, with a real Dexcom window and
+its Food Log). A higher
 speed multiplier advances `sim_clock_min` faster exactly as in model mode, so it
 naturally steps multiple rows per tick. PISA attenuation still applies on top.
 

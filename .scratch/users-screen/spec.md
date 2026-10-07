@@ -1,10 +1,14 @@
 # Users screen — one "User" replaces Person + Sensor, read from the board, preview, save, send
 
-Status: plan, not started. Written 2026-10-06 from your description; the six open questions were answered the same day (see *Decisions you made*). No open questions left.
+Status (2026-10-06): slices 0–3 done and committed (base, User type + store + migration, pure logic, firmware/protocol user name — hardware-verified 12/12); slices 4–10 (the screens) not started. The six open questions were answered the same day (see *Decisions you made*); none left. The board has **3** sensors, not 4 — see *Three sensors*.
 
 ## What changes, in one paragraph
 
 Today the app has separate **Person** profiles (model, parameters, food, exercise, data source) and **Sensor** profiles (noise model), edited in four windows reached from Configuration, and a slot→(person, sensor) map in `data/board_layout.json`. This plan replaces all of that with a single **User**, edited in one **User Profile** screen, listed in a **Users** screen reached from a new toolbar button (next to Configuration and Debug). A user can be created by **reading it from a sensor on the board**, and can be **sent to a sensor**. The Person/Sensor group is removed from Configuration.
+
+## Three sensors
+
+The board runs **3** sensors (`CONFIG_APP_SENSOR_COUNT=3`, Kconfig `range 1 3`); the app models 3 slots (`board_layout.MAX_SLOTS = 3`). The firmware's storage still reserves a fourth slot so the flash layout never moved, but nothing uses it. Wherever this plan said four slots it now means three; a `Sensor select` of `3` is clamped to slot `0` by the firmware — a hardware script that addresses "slot 4" silently writes to slot 1.
 
 ## The User
 
@@ -72,7 +76,7 @@ Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…)
 
 ## Firmware / protocol changes
 
-1. **User name characteristic** (new, read + write, per slot via Sensor select, persisted). `struct sensor_slot` gains `char name[32]` (30 characters + NUL; the app enforces 30 UTF-8 bytes) → bump `SIM_CONFIG_VERSION`; 4 slots grow the struct from ~2.85 KB to ~2.98 KB, still inside the 4 KB `sim_storage_partition`. Empty name = "no user". App side: `encode_user_name` / `decode_user_name` in `api/protocol.py`, UUID in `ble_uuids.py`, `PROTOCOL_SPEC.md` row. **The advertised BLE name stays "Nordic Glucose Sensor N"** — the app maps identity → slot from that name and the pairing/identity work (see memory: identity-1 storm, no-auth tradeoff) must not be disturbed.
+1. **User name characteristic** (new, read + write, per slot via Sensor select, persisted). `struct sim_config` gains `char user_name[slot][32]` **appended after `slots[]`** (30 bytes + NUL; the app and the board both enforce 30 UTF-8 bytes) → bump `SIM_CONFIG_VERSION`; 4 slots grow the struct from ~2.85 KB to ~2.98 KB, still inside the 4 KB `sim_storage_partition`. Empty name = "no user". App side: `encode_user_name` / `decode_user_name` in `api/protocol.py`, UUID in `ble_uuids.py`, `PROTOCOL_SPEC.md` row. **The advertised BLE name stays "Nordic Glucose Sensor N"** — the app maps identity → slot from that name and the pairing/identity work (see memory: identity-1 storm, no-auth tradeoff) must not be disturbed.
 2. **CSV readback — later**, not in this build. The plan only leaves the seam: the reader treats "board is in CSV mode" as a user in CSV mode whose data is *not available from the board yet*; matching on a CSV user compares everything except the track. When the firmware gains a read op (e.g. `CSV_OP_READ` + notify chunks mirroring the upload, CRC-checked), the reader fills the track and the match includes it.
 3. Nothing is added for picture or height — the board has no use for them.
 
@@ -86,23 +90,23 @@ Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…)
 
 ## Slices (each ends green: tests + pylint clean, no `# pylint: disable`)
 
-0. **Clean base.** The working tree has uncommitted work (config/main window edits, staged deletion of `view_config_window.py`, modified `data/*.json`). Commit or set that aside first so this refactor starts from a known state, and so tests' private `data/` copy is the baseline.
-1. **User type + store + migration** (`models/types.py`, `models/user_store.py`). Pure; tests for round-trip and for migrating the current `profiles.json` + `board_layout.json`.
-2. **Pure logic**: `user_match.compare(saved, board_user)` (float32-aware), `next_free_name("Ana") -> "Ana#2"`, `preview_24h(user)`. Tests first (TDD).
-3. **Firmware + protocol: user name.** Flash, then verify on hardware: write name to slot 2, read back, power-cycle, read again, other slots untouched. Extend `scripts/e2e_4sensor.py`.
+0. **Clean base.** *(done — `5edf0e7`)* The working tree has uncommitted work (config/main window edits, staged deletion of `view_config_window.py`, modified `data/*.json`). Commit or set that aside first so this refactor starts from a known state, and so tests' private `data/` copy is the baseline.
+1. **User type + store + migration** *(done — `c3c790a`)* (`models/types.py`, `models/user_store.py`). Pure; tests for round-trip and for migrating the current `profiles.json` + `board_layout.json`.
+2. **Pure logic** *(done — `2046f8c`)*: `user_match.compare(saved, board_user)` (float32-aware), `next_free_name("Ana") -> "Ana#2"`, `preview_24h(user)`. Tests first (TDD).
+3. **Firmware + protocol: user name** *(done; hardware 12/12 on 2026-10-06)*. Flashed; name written per slot and read back, other slots untouched, the 30-byte limit enforced (31 refused), UTF-8 round-trips, survives a J-Link reset, and a name write does not reset the sim clock. Verification script: `scripts/hw_user_name.py`. A v5 flash image is **migrated** (slots kept, names empty), not wiped.
 4. **Reader + Users screen + toolbar button.** `user_reader` (one slot, serialized), the three outcomes of read-from, the overwrite/create popup. Test the flow against `FakeSession`s the way `test_board_mode_fixes.py` / `test_send_confirmation.py` do.
 5. **User Profile shell + Profile + Model pages**, mode gating, Save.
 6. **Food + Exercise pages** with their 24 h graphs (reuse the instant-event/food graph code from `glucose_graph.py` where it fits).
 7. **CSV page** with the 24 h window copied into the user's folder on pick (the path to the original file is not kept).
 8. **Preview + Send to…** with the save-before-send popup; sending to a sensor that already has another user simply overwrites it (name included), no extra warning; generalize `StartPush` to one slot / one user; slot assignment by user id.
 9. **Remove the old**: Configuration group, four editor windows, controller signals, `board_plan`/`engine_slots` on users, `sensor_tabs` tab title/avatar from the user (the single `avatar_icon` call site the tabbed-UI spec reserved), `scripts/scenario_dispatch.py` and `scenarios/*.json` (they reference persons/sensors by name), docs (`APPLICATION.md`, `ARCHITECTURE.md`, `PROTOCOL_SPEC.md`, `TODO.md`), ADR 0006.
-10. **Hardware pass**: read-from each of the four slots; the three outcomes; Create "#2" and confirm the board's name changed; Send a model user and a CSV user; Start still runs (ADR 0005).
+10. **Hardware pass**: read-from each of the three slots; the three outcomes; Create "#2" and confirm the board's name changed; Send a model user and a CSV user; Start still runs (ADR 0005).
 
 ## Risks
 
 - **Reading a whole slot is slow** (six GATT reads behind one shared cursor, ~80 ms pacing for writes). The Users screen needs a progress state and a timeout, and must not run during Start's push (same cursor).
 - **Float round-trip**: params go through float32 on the wire; comparing raw doubles would flag every user as "differs". Slice 2 covers it.
-- **Flash layout bump** wipes or migrates saved board config on first boot of the new firmware — decide migrate-vs-defaults when doing slice 3 and say so in the PR.
+- **Flash layout bump** — decided and done in slice 3: `user_name[]` is appended *after* `slots[]`, so a v5 image keeps every slot and gets empty names; nothing is wiped. (The first boot of the new firmware on your board took this path; the v5→v6 console line was not captured.)
 - **Migration of scenarios and the e2e scripts** that address persons by name is easy to forget; they are the only callers outside the GUI.
 
 ## Decisions you made (answers to the review questions)

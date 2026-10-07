@@ -28,8 +28,9 @@ diagnosed after the fact without re-running.
 
 Scope note: the **single-sensor** matrix (`scripts/e2e.py`, §4) assumes a
 `CONFIG_APP_SENSOR_COUNT=1` build advertising the bare name `Nordic Glucose
-Sensor`. The **4-sensor** build (default, §9) has its own harness,
-`scripts/e2e_4sensor.py`. Out of scope: automated CI on hardware (no bench
+Sensor`. The multi-sensor build has its own harness, `scripts/e2e_4sensor.py` (§9) — written for
+the earlier **4-sensor** build; the shipped build now has **3** sensors, so its slot-3 cases
+need updating (`e2e_long_3sensor.py` / `e2e_overnight_3sensor.py` already target 3). Out of scope: automated CI on hardware (no bench
 board in CI), Dexcom-proprietary BLE auth handshake.
 
 ---
@@ -510,6 +511,19 @@ scripts used to poll (`window._graph_y`, `window._user_items`, …). Read the
 plotted series through the page on screen — `window.sensors.current_page().graph.buf`
 — the tabs through `window.tabs`, the run state through `window._run`, and the
 local model through `window.sim`.
+
+## 10b. Focused hardware checks — `scripts/hw_*.py`
+
+Small, direct checks of one board behaviour each, not part of the matrices above. They share
+`scripts/hw_common.py` (a PowerShell `SerialPort` reader for the console, BLE retries for
+Windows' dropped links, and `checked_slot()` — the board clamps a missing slot to slot 0, so a
+test aimed at "slot 3" would silently hit slot 0). All need the board connected, COM10 free
+and nothing else holding its links. Logs go to `test-artifacts/hw/`.
+
+| Script | Checks | Last run |
+|---|---|---|
+| `hw_user_name.py` | The per-slot **User name** (`5b2c0016`): reads back on its slot; other slots untouched; 30 B accepted, 31 B refused; UTF-8; persists across a J-Link reset; an empty write clears; **a name write does not reset the sim clock**. Leaves slots 1–2 unnamed. | 12/12, 2026-10-06 |
+| `hw_csv_loop.py` | **CSV playback loops** when its window ends: a 1 h, a synthetic 24 h and a real 24 h `Dexcom_001` window (+ Food Log) each play past the end at x60 / x1000; every console sample must equal `floor(t·60/interval) mod rows`, and the meals must fire again in the next window. Uses the last slot; restores it (model source, no CSV) and the speed (x60) afterwards. ~13 min. | A, B pass 2026-10-06 (see FIRMWARE.md) |
 
 ## 11. Appendix — 5-minute manual smoke (no harness)
 

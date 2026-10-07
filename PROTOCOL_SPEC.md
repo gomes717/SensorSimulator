@@ -87,16 +87,17 @@ Custom 128-bit UUIDs (`src/ble_uuids.py`), all under one primary service:
 | PISA instant event | `5b2c0013-...` | write (one-shot) | 6 B |
 | Comm profile | `5b2c0014-...` | **read + write** | 1 B |
 | Sensor select | `5b2c0015-...` | **read + write** | 1 B |
+| User name | `5b2c0016-...` | **read + write** | 0–30 B (UTF-8) |
 
 All multi-byte fields little-endian. Requires ATT MTU >= 140 B
 (`CONFIG_BT_L2CAP_TX_MTU=247` on the firmware side). Every read/write payload
 stays under the BLE spec's 512-byte max ATT attribute value — this is why
 food/exercise events use a separate write-one/read-all pair of
 characteristics rather than one bidirectional one (the full `sim_config`
-struct, at ~2.85 KB with four sensor slots, would not fit a single attribute).
+struct, at ~3 KB with its slot array, would not fit a single attribute).
 
 **Multi-sensor (2026-09, restored).** The board runs `CONFIG_APP_SENSOR_COUNT`
-(1–4, default 4) fully independent sensor slots — each its own BLE identity +
+(1–3, default 3) fully independent sensor slots — each its own BLE identity +
 advertising set + CGMS service instance + config slot (model/params/noise/
 schedule *or* a CSV, mixable). The config service above is registered **once**,
 not per slot; the **Sensor select** characteristic (`5b2c0015`) is a session
@@ -105,6 +106,13 @@ data-source, food/exercise events + readbacks, CSV upload) target. Speed, run
 state, CGMS-only, comm profile, and reset sync are **global**. `sensor_count`
 == 1 is the original single-sensor build and is byte-identical on the wire.
 See §7.
+
+**Three sensors (2026-10).** The supported and shipped build is `N = 3`. The
+storage layout (`struct sim_config`, the CSV partition) still reserves room for a
+fourth slot (`MAX_SIM_SENSORS = 4`) so the flash layout never moved, but nothing uses
+it: Kconfig is `range 1 3`, and a `Sensor select` write of `3` is clamped to `0`.
+Hardware notes below that mention four identities were taken on the earlier
+four-sensor build.
 
 ### Person config — `struct { uint8_t model_id; float params[34]; }`
 
@@ -450,8 +458,35 @@ write `sensor_select`, then read/write that slot, repeat. On a `sensor_count ==
 App side (Phase 1): `api/protocol.py`'s `encode_sensor_select`/
 `decode_sensor_select`, `SENSOR_SELECT_UUID` in `api/ble_uuids.py`, and the
 `"sensor_select"` key in `services/ble_session.py`'s `CONFIG_CHAR_KEY_BY_UUID`.
-The slot-assignment UI (assign each of the 4 slots to a person/CSV, push a
+The slot-assignment UI (assign each of the 3 slots to a person/CSV, push a
 whole board layout) is Phase 2 — see `docs/TODO.md`.
+
+### User name — `5b2c0016-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 0–30 bytes, read + write
+
+Added 2026-10 for the Users screen (`docs/adr/0006-users-replace-person-and-sensor.md`).
+The name of the user running on the **selected** slot — per-sensor like Person config,
+so it is targeted by **Sensor select**. Payload: the bare UTF-8 bytes of the name, at
+most 30, no terminator and no length prefix (the ATT value length *is* the length). An
+empty value means "no user on this slot".
+
+- **Too long is refused, not cut.** A write over 30 bytes fails with ATT
+  *Invalid Attribute Value Length* (`0x0D`); the stored name is untouched. Truncating
+  would leave the app and the board calling one user by two names.
+- **Persisted, but metadata only.** Part of `struct sim_config` (v6 `user_name[slot][32]`,
+  always NUL-terminated on the board) and saved to flash, yet handled in `comm_thread.c`
+  as `CFG_MSG_USER_NAME` **without** `model_thread_apply_config()`. Unlike the Person /
+  Sensor / Data-source / Food / Exercise / Speed writes it does **not** reset
+  `sim_clock_min` or the instant events, so naming a user mid-run does not disturb it.
+- **Blocked in CGMS-only mode**, like every config write.
+- **Registered last in the GATT table**, so every earlier attribute keeps its handle number.
+- **The advertised BLE name is unchanged** ("Nordic Glucose Sensor N"): the app derives
+  identity → slot from it, and the pairing work depends on it.
+
+App side: `api/protocol.py`'s `encode_user_name` / `decode_user_name` (`MAX_USER_NAME_BYTES`),
+`USER_NAME_UUID` in `api/ble_uuids.py`, the `"user_name"` key in
+`services/ble_session.py`. **Verified on hardware 2026-10-06, 12/12:** read-back, per-slot
+isolation, the 30-byte limit (31 refused), a UTF-8 name, persistence across a J-Link reset,
+and the sim clock not resetting on a name write.
 
 ### CGMS Only mode — `5b2c000e-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
@@ -549,7 +584,11 @@ up to ~236 payload bytes. The app streams chunks with monotonically increasing
   Playback: `row = floor(sim_clock_min·60 / interval_s) % row_count`.
 - *food log*: `{ u32 offset_s; float carbs_g }` × `row_count`, sorted by
   `offset_s`. Each meal is surfaced report-only via Food/Exercise Status,
-  spread over 30 simulated minutes, looping with the glucose track.
+  spread over 30 simulated minutes, looping with the glucose track. **Looping verified on
+hardware 2026-10-06:** a 1 h, a synthetic 24 h and a real Dexcom 24 h window (with its
+Food Log) each played past the window end at x60 / x1000 and kept going — every logged
+sample matched `row = floor(t·60 / interval) mod rows`, and the meals fired again each
+window.
 
 `base_epoch_s` is diagnostic only — playback is driven by `sim_clock_min`, not
 wall-clock. The board is autonomous: after reboot it reloads the manifest and
@@ -607,11 +646,13 @@ devicetree labels must be globally unique, which is why this one is
 
 ```c
 #define SIM_CONFIG_MAGIC 0x53494D31u  /* "SIM1" */
-#define SIM_CONFIG_VERSION 5   /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot */
+#define SIM_CONFIG_VERSION 6   /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
+                                * v6 user_name[] appended after slots[] */
+#define SIM_USER_NAME_MAX 32   /* 30 bytes of name + a NUL that is always present */
 #define MAX_MODEL_PARAMS 34
 #define MAX_SENSOR_PARAMS 14
 #define MAX_EVENTS 32
-#define MAX_SIM_SENSORS 4
+#define MAX_SIM_SENSORS 4      /* storage capacity; the supported build runs 3 */
 
 struct food_event    { uint16_t time_min; uint16_t duration_min; float carbs_g; };
 struct exercise_event{ uint16_t time_min; uint16_t duration_min; float intensity_pct; };
@@ -636,7 +677,8 @@ struct sim_config {
     uint8_t  comm_profile;      /* global; 0 SIG CGMS, 1 Dexcom-style; forced SIG when count > 1 */
     float    speed_mult;        /* global: x1..x1000 simulation-speed multiplier */
     struct sensor_slot slots[MAX_SIM_SENSORS];
-};  /* ~2.85 KB total — fits one 4 KB erase sector, but far too big for a
+    char     user_name[MAX_SIM_SENSORS][SIM_USER_NAME_MAX];  /* v6; empty = no user */
+};  /* ~2.98 KB total — fits one 4 KB erase sector, but far too big for a
      * single BLE attribute (§2's split + Sensor-select characteristics exist
      * because of this 512 B ATT limit, not the flash sector size). */
 ```
@@ -650,7 +692,10 @@ changes config. Load on boot; fall back to `sim_config_set_defaults()` (every
 slot Cambridge + Ideal CGM + no events + model data source, `sensor_count` =
 `CONFIG_APP_SENSOR_COUNT`) if `magic`/`version` don't match — a v1–v4 flash
 image reads as version-mismatch and falls back to defaults, which is the
-intended upgrade path. `sensor_count` is clamped to `[1, MAX_SIM_SENSORS]` on
+intended upgrade path. **A v5 image is migrated, not reset:** `user_name[]` is
+appended *after* `slots[]`, so a v5 image's bytes keep their offsets; the loader accepts
+it, zeroes the names (what it read past the old end is erased flash, not names) and the
+next save writes v6. Every name is forced NUL-terminated on load. `sensor_count` is clamped to `[1, MAX_SIM_SENSORS]` on
 load.
 
 The uploaded CSV trace + food log live in a **separate** external-flash
@@ -703,13 +748,13 @@ to `push_measurement_and_status()`.
 trimmed to a single sensor / single BLE identity (`NUM_SENSORS` /
 `CONFIG_BT_CGMS_INSTANCE_COUNT` / `CONFIG_BT_ID_MAX` / `CONFIG_BT_MAX_CONN` /
 `CONFIG_BT_EXT_ADV_MAX_ADV_SET` all = 1). Restored 2026-09 as **N fully
-independent slots**, `N = CONFIG_APP_SENSOR_COUNT` (1–4, default 4); `N == 1`
+independent slots**, `N = CONFIG_APP_SENSOR_COUNT` (1–3, default 3); `N == 1`
 is behaviourally identical to the single-sensor build.
 
 **What "independent" means.** Each slot has its own `struct sensor_slot` (§5):
 its own data source — a physiological model + params + sensor-noise model +
 recurring food/exercise schedule, **or** its own uploaded CSV — mixable (e.g.
-3 CSV + 1 model). The simulation **clock and speed multiplier are shared**: all
+2 CSV + 1 model). The simulation **clock and speed multiplier are shared**: all
 slots tick together from one `sim_clock_min`, one `speed_mult`, one run state.
 
 **BLE.** Identity 0 is the factory default; identities 1..N-1 are created with
@@ -726,8 +771,8 @@ Status notification each (§2). The Dexcom comm profile is single-sensor only.
 **App.** Each `BleSession` binds to one identity: it parses the advertised
 name's trailing digit (1-based) to a 0-based `_own_instance_index` and shows
 only that CGMS instance's measurements and that slot's Food/Exercise Status,
-ignoring the siblings visible on the shared GATT DB. Connecting to all four
-addresses gives four tabs, each with its own graphs and Commands panel.
+ignoring the siblings visible on the shared GATT DB. Connecting to all three
+addresses gives three tabs, each with its own graphs and Commands panel.
 A numbered identity also sets `_require_pairing = False` — `BleSession` skips
 its Windows `pair_with_pin()` step for these (Option A firmware needs no
 pairing, and *attempting* it wedges the Windows BLE stack into a

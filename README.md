@@ -38,8 +38,8 @@ readings against the same model run locally as a cross-check.
 - Configure a simulated patient (physiological model + parameters), CGM
   sensor noise model, and a recurring daily food/exercise schedule; send it
   to the board or run it locally with no hardware ("Model Only" mode)
-- **Up to 4 fully independent sensors on one board** (`CONFIG_APP_SENSOR_COUNT`;
-  the shipped build runs 3) — each its own BLE identity, model-or-CSV, noise,
+- **Three fully independent sensors on one board** (`CONFIG_APP_SENSOR_COUNT=3`)
+  — each its own BLE identity, model-or-CSV, noise,
   and schedule, assigned with the normal Person "Send to Board"; one shared sim
   clock + speed
 - **One tab per sensor**, browser-style: each tab has its own graphs, history,

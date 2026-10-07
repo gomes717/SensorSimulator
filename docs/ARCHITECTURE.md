@@ -40,8 +40,8 @@ displays the incoming readings, and — as a correctness check — runs the
 └─────────────────────────────────────┘         └──────────────────────────────────────────┘
 ```
 
-The firmware runs **`CONFIG_APP_SENSOR_COUNT` (1–4; the Kconfig default is 4,
-the shipped `prj.conf` builds 3) fully independent sensor slots** on the one board — each its own BLE identity,
+The firmware runs **`CONFIG_APP_SENSOR_COUNT` (1–3; the shipped build is 3)
+fully independent sensor slots** on the one board — each its own BLE identity,
 advertising set, CGMS service instance, and config (physiological model +
 params + noise + schedule, *or* a CSV, mixable). `N == 1` is the original
 single-sensor build and behaves exactly as the diagrams below describe with
@@ -361,24 +361,25 @@ sequenceDiagram
 
 ## 9. Multi-sensor: N independent slots
 
-`CONFIG_APP_SENSOR_COUNT` (1–4, default 4) sets how many fully independent
+`CONFIG_APP_SENSOR_COUNT` (1–3, default 3) sets how many fully independent
 sensor slots the one board runs. Each slot has its own `struct sensor_slot`
-in `sim_config` v5 — data source (model + params + noise + food/exercise
-schedule) **or** an uploaded CSV, mixable (e.g. 3 CSV + 1 model). What is
+in `sim_config` v6 — data source (model + params + noise + food/exercise
+schedule) **or** an uploaded CSV, mixable (e.g. 2 CSV + 1 model). What is
 **shared**: `sim_clock_min`, `speed_mult`, and the run state (one Start/Stop
 for all — per-slot run state is `FEATURE_IDEAS.md` #19).
 
 ```
-                          nRF54L15 DK (CONFIG_APP_SENSOR_COUNT = 4)
+                          nRF54L15 DK (CONFIG_APP_SENSOR_COUNT = 3)
   ┌───────────────────────────────────────────────────────────────────────┐
-  │  main.c:  identity 0..3  ─ adv set 0..3 ─ bt_cgms instance g_cgms[0..3]│
-  │           "Nordic Glucose Sensor 1".."4"   (identity 0 = factory addr) │
+  │  main.c:  identity 0..2  ─ adv set 0..2 ─ bt_cgms instance g_cgms[0..2]│
+  │           "Nordic Glucose Sensor 1".."3"   (identity 0 = factory addr) │
   │                                                                        │
-  │  model_thread:   rt[0]   rt[1]   rt[2]   rt[3]      ← per-slot model +  │
-  │                    │       │       │       │          noise + schedule │
-  │                    └───────┴───┬───┴───────┘                           │
-  │                          sim_clock_min  (one, shared)  ── speed_mult   │
-  │                                │                                       │
+  │  model_thread:   rt[0]   rt[1]   rt[2]             ← per-slot model +   │
+  │                    │       │       │                 noise + schedule   │
+  │                    └───────┼───────┘                                    │
+  │                            │                                            │
+  │                    sim_clock_min  (one, shared)  ── speed_mult          │
+  │                            │                                            │
   │  comm_thread:  push loop over slots → bt_cgms_measurement_add(g_cgms[i])│
   │                + one Food/Exercise Status notify per slot (u8 slot)     │
   │                config queue: per-sensor writes → sim_config.slots[sel]  │
@@ -495,3 +496,53 @@ slot/session/label lookups to `SensorDirectory`; selection, titles, commands and
 data routing to `SensorController`; the tab strip and pages to `SensorTabs`;
 lazy windows to `ChildWindows`. The pieces take callbacks and emit signals
 instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.md))
+
+## 12. Users: one profile per simulated person (in progress)
+
+Status (2026-10-06): the model layer and the firmware's name field are done and
+tested; the screens are not built yet. Plan and slice list:
+[`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:
+[ADR 0006](adr/0006-users-replace-person-and-sensor.md).
+
+A **User** replaces the Person profile, the Sensor profile and the slot→(person,
+sensor) record. It is what you create, edit, preview, save and send:
+
+| Part | What it holds |
+|---|---|
+| Identity | `id` (stable, names the data folder), `name` (30 bytes — what the board is told), picture, height (app-only), weight (written into the model's `BW`) |
+| Mode | `"model"` or `"csv"` — picks which of the inputs below runs; the unused inputs are kept |
+| Model mode | physiological model + parameters, sensor-noise model + parameters, food and exercise schedules |
+| CSV mode | the 24 h glucose window (+ Food Log) **stored inside the user**, not a path |
+
+```
+ data/users.json            fields + schedules, versioned
+ data/users/<id>/csv.json   the recorded window (a user without one has no file)
+ data/users/<id>/picture.*  copied in when chosen
+```
+
+**Where it lives in code** (`src/models/`, all pure — no Qt, no board):
+`types.User` / `CsvTrack`; `user_store` (load, save, one-time migration from
+`profiles.json` + `board_layout.json`, which are then left alone as a backup);
+`user_match` (`compare` a board-read user with a saved one, float32-aware, order-free
+schedules; `apply_board` to overwrite; `next_free_name` → `Ana#2`, `clip_name`);
+`user_sim` (the engine profile for a user and `preview_24h`, which steps the same
+noise-free `ModelStepper` as the expected line).
+
+**Read from the board.** One slot is read under the Sensor-select cursor (name, data
+source, person config, sensor config, food and exercise lists), turned into a *board
+user* and looked up **by name**: unknown → a new unsaved "Unknown" user; same name and
+`compare()` empty → open the saved user; same name but different → ask *Overwrite* or
+*Create `Name#2`* (which also writes the new name to the board, so the two agree).
+CSV is not read back yet: a board in CSV mode yields a CSV user whose track is not
+available, and `compare()` ignores the track until the firmware can send it.
+
+**On the board.** The name is the new **User name** characteristic (`5b2c0016`,
+[`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)): per slot via Sensor select, persisted in
+`sim_config` v6, and — unlike every other config write — it does **not** reset the
+simulation. The advertised BLE name stays "Nordic Glucose Sensor N".
+
+**What this changes elsewhere (as the slices land).** `AppState.board_plan` becomes
+slot → user (Start still writes exactly that list and the expected-line engines are
+built from it — ADR 0005 holds with "profile" meaning "user"); the Person / Sensor /
+Food / Exercise windows and the Configuration window's Person/Sensor group go away; the
+tab header's avatar call site takes the user's picture.
