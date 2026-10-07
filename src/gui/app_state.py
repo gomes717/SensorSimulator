@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from models import app_settings, board_layout, cambridge, profile_store
+from models import app_settings, board_layout, cambridge, profile_store, user_store
 from models import sensors as sensor_defaults
-from models.types import ModelId, PersonProfile, SensorId, SensorProfile
+from models.types import ModelId, PersonProfile, SensorId, SensorProfile, User
 
 
 class AppState:
@@ -22,6 +22,8 @@ class AppState:
     def __init__(self) -> None:
         self.person_profiles, self.sensor_profiles = profile_store.load()
         self._seed_default_profiles()
+        # The users (see docs/adr/0006): migrated from the profiles above on the first run.
+        self.users: list[User] = user_store.load_or_migrate()
         # slot -> (person, sensor) for the multi-sensor board (data/board_layout.json).
         self.board_layout = board_layout.load()
         # The Configuration window's Person/Sensor combos are gone, so the first
@@ -80,6 +82,10 @@ class AppState:
     def save_profiles(self) -> None:
         """Persist the person and sensor profiles."""
         profile_store.save(self.person_profiles, self.sensor_profiles)
+
+    def save_users(self) -> None:
+        """Persist the users."""
+        user_store.save(self.users)
 
     def person_by_name(self, name: str | None) -> PersonProfile | None:
         """The saved person called *name*, if any."""

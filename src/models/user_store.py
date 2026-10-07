@@ -12,6 +12,7 @@ backup and never read again.
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -153,6 +154,12 @@ def save(users: list[User]) -> None:
             csv_file.write_text(json.dumps(_csv_to_dict(user.csv)), encoding="utf-8")
     payload = {"version": _VERSION, "users": [_user_to_dict(u) for u in users]}
     _USERS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def delete(user: User) -> None:
+    """Remove *user*'s data folder (picture, CSV). The caller drops the user from the list it
+    saves; nothing happens if the folder was never created."""
+    shutil.rmtree(user_dir(user), ignore_errors=True)
 
 
 # -- migration from Person + Sensor profiles ----------------------------------

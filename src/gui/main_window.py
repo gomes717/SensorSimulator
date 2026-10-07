@@ -17,12 +17,12 @@ from PyQt6.QtWidgets import QMainWindow
 
 from api import protocol
 from core.ble_message_log import BleMessageLog
-from gui import run_controller
+from gui import run_controller, user_summary
 from gui.app_state import AppState
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
 from gui.board_mode import BoardMode
-from gui.child_windows import ChildWindows, WindowDeps
+from gui.child_windows import ChildWindows, UsersDeps, WindowDeps
 from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
 from gui.instant_events import InstantEvents
@@ -34,7 +34,9 @@ from gui.sensor_tabs import SensorTabs
 from gui.simulation import SimulationCoordinator
 from gui.start_push import StartPush
 from gui.toolbar import build_toolbar
-from models.types import PersonProfile, SensorProfile
+from gui.user_reader import UserReader
+from models import user_match
+from models.types import PersonProfile, SensorProfile, User
 
 
 class MainWindow(QMainWindow):
@@ -153,6 +155,14 @@ class MainWindow(QMainWindow):
                 on_bluetooth_created=lambda bt: bt.session_connected.connect(
                     self._on_session_ready
                 ),
+                users=UsersDeps(
+                    users=self.state.users,
+                    save=self.state.save_users,
+                    live_sessions=self._board.live_sessions,
+                    reader=UserReader(parent=self),
+                    board_busy=lambda: self._board_mode.busy,
+                    on_open=self._on_user_open_requested,
+                ),
             )
         )
         self.windows.register("configuration", self._configuration_window)
@@ -163,6 +173,7 @@ class MainWindow(QMainWindow):
             self,
             left=(("start_pause_btn", "Start", None), ("stop_btn", "Stop", None)),
             right=(
+                ("users_btn", "Users", lambda: self.windows.open("users")),
                 ("configuration_btn", "Configuration", lambda: self.windows.open("configuration")),
                 ("debug_btn", "Debug", lambda: self.windows.open("debug")),
             ),
@@ -216,6 +227,21 @@ class MainWindow(QMainWindow):
                     self._board_mode.refresh(slot)
 
         self._start_push.run(pushed)
+
+    def _on_user_open_requested(self, user: User, is_draft: bool) -> None:
+        """Open a user from the Users window. Until the profile screen exists (slice 5) this
+        shows a summary, and offers to save a draft read from a board."""
+        if not user_summary.show(self, user, is_draft) or not is_draft:
+            return
+        taken = {u.name for u in self.state.users}
+        if user.name in taken:
+            user.name = user_match.next_free_name(user.name, taken)
+        self.state.users.append(user)
+        self.state.save_users()
+        users_window = self.windows.get("users")
+        if users_window is not None:
+            users_window.refresh()
+            self._show_status(f'Saved "{user.name}".')
 
     def _disconnect_device(self, address: str) -> None:
         bt = self.windows.bluetooth

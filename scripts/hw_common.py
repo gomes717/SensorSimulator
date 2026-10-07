@@ -123,7 +123,9 @@ async def connect(
 ) -> BleakClient | None:
     """A connected client (optionally subscribed to *notify_uuid*), or None after *tries*."""
     for attempt in range(tries):
-        client = BleakClient(device, timeout=20.0)
+        # Windows caches a board's GATT services; after a firmware update that adds a
+        # characteristic the cached copy hides it, so discover afresh.
+        client = BleakClient(device, timeout=20.0, winrt={"use_cached_services": False})
         try:
             await client.connect()
             await asyncio.sleep(2.0)  # let the link settle before the first GATT operation
@@ -136,6 +138,20 @@ async def connect(
                 await client.disconnect()
             await asyncio.sleep(4.0)
     return None
+
+
+async def refresh_gatt_cache(device: Any) -> None:
+    """Connect once with uncached service discovery, so that Windows' cached copy of the
+    board's services is replaced. ``BleSession`` discovers with the cache allowed, and the
+    first connection after a firmware update that added a characteristic would not see it."""
+    client = BleakClient(device, timeout=20.0, winrt={"use_cached_services": False})
+    try:
+        await client.connect()
+        await asyncio.sleep(1.5)
+    finally:
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+        await asyncio.sleep(2.0)
 
 
 async def write(client: BleakClient, char: str, data: bytes, *, response: bool = True) -> None:

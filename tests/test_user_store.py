@@ -124,6 +124,20 @@ def test_save_removes_a_csv_file_the_user_no_longer_has():
     assert not (user_store.user_dir(user) / "csv.json").exists()
 
 
+def test_delete_removes_the_users_folder_and_nothing_else():
+    keep, gone = user_store.new_user("Keep"), user_store.new_user("Gone")
+    for user in (keep, gone):
+        user.csv = CsvTrack(samples=[1], interval_s=300, foodlog=[], start_iso=None)
+    user_store.save([keep, gone])
+    user_store.delete(gone)
+    assert not user_store.user_dir(gone).exists()
+    assert (user_store.user_dir(keep) / "csv.json").is_file()
+
+
+def test_delete_of_a_user_that_was_never_saved_is_harmless():
+    user_store.delete(user_store.new_user("Never saved"))
+
+
 # -- migration ---------------------------------------------------------------
 
 

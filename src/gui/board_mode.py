@@ -75,6 +75,13 @@ class BoardMode:
             return "CSV replay"
         return self._model.get(slot)
 
+    @property
+    def busy(self) -> bool:
+        """True while a slot read is running or queued. The Sensor-select cursor is one value
+        shared by every connection, so anything else that moves it (reading a slot into a
+        user) must wait until this is False."""
+        return self._inflight is not None or bool(self._pending)
+
     def is_csv(self, slot: int | None) -> bool:
         """True if the board has confirmed *slot* is replaying a CSV."""
         return slot is not None and self._is_csv.get(slot, False)

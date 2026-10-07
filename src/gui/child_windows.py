@@ -21,7 +21,21 @@ from gui.exercise_config_window import ExerciseConfigWindow
 from gui.food_config_window import FoodConfigWindow
 from gui.person_config_window import PersonConfigWindow
 from gui.sensor_config_window import SensorConfigWindow
-from models.types import PersonProfile
+from gui.user_reader import UserReader
+from gui.users_window import UsersWindow
+from models.types import PersonProfile, User
+
+
+@dataclass
+class UsersDeps:
+    """What the Users window needs from the app."""
+
+    users: list[User]
+    save: Callable[[], None]
+    live_sessions: Callable[[], list]
+    reader: UserReader
+    board_busy: Callable[[], bool]
+    on_open: Callable[[User, bool], None]
 
 
 @dataclass
@@ -38,6 +52,7 @@ class WindowDeps:
     on_person_selected: Callable[[PersonProfile | None], None]
     on_sensor_selected: Callable
     on_bluetooth_created: Callable[[BluetoothWindow], None]
+    users: UsersDeps
 
 
 class ChildWindows:
@@ -49,6 +64,7 @@ class ChildWindows:
         d = deps
         self._factories: dict[str, Callable[[], QWidget]] = {
             "debug": lambda: DebugWindow(d.ble_log),
+            "users": lambda: self._build_users(d.users),
             "bluetooth": lambda: BluetoothWindow(d.ble_log),
             "person": lambda: PersonConfigWindow(
                 d.person_profiles,
@@ -71,6 +87,18 @@ class ChildWindows:
                 d.person_for_slot, d.is_csv_for_slot, d.on_profiles_changed, self.ensure_bluetooth
             ),
         }
+
+    @staticmethod
+    def _build_users(d: UsersDeps) -> UsersWindow:
+        window = UsersWindow(
+            d.users,
+            save=d.save,
+            live_sessions=d.live_sessions,
+            reader=d.reader,
+            board_busy=d.board_busy,
+        )
+        window.open_requested.connect(d.on_open)
+        return window
 
     # -- access ---------------------------------------------------------
 
