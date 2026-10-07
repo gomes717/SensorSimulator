@@ -147,3 +147,22 @@ def test_there_is_no_view_window_button_and_no_communication_type():
     finally:
         win.sim.engines.stop_all()
         win.close()
+
+
+def test_the_configuration_window_opens_tall_enough_for_everything_in_it():
+    """It sizes itself to its content; with nothing in it that wraps text the layout answers
+    "no height-for-width" as -1, which once made the window open a few pixels tall."""
+    from PyQt6.QtWidgets import QScrollArea
+
+    c, _st, _seen = _wire()
+    win = ConfigurationWindow(c)
+    scroll = win.findChild(QScrollArea)
+    assert scroll is not None
+    body = scroll.widget()
+    assert body is not None
+    screen_obj = win.screen()
+    assert screen_obj is not None
+    screen = screen_obj.availableGeometry()
+    wanted = min(body.sizeHint().height(), int(screen.height() * 0.9))
+    assert win.height() >= wanted > 200
+    assert win.width() >= body.minimumSizeHint().width()

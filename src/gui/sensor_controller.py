@@ -53,6 +53,8 @@ class SensorController(QObject):
         self._sim = sim
         self._clock = clock
         self._disconnect_device = disconnect_device
+        # keys of tabs the user closed: their late readings must not re-create them
+        self._closed: set[str] = set()
         self.selected_user: str | None = None
 
         tabs.user_selected.connect(self.on_user_selected)
@@ -261,6 +263,8 @@ class SensorController(QObject):
         own page; a page that is not on screen defers its redraw.
         """
         user_id = msg.get("user_id")
+        if user_id in self._closed:
+            return  # a reading already on its way from a sensor whose tab was just closed
         recording = not self._state.model_only and (
             self._state.cgms_only or self._run.state == run_controller.RUNNING
         )
@@ -294,6 +298,7 @@ class SensorController(QObject):
         even if its session id changed meanwhile — matched by board slot, or by
         device address for an unnumbered board."""
         key = session.user_id
+        self._closed.discard(key)  # connecting again is how a closed sensor comes back
         old = self._tabs.find_key(address=address, slot=session.slot_index)
         if old is not None and old != key:
             self._tabs.rekey(old, key)
@@ -307,6 +312,10 @@ class SensorController(QObject):
 
     def on_tab_close_requested(self, key: str) -> None:
         """Close button on a tab: disconnect that sensor and close its tab."""
+        # Remember it BEFORE disconnecting: stopping the session waits for it, and a reading it had
+        # already queued is delivered after this returns — which used to re-create the tab, which
+        # the disconnect notice then greyed ("closing only makes it offline").
+        self._closed.add(key)
         address = self._tabs.address_of(key)
         if address is not None:
             self._disconnect_device(address)

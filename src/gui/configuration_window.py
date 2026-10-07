@@ -96,7 +96,11 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         # single-line text as the preferred width, which would open the window
         # far wider than any control needs.
         width = min(body.minimumSizeHint().width() + chrome, available.width())
-        height = body.heightForWidth(width - chrome) or body.sizeHint().height()
+        # heightForWidth() is -1 when nothing in the layout wraps text ("not applicable"), which is
+        # truthy: only a positive answer is a height.
+        height = body.heightForWidth(width - chrome)
+        if height <= 0:
+            height = body.sizeHint().height()
         self.resize(width, min(height + chrome, int(available.height() * 0.9)))
 
     # ------------------------------------------------------------------
