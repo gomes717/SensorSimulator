@@ -30,18 +30,18 @@ displays the incoming readings, and — as a correctness check — runs the
 │         PC — SensorSimulator app      │   BLE   │        nRF54L15 DK — peripheral_cgms       │
 │              (Python / PyQt6)         │◄═══════►│           (C / Zephyr RTOS)                 │
 │                                        │  N BLE  │                                              │
-│  gui/  — windows & dialogs (UI)   │identity │  main.c        — N BLE identities + adv     │
+│  gui/  — sensor tabs + pages, windows │identity │  main.c        — N BLE identities + adv     │
 │  services/ — BLE session/scan/pairing │  links  │                  sets + CGMS instances       │
 │  api/      — BLE wire-format contract │         │  comm_thread   — BLE push (per slot),       │
 │  core/     — shared message log       │         │                  config queue, flash        │
 │  models/   — same physiological math, │         │  model_thread  — N independent slots,       │
 │              run locally for "expected"│         │                  1 shared clock, 1 s tick    │
-│  board_layout — slot → person/CSV map │         │  external SPI-NOR — sim_config (v5) + CSV   │
+│  board_layout — slot → patient record │         │  external SPI-NOR — sim_config (v5) + CSV   │
 └─────────────────────────────────────┘         └──────────────────────────────────────────┘
 ```
 
-The firmware runs **`CONFIG_APP_SENSOR_COUNT` (1–4, default 4) fully
-independent sensor slots** on the one board — each its own BLE identity,
+The firmware runs **`CONFIG_APP_SENSOR_COUNT` (1–4; the Kconfig default is 4,
+the shipped `prj.conf` builds 3) fully independent sensor slots** on the one board — each its own BLE identity,
 advertising set, CGMS service instance, and config (physiological model +
 params + noise + schedule, *or* a CSV, mixable). `N == 1` is the original
 single-sensor build and behaves exactly as the diagrams below describe with
@@ -98,9 +98,9 @@ sequenceDiagram
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
 
-    U->>App: Start
-    App->>App: anchor local SimulationEngine at t=0
-    App->>BLE: queue_write("run_state", RUNNING)
+    U->>App: Start (toolbar — enabled once a sensor is live)
+    App->>App: RunController: re-anchor the RunClock, clear every page, rebuild one engine per slot
+    App->>BLE: queue_write("run_state", STOPPED then RUNNING) to every live session
     loop every 1 s (MCU tick)
         Model->>Model: step physiological model + sensor noise
     end
@@ -108,10 +108,15 @@ sequenceDiagram
         FW->>BLE: CGM Measurement notify (glucose)
         FW->>BLE: Food/Exercise Status notify (carbs rate, exercise %)
         BLE-->>App: new_message signal
-        App->>App: append to "received" graph
+        App->>App: append to THAT sensor's page ("received" line) + update its tab
     end
-    App->>App: local engine ticks every 1 s, appends to "expected" graph
+    App->>App: each local engine ticks every 1 s, appends to its slot's page ("expected" line)
 ```
+
+Start/Pause/Resume/Stop are toolbar buttons owned by `RunController`
+(`gui/run_controller.py`). They stay **blocked until at least one sensor link is
+live** (Model Only, which has no board, is the exception), so a click can never
+silently go nowhere; the broadcast reports how many sensors it reached.
 
 ### 4.2 Send configuration flow
 
@@ -172,76 +177,88 @@ sequenceDiagram
     App->>App: overwrite selected profile / active person data
 ```
 
-### 4.4 Instant food/exercise events
+### 4.4 Instant food / exercise / PISA events
 
-One more write deliberately skips the reset flow in §4.2: "Insert Food
-Now…"/"Insert Exercise Now…" (`gui/instant_event_dialog.py`) injects a
-one-shot event into an already-running simulation without resetting
-`sim_clock_min` or model state, so there's no `reset_sync` round-trip for
-it:
+One more write deliberately skips the reset flow in §4.2: the one-shot
+**Food**, **Exercise** and **PISA** commands. They are sent from the
+**Commands panel on a sensor's own tab** (`gui/commands_panel.py`) and inject an
+event into an already-running simulation without resetting `sim_clock_min` or
+model state, so there is no `reset_sync` round-trip for it:
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (gui/)
+    participant Tab as Sensor page (gui/sensor_page.py)
+    participant Ev as InstantEvents
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
 
-    U->>App: Insert Food/Exercise Now…
-    App->>App: SimulationEngine.add_instant_food/exercise() (local "expected" line)
-    App->>BLE: queue_write("food_instant"/"exercise_instant", bytes)
-    BLE->>FW: GATT write (one-shot)
-    FW->>Model: model_thread_add_instant_food/exercise()
+    U->>Tab: Food… / Exercise… / PISA… → fill the modal, OK (on this sensor's tab)
+    Tab->>Ev: inject_food / inject_exercise / inject_fault (this page's slot)
+    Ev->>Ev: EnginePool.add_instant_*() — that slot's local "expected" line
+    Ev->>BLE: send_instant(slot): sensor_select cursor, then the one-shot write
+    BLE->>FW: GATT write (food_instant / exercise_instant / pisa_instant)
+    FW->>Model: model_thread_add_instant_*()
     Note over Model: decays over duration_min, summed/maxed<br/>with the recurring schedule each tick —<br/>no reset, no reset_sync notify
+    Ev-->>Tab: outcome text ("✓ sent to N sensor(s)" / "⚠ NOT sent — no live link")
+    Ev->>Tab: PISA only: shade the interval on THIS page's graph
 ```
+
+A command goes to **the sensor whose tab it was pressed on** — there is no
+target picker and no "which row is selected?" lookup, so it cannot reach another
+sensor by accident. The panel is disabled, with the reason shown, until the run
+is going and that sensor's own link is live, and it is hidden for a sensor the
+board reports as CSV replay.
 
 A *subsequent* reset from any other write (including **Stop**) does clear
 these events along with everything else `apply_config_locked()` resets —
 see `PROTOCOL_SPEC.md`'s "Instant food/exercise events" section for the
 byte format, decay/delivery rules, and a bug this reset used to have.
 
-On a multi-sensor board an instant event lands on whichever slot the
-**Sensor select** cursor points at — the app writes the cursor first, then
-the one-shot event.
+On a multi-sensor board the app writes the **Sensor select** cursor first
+(to the page's slot), then the one-shot event.
 
 **CGMS Only mode** (§7 below) is the other exception — enabling it never
 resets either.
 
-### 4.5 Board layout push (multi-sensor)
+### 4.5 Slot assignment and the whole-board push (multi-sensor)
 
-The **Board Layout** window (`gui/board_layout_window.py`, opened from
-Configuration → "Board layout") assigns a saved Person + Sensor profile to
-each of the N slots and pushes the whole thing in one action.
-`BleSession.send_board_layout()` runs it as a single coroutine over **one**
-connection (any identity reaches the shared config service), paced so the
-firmware's config queue keeps up:
+There is no Board Layout window any more. A patient reaches a slot through the
+ordinary **Send to Board** of Person Configuration (which also sends the
+patient's data source, uploading a CSV when the patient replays one), targeted
+at a slot with the **Sensor select** cursor. Each send reports which slot got
+which patient, and `MainWindow.record_slot_assignment()` keeps the slot → patient
+record (`data/board_layout.json`, `models/board_layout.py`) true: it relabels
+tabs and the Bluetooth list, rebuilds the engine pool, and re-asks the board what
+the slot now runs (§11.2).
+
+`BleSession.send_board_layout()` remains as the programmatic push — one
+coroutine over **one** connection (any identity reaches the shared config
+service), paced so the firmware's config queue keeps up — and is what
+`scripts/e2e_4sensor.py` drives:
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant BLW as gui/board_layout_window.py
+    participant H as Caller (e2e_4sensor.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
 
-    U->>BLW: assign slots 0..N-1 → person / CSV, click "Send layout to Board"
-    BLW->>BLW: _build_slots() — encode person/sensor/data_source/food/exercise per slot
-    BLW->>BLE: send_board_layout(slots)
+    H->>BLE: send_board_layout(slots)
     loop for each assigned slot i
         BLE->>FW: write sensor_select = i
         BLE->>FW: write person, sensor, data_source, food(clear+N), exercise(clear+M)  (paced, retried on a full queue)
         opt person is CSV-backed
             BLE->>FW: CSV BEGIN / DATA×k / COMMIT  (into slots[i]'s flash track)
         end
-        BLE-->>BLW: board_layout_progress(i+1, N)
+        BLE-->>H: board_layout_progress(i+1, N)
     end
     BLE->>FW: write run_state = RUNNING
     FW->>Model: apply_config() per write — every slot reinits, sim_clock_min = 0
-    BLE-->>BLW: board_layout_finished(ok)
+    BLE-->>H: board_layout_finished(ok)
 ```
 
-Persisted app-side to `data/board_layout.json` (`models/board_layout.py`).
 Verified end to end by `scripts/e2e_4sensor.py` (see
 [`E2E_TEST_PLAN.md`](E2E_TEST_PLAN.md) §9).
 
@@ -257,7 +274,9 @@ together (see §9); the app's local engine runs for the one selected patient. Ea
 independently, ticking on its own local timer, and only synchronizes at two
 discrete moments: when a config write resets both to t=0 (see
 `PROTOCOL_SPEC.md`'s "Run state"/"Reset sync" sections), and never again
-until the next reset. This is why sensor noise (present only on the board,
+until the next reset. (App-side, the *plot* timeline is a separate, shared
+thing: one `RunClock` — the run's t=0 and the speed multiplier — that every
+sensor page reads, so Start re-anchors all of them at once; see §11.) This is why sensor noise (present only on the board,
 via the selected `SensorProfile`) is the only thing that should visibly
 separate the "expected" (noiseless, local) and "received" (noisy, from the
 board) lines on the graph — everything else about the two runs is the same
@@ -268,7 +287,9 @@ deterministic ODE integration from the same starting state.
 With `Model Only` checked (`main_window.py`), the app never opens a BLE
 connection at all — the `SimulationEngine` becomes the sole data source, its
 `expected_reading` signal driving both graphs directly instead of being
-compared against board data. Existing for two reasons: (1) demoing/
+compared against board data. It is shown as one synthetic **"Model — <person>"
+page** in the same layout, without the sensor tab strip, and its Start/Stop and
+Commands stay enabled (they need no board). Existing for two reasons: (1) demoing/
 developing the model math without hardware nearby, and (2) isolating "is
 this a model bug" from "is this a BLE/firmware bug" when something looks
 wrong — if Model Only also looks wrong, the bug is in `models/`, not in the
@@ -294,13 +315,13 @@ explicit Start afterward rather than auto-resuming. See `PROTOCOL_SPEC.md`'s
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (gui/main_window.py)
+    participant App as App (gui/main_window.py + run_controller.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
 
     U->>App: Check "CGMS Only"
-    App->>App: lock Person/Sensor/Food/Exercise/Fast/Model-Only/<br/>Start-Pause-Stop/Insert-Now controls, discard local SimulationEngine
+    App->>App: lock Person/Sensor/Food/Exercise/Fast/Model-Only/<br/>Start-Pause-Stop/Commands controls, discard local SimulationEngine
     App->>BLE: queue_write("cgms_only", 1)
     BLE->>FW: GATT write (CGMS Only char)
     FW->>Model: set_run_state(RUNNING) if not already running — no reset
@@ -332,7 +353,11 @@ sequenceDiagram
 | Sensor count | build-time only — `CONFIG_APP_SENSOR_COUNT`; `sim_config_load_from_flash()` force-overrides the flash value so it always matches the running build |
 | Profile persistence (app) | `models/profile_store.py` → `data/profiles.json`; slot→patient map in `models/board_layout.py` → `data/board_layout.json` |
 | Per-identity demux | `services/ble_session.py` — parses the advertised name's trailing digit to a 0-based `_own_instance_index`, filters CGM Measurement + Food/Exercise Status to that slot, and sets `_require_pairing = False` for numbered identities |
-| UI | `gui/` (app only — firmware has no display beyond one status LED) |
+| UI | `gui/` (app only — firmware has no display beyond one status LED); composition in [`APPLICATION.md`](APPLICATION.md) §3 |
+| Per-sensor display state (history, graphs, stats, commands) | one `gui/sensor_page.py` `SensorPage` per sensor — nothing is shared between sensors except the `RunClock` timeline |
+| What a slot is *really* running | the board — `gui/board_mode.py` reads it back; the app's profile is only a guess (§11.2) |
+| Where a reading sits against the thresholds | `models/alerts.py`, used by both the graph colouring and the tab alerts |
+| Link health | `services/ble_session.py` (drop detection, subscribe retries) + `services/silence_watchdog.py` (silent subscription); firmware side in §10 |
 
 ## 9. Multi-sensor: N independent slots
 
@@ -364,17 +389,18 @@ for all — per-slot run state is `FEATURE_IDEAS.md` #19).
 ```
 
 **App.** Connect to each identity's address (Bluetooth window) → one
-`BleSession` per identity → one tree row per identity. Each session shows
-only its own slot's CGM Measurement + Food/Exercise Status (demux by the
-advertised-name digit); the graph plots the selected row. The **Board
-Layout** window assigns slot → person/CSV and pushes the whole layout
-(§4.5). Once a slot is assigned, the Bluetooth list, the tree row, and the
-config windows' "Target device" combo show that **patient's name** instead of
-"Nordic Glucose Sensor N" (`models/board_layout.device_label` /
-`session_name`; the advertised name still drives the demux + pairing). The
-config windows and the Insert-Now dialogs also gain a **"Slot"** picker
-(`DeviceTargetBar` / `_InstantDialog`) so one slot can be reconfigured or
-fed a one-shot event without re-pushing the whole layout.
+`BleSession` per identity → one **tab** per identity, appearing as soon as the
+session connects. Each session shows only its own slot's CGM Measurement +
+Food/Exercise Status (demux by the advertised-name digit); each tab has its own
+page with its own graphs and Commands panel (§11). A patient reaches a slot
+through Person Configuration's Send to Board (§4.5). Once a slot is assigned,
+the Bluetooth list, the tab and the config windows' "Target device" combo show
+that **patient's name** instead of "Nordic Glucose Sensor N"
+(`models/board_layout.device_label` / `session_name`; the advertised name still
+drives the demux + pairing). The config windows also have a **"Slot"** picker
+(`DeviceTargetBar`) so one slot can be reconfigured without re-pushing the
+whole layout; one-shot events need no picker — they come from the tab of the
+sensor they are for.
 
 **Pairing.** Windows aborts LE Secure Connections against the board's
 non-default identities (confirmed on hardware — see
@@ -384,8 +410,88 @@ characteristics drop the authenticated-link requirement and all N identities
 stream **unpaired** (acceptable for a simulator; see the
 `cgms-no-auth-tradeoff` memory). `N == 1` keeps real pairing + encryption.
 
-**Verification.** `scripts/e2e_4sensor.py` — 11 hardware cases: layout push,
+**Verification.** `scripts/e2e_4sensor.py` — 11 hardware cases (plus the
+long-run and soak harnesses in §10): layout push,
 per-slot readback, per-identity demux, CSV slot playback, shared fast-mode
 clock, slot-targeted Insert Food/Exercise/PISA, range alerts, per-slot
 config isolation, reconnect autonomy, reboot persistence. See
 [`E2E_TEST_PLAN.md`](E2E_TEST_PLAN.md) §9.
+
+## 10. BLE link reliability
+
+Running several identities at once on one board against Windows' BLE stack
+surfaced a family of failures where a link looked healthy and delivered
+nothing. Each has a cause, a fix, and a place it is checked:
+
+| Symptom | Cause | Fix | Where |
+|---|---|---|---|
+| The 4th sensor connects, "subscribes", and never notifies | Windows (WinRT) fails to deliver same-UUID notifications when all N CGMS instances fire at the same instant | `CONFIG_APP_CGMS_STAGGER_NOTIFY` (default on for N > 1): instance k reports at k/N of the interval. Measured on hardware: silent in 0/12 runs on vs 12/12 off | firmware `Kconfig`; `scripts/ble_ab_batch.py` |
+| A subscription that stays silent is invisible | `start_notify` succeeding says nothing about delivery | `SilenceWatchdog`: re-arm after 4 missed intervals, report "No data" after 3 failed re-arms | `services/silence_watchdog.py`; `scripts/watchdog_check.py` |
+| Sensors go silent about an hour after boot | CGMS `session_run_time` was 1 h; at expiry the instance latched "session stopped" and never notified again until reboot | `session_run_time = 24 * 7` (a simulator has no reason to model sensor end-of-life) | firmware `main.c`; found by `scripts/ble_soak.py` |
+| This PC's own adapter reconnects to identity 1 about twice a second (reason `0x13`), starving the others | stale Windows GATT device nodes tied to that identity's address | the secondary identities' address generation bumped (`SECONDARY_ID_ADDR_GEN`); stored identities that no longer match are re-addressed with `bt_id_reset()`; re-advertising backs off (1 s, doubling, cap 30 s) after a link that dies inside 2 s | firmware `main.c` |
+| A board that powers off still shows "Connected" | the session loop never noticed the drop | `disconnected_callback` ends the loop; the tab greys out | `services/ble_session.py` |
+| After a failed connect, a retry streams all sensors into one MAC-named row | the window forgot the advertised name when a session ended | the name is kept (and a nameless rescan never overwrites it); late signals from a replaced session are ignored | `gui/bluetooth_window.py` |
+
+Operational notes for the bench: adding or re-addressing identities means
+**rescan and reconnect** (the old addresses are gone); never run two soak/AB
+batches at once (they split the board's links and corrupt both).
+
+Long-run checks: `scripts/ble_soak.py` (host side) with
+`scripts/ble_soak_serial.ps1` (board side), `scripts/e2e_long_3sensor.py`
+(two-hour functional run for the three-sensor build) and
+`scripts/e2e_overnight_3sensor.py` (unattended overnight orchestration). Their
+logs go under `.scratch/` and are git-ignored.
+
+## 11. App design: independent pages and the board as the authority
+
+The pieces are described in [`APPLICATION.md`](APPLICATION.md) §3; this records
+*why* they are shaped that way. Decision records are in [`adr/`](adr/).
+
+### 11.1 One independent page per sensor (not one shared graph)
+
+The app originally had a single graph that was re-pointed at whichever sensor's
+row was selected: the plot buffers were *aliased* onto that sensor's history
+lists. That forced every handler to ask "is this the selected sensor?" before
+redrawing, made PISA shading bleed onto other sensors' graphs, keyed history by a
+label that went stale when a slot was re-assigned, and tangled the god object
+`MainWindow` (1,100+ lines). Each sensor now owns a `SensorPage` — canvases,
+buffers, stats, Commands — and the only thing shared is the `RunClock`. A message
+or a tick for sensor B is appended to B's page and nowhere else. The price (one
+set of matplotlib canvases per sensor) is paid knowingly; hidden pages record but
+defer their redraw. ([ADR 0001](adr/0001-independent-sensor-pages.md))
+
+### 11.2 The board is the source of truth for per-sensor state
+
+What the app last sent is a guess. `BoardMode` reads each slot's Data Source and
+Person Config back from the board (when a sensor connects, one slot at a time), attributes the answer to the session that
+sent it, and every display decision — graph title, CSV view, whether the Commands
+panel shows — follows it, saying "waiting for
+the board to confirm…" instead of guessing. Writes that go nowhere say so
+(run-state reach counts, "NOT sent — no live link"). ([ADR 0002](adr/0002-board-is-the-authority.md))
+
+The *expected model* is the exception, and it goes the other way: **Start writes the
+app's profile for each live, non-CSV sensor to the board, and builds the expected model
+from that same profile** (`AppState.board_plan`), so the board and the model start from
+identical inputs instead of the model chasing a readback of whatever the board held.
+([ADR 0005](adr/0005-start-pushes-the-app-profile.md))
+
+### 11.3 Tabs and alerts
+
+A browser-style tab per sensor appears on connect, greys when the link drops and
+closes (disconnecting) with its close button; with nothing connected the whole
+area is a "Connect Bluetooth" start screen. Out-of-range readings flag the tab:
+a warning icon (no number or arrow — the tooltip has the value and direction), and for critical a red tab that blinks
+until it has been opened, then stays solid until the reading recovers — so a
+sensor parked at a critical value flags once for attention instead of blinking
+all session. Levels come from one function (`models/alerts.py`) shared with the
+graph. ([ADR 0003](adr/0003-tab-alerts.md))
+
+### 11.4 Decomposing `MainWindow`
+
+`MainWindow` went from ~1,180 lines to ~370, composition plus a handful of
+cross-cutting actions. State moved to `AppState`; the run state machine to
+`RunController`; the engine pool and restart rule to `SimulationCoordinator`;
+slot/session/label lookups to `SensorDirectory`; selection, titles, commands and
+data routing to `SensorController`; the tab strip and pages to `SensorTabs`;
+lazy windows to `ChildWindows`. The pieces take callbacks and emit signals
+instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.md))

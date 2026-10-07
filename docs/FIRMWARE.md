@@ -185,7 +185,8 @@ last saved — the app is a remote control, not a required component.
 
 ### 4.1 Advertising & connection
 
-`N = CONFIG_APP_SENSOR_COUNT` (1–4, default 4) BLE identities, each with its
+`N = CONFIG_APP_SENSOR_COUNT` (1–4; the Kconfig default is 4 and the shipped
+`prj.conf` builds 3) BLE identities, each with its
 own extended advertising set (`BT_LE_ADV_OPT_CONN`,
 `BT_GAP_ADV_FAST_INT_MIN_2`/`MAX_2`, `adv_param.id = i`), advertising the
 standard CGMS (0x181F) and Device Information (0x180A) 16-bit service UUIDs
@@ -199,6 +200,27 @@ identity's disconnect, `disconnected()` re-arms just that identity's adv set
 (via a work item + pending bitmask), so a dropped link is always
 reconnectable without a reboot. `N == 1` collapses to exactly the old
 single-identity behaviour.
+
+**Choosing N.** `CONFIG_APP_SENSOR_COUNT`, `CONFIG_BT_EXT_ADV_MAX_ADV_SET`,
+`CONFIG_BT_ID_MAX`, `CONFIG_BT_MAX_CONN` and `CONFIG_BT_CGMS_INSTANCE_COUNT` must
+all agree. The shipped `prj.conf` sets them to 3, which frees one of the board's
+connection slots; set the five back to 4 for the four-sensor build. (Verified on
+hardware: a two-hour run at x10 delivered 100 % of the notifications on all three
+sensors.)
+
+**Secondary identities and a misbehaving central.** The secondary identities'
+static addresses come from `SECONDARY_ID_ADDR_GEN` (currently `0x9F`; the
+advertised addresses are `C1/C2/C3:11:5B:2C:9F:A1..A3`). It was bumped from
+`0x9E` because the host PC's own Bluetooth adapter had stale Windows GATT device
+nodes tied to the old identity-1 address and reconnected to it about twice a
+second (reason `0x13`), starving the other identities of connection events. With
+`CONFIG_BT_SETTINGS` persisting identities, stored identities whose address no
+longer matches are re-addressed with `bt_id_reset()` (which also drops their
+pairing keys) — otherwise changing the constant would do nothing on an
+already-provisioned board. Re-advertising after a link that dies young now backs
+off (1 s, doubling, capped at 30 s; a link that survives resets it), so a real
+client is never slowed but a central that cycles cannot monopolise the radio.
+After changing addresses, **rescan and reconnect** from the host.
 
 ### 4.2 Pairing
 
@@ -252,7 +274,7 @@ Characteristics (`cgms.c`'s `CGMS_ATTRS`), all requiring an authenticated
 | CGM Feature | read | Static capability flags (type=capillary plasma, sample location=finger) |
 | CGM Status | read | Session status/calibration/warning bitfields |
 | CGM Session Start Time | read/write | Wall-clock anchor for the session (client-settable) |
-| CGM Session Run Time | read | How many hours the session is valid for (fixed at 1 h here) |
+| CGM Session Run Time | read | How many hours the session is valid for (fixed at 24 × 7 h here — see §4.3 item 4) |
 | Record Access Control Point (RACP) | write+indicate | Historical-record queries (report/delete/count stored records) |
 | CGM Specific Ops Control Point (SOCP) | write+indicate | Runtime control — e.g. setting the communication interval |
 
@@ -280,7 +302,7 @@ documented inline in `cgms.c`:
    CONFIG_BT_CGMS_INSTANCE_COUNT, CGMS_ATTRS)` — a macro that stamps out N
    independent copies of the whole characteristic table (`bt_cgms_init()`
    claims the next free slot each call). The current build uses this again:
-   `CONFIG_BT_CGMS_INSTANCE_COUNT=4`, one `bt_cgms_init()` call per simulated
+   `CONFIG_BT_CGMS_INSTANCE_COUNT` = N (3 in the shipped build), one `bt_cgms_init()` call per simulated
    sensor slot, `comm_thread` pushing per slot (`g_cgms[i]`). See
    `PROTOCOL_SPEC.md` §7 and `CONFIG_APP_SENSOR_COUNT`.
 3. **Per-characteristic auth toggle.** `CGMS_ATTRS` reads its permission
@@ -288,6 +310,22 @@ documented inline in `cgms.c`:
    normally and plain `BT_GATT_PERM_READ/WRITE` under
    `CONFIG_APP_CGMS_NO_AUTH` (Kconfig, default n) — the "Option A" pairing
    fallback for the multi-identity build (§4.2).
+4. **No session expiry.** The session run time is `24 * 7` hours. It used to be
+   1: `cgms.c` arms an expiry timer with `K_HOURS(srt)`, and when it fired
+   `stop_session()` latched `CGMS_STATUS_POS_SESSION_STOPPED` — after which
+   `bt_cgms_measurement_add()` returns `-ENOENT` and `report_meas()` stops
+   rescheduling itself, permanently (only `bt_cgms_init()` clears the bit). An
+   hour after boot the board kept advertising, accepting connections and
+   running its model while never notifying another measurement. A simulator has
+   no reason to model sensor end-of-life.
+5. **Staggered notifications** (`CONFIG_APP_CGMS_STAGGER_NOTIFY`, default y for
+   N > 1). Every instance's `report_meas` work item used to fire at the same
+   instant each interval, so the N notifications hit the controller as one
+   burst, and with four links Windows' WinRT stack accepted `start_notify` on
+   the fourth sensor and then never delivered. With the stagger, instance k is
+   delayed by k/N of the interval. Measured on hardware (`scripts/ble_ab_batch.py`,
+   four sensors, two-minute runs): silent in 0 of 12 runs with it on, 12 of 12
+   off; a 30-minute run delivered 357–360 of ~360 notifications per sensor.
 
 ### 4.4 Custom configuration service
 

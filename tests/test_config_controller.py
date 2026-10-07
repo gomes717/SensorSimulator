@@ -74,9 +74,7 @@ def test_person_editor_list_is_what_selects_the_active_patient():
         def display_name(self, address):
             return address
 
-    win = PersonConfigWindow(
-        [alice, bob], lambda: None, _NoBoards, on_selected=chosen.append
-    )
+    win = PersonConfigWindow([alice, bob], lambda: None, _NoBoards, on_selected=chosen.append)
 
     win._list.setCurrentRow(1)
 
@@ -105,17 +103,34 @@ def test_speed_display_from_app_does_not_echo():
 
     c.set_speed_display(60.0)
 
-    assert win.speed_spin.value() == 60
+    assert win.speed_combo.currentData() == 60.0
     assert seen["speed"] == []  # app-driven -> no change request back
 
 
-def test_speed_slider_move_requests_change():
+def test_speed_offers_exactly_one_second_or_one_minute():
+    c, _st, _seen = _wire()
+    win = ConfigurationWindow(c)
+    assert [win.speed_combo.itemData(i) for i in range(win.speed_combo.count())] == [1.0, 60.0]
+
+
+def test_choosing_a_speed_requests_it():
     c, _st, seen = _wire()
     win = ConfigurationWindow(c)
 
-    win.speed_spin.setValue(30)
+    win.speed_combo.setCurrentIndex(1)
+    win.speed_combo.setCurrentIndex(0)
 
-    assert seen["speed"] == [30.0]
+    assert seen["speed"] == [60.0, 1.0]
+
+
+def test_a_speed_set_elsewhere_is_shown_without_becoming_a_third_choice():
+    c, _st, seen = _wire()
+    win = ConfigurationWindow(c)
+    c.set_speed_display(300.0)
+    assert "x300" in win.speed_combo.currentText()
+    assert seen["speed"] == []  # shown, not requested
+    win.speed_combo.setCurrentIndex(0)  # the user picks a real choice
+    assert win.speed_combo.findData("custom") < 0
 
 
 def test_controls_locked_disables_config_sending_widgets():
@@ -123,9 +138,9 @@ def test_controls_locked_disables_config_sending_widgets():
     win = ConfigurationWindow(c)
 
     c.set_controls_locked(True)
-    assert not win.speed_slider.isEnabled()
+    assert not win.speed_combo.isEnabled()
     assert not win.model_only_check.isEnabled()
     assert not win.person_configure_btn.isEnabled()
 
     c.set_controls_locked(False)
-    assert win.speed_slider.isEnabled()
+    assert win.speed_combo.isEnabled()

@@ -26,16 +26,17 @@ from models.types import FoodEvent, PersonProfile
 
 
 class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
-    """Add/remove recurring-daily meals for whichever person is currently active.
+    """Add/remove recurring-daily meals for the patient on the target device's slot.
 
-    *get_active_person* is re-invoked on every show/refresh so the window
-    always edits whoever is selected in the main window's Person combo at
-    that moment, even if it changes while this window stays open.
+    *get_person* / *is_csv* are re-asked on every show/refresh and whenever the
+    target device changes, so the window always edits the patient behind the device
+    chosen at the top — and is only locked when THAT sensor replays a CSV.
     """
 
     def __init__(
         self,
-        get_active_person: Callable[[], PersonProfile | None],
+        get_person: Callable[[int | None], PersonProfile | None],
+        is_csv: Callable[[int | None, PersonProfile | None], bool],
         on_change: Callable[[], None],
         get_bluetooth_window: Callable[[], BluetoothWindow],
         parent=None,
@@ -45,7 +46,8 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         self.setWindowTitle("Food Configuration")
         self.resize(480, 420)
 
-        self._get_active_person = get_active_person
+        self._get_person = get_person
+        self._is_csv = is_csv
         self._on_change = on_change
         self._read_session = None  # tracks which BleSession config_read is currently connected to
 
@@ -114,12 +116,18 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
             self._read_btn,
         ]
         self._events: list[FoodEvent] = []
+        # Picking another device edits that device's patient.
+        self._target_bar.combo.currentIndexChanged.connect(lambda _i: self.refresh())
         self.refresh()
+
+    def _person(self) -> PersonProfile | None:
+        """The patient on the *target device's* slot (not the globally active one)."""
+        return self._get_person(self._target_bar.selected_slot())
 
     def refresh(self) -> None:
         """Reload the table from the currently active person's saved food events."""
-        person = self._get_active_person()
-        is_csv = person is not None and getattr(person, "data_source", "model") == "csv"
+        person = self._person()
+        is_csv = person is not None and self._is_csv(self._target_bar.selected_slot(), person)
         if person is None:
             self._active_label.setText("No active person selected — pick one in the main window.")
             self._events = []
@@ -177,7 +185,7 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         self._redraw_table()
 
     def _save(self) -> bool:
-        person = self._get_active_person()
+        person = self._person()
         if person is None:
             QMessageBox.information(self, "Food Configuration", "No active person selected.")
             return False
@@ -200,7 +208,7 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
 
     def _read_from_board(self) -> None:
         """Request the board's currently stored food event list and load it into the active person."""
-        if self._get_active_person() is None:
+        if self._person() is None:
             QMessageBox.information(self, "Food Configuration", "No active person selected.")
             return
         session = self._target_bar.begin()
@@ -223,7 +231,7 @@ class FoodConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes
         if char_key != "food_list":
             return
         self._events = protocol.decode_food_events(data)
-        person = self._get_active_person()
+        person = self._person()
         if person is not None:
             person.food_events = list(self._events)
         self._redraw_table()

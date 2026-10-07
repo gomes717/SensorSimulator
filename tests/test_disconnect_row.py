@@ -1,4 +1,4 @@
-"""Regression pin for issue 06: a BLE disconnect marks the user's tree row
+"""Regression pin for issue 06: a BLE disconnect greys the user's tab
 offline, and a reconnect clears it.
 
 Runs the real MainWindow on Qt's offscreen platform.
@@ -30,7 +30,7 @@ def win(app):
     import gui.main_window as mw
 
     w = mw.MainWindow()
-    w._cgms_only = True  # let glucose messages through the recording gate
+    w.state.cgms_only = True  # let glucose messages through the recording gate
     yield w
     w.close()
 
@@ -42,24 +42,22 @@ def _msg(user_id, dev_id, glucose, ts=_TS):
 def test_disconnect_marks_only_that_devices_rows_offline(win):
     win._ble_log.add_message(_msg("Pt A", "AA:BB", 101.0))
     win._ble_log.add_message(_msg("Pt B", "CC:DD", 99.0))
-    row_a, row_b = win._user_items["Pt A"], win._user_items["Pt B"]
+    tab_a, tab_b = win.tabs.header("Pt A"), win.tabs.header("Pt B")
 
     win._ble_log.note_disconnected("AA:BB")
 
-    assert "offline" in row_a.text(0)
-    assert row_a.text(1) == "—"
-    assert "Pt A" in win._offline_users
-    assert "offline" not in row_b.text(0)  # other device untouched
-    assert "Pt B" not in win._offline_users
+    assert tab_a.offline and not tab_a.isEnabled()
+    assert win.tabs.is_offline("Pt A")
+    assert not tab_b.offline  # other device untouched
+    assert not win.tabs.is_offline("Pt B")
 
 
 def test_reconnect_clears_offline(win):
     win._ble_log.add_message(_msg("Pt A", "AA:BB", 101.0))
     win._ble_log.note_disconnected("AA:BB")
-    assert "Pt A" in win._offline_users
+    assert win.tabs.is_offline("Pt A")
 
     win._ble_log.add_message(_msg("Pt A", "AA:BB", 102.0, ts="2020-01-01T00:00:05+00:00"))
 
-    assert "Pt A" not in win._offline_users
-    assert "offline" not in win._user_items["Pt A"].text(0)
-    assert win._user_items["Pt A"].text(1) == "102.00"
+    assert not win.tabs.is_offline("Pt A")
+    assert win.tabs.header("Pt A").isEnabled()

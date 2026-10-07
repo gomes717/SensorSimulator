@@ -31,7 +31,7 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `services/bluetooth_scanner.py` | `BluetoothScanThread` — BLE discovery |
 | `services/windows_ble_pairing.py` | Windows-specific passkey pairing helper (local-imported by `services/ble_session.py`) |
 | `core/ble_message_log.py` | Central append-only message log shared by Debug/graph |
-| `gui/main_window.py` | Toolbar, user treeview, glucose graph (received solid + expected dashed), food/exercise graph, Person/Sensor selector bar, Fast-mode + Model-Only toggles |
+| `gui/main_window.py` | Composition + app-level actions (speed, Model-Only / CGMS-Only, profile changes); the toolbar's Start/Pause/Stop (`gui/run_controller.py`) and the per-sensor tabs and pages (`gui/sensor_tabs.py`, `gui/sensor_page.py`) — see `docs/APPLICATION.md` §3 |
 | `gui/bluetooth_window.py` | Device list, multi-device connect/disconnect, `sessions()`/`display_name()` accessors used by config windows |
 | `gui/debug_window.py`, `gui/message_detail_window.py` | Raw message inspection |
 | `gui/device_target.py` | `DeviceTargetBar` — shared "target device" combo used by all 4 config windows |
@@ -39,7 +39,7 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `gui/sensor_config_window.py` | Manage `SensorProfile`s: noise model + params, Save/Send/Read |
 | `gui/food_config_window.py` | Recurring-daily meal schedule for the active person, Save/Send/Read |
 | `gui/exercise_config_window.py` | Recurring-daily exercise schedule for the active person, Save/Send/Read |
-| `gui/instant_event_dialog.py` | "Insert Food/Exercise Now" dialogs — one-shot events injected into an already-running simulation without resetting it (§2's instant characteristics) |
+| `gui/commands_panel.py`, `gui/instant_events.py` | The Food / Exercise / PISA Commands panel on each sensor's tab, and the fan-out of its one-shot events into an already-running simulation without resetting it (§2's instant characteristics) |
 | `models/types.py` | `ModelId`, `SensorId`, `PersonProfile`, `SensorProfile`, `FoodEvent`, `ExerciseEvent` |
 | `models/{cambridge,uva_padova,royparker,deichmann}.py` | Pure-Python ports of `cgmsim/src/cgmsim_*.c`, numerically identical |
 | `models/sensors.py` | Default params only for the 3 sensor types (noise math is on-device only) |
@@ -286,7 +286,8 @@ on-device model right now (post schedule-evaluation), at the same cadence as
 CGM measurement pushes (every `measurement_interval` seconds, currently 5).
 Ground truth from the MCU, distinct from the app's own local schedule
 evaluation (used only in Model-Only/no-device mode) — see
-`gui/main_window.py`'s `_on_new_message`/`_on_expected_reading` split.
+`gui/sensor_controller.py`'s `on_new_message` (received) and
+`gui/simulation.py`'s `on_expected_reading` (local model) split.
 
 `services/ble_session.py` keeps only the notification whose `slot` matches the
 connected identity's own sensor index (parsed from the advertised name's
@@ -303,8 +304,8 @@ event vs. the whole list). `count` (capped at 32) followed by that many
 ### Instant food/exercise events (write) — `struct { uint16_t duration_min; float carbs_g_or_intensity_pct; }`
 
 Added 2026-08-18 for injecting a one-shot event into an **already-running**
-simulation from the app's "Insert Food Now…"/"Insert Exercise Now…" buttons
-(`gui/instant_event_dialog.py`), as opposed to the recurring-daily Food/Exercise
+simulation from the Food / Exercise commands on a sensor's own tab
+(`gui/commands_panel.py`, sent by `gui/instant_events.py`), as opposed to the recurring-daily Food/Exercise
 event characteristics above. The critical difference: **every other write
 characteristic in this service — person, sensor, mode, food/exercise event,
 or a run-state `STOPPED` — causes the firmware to reinitialize model/sensor
@@ -489,12 +490,12 @@ Semantics of the two transitions (`model_thread_set_cgms_only()`):
 App side (`gui/main_window.py`'s `_on_cgms_only_toggled`): the CGMS
 Only checkbox is the trigger, not the Start button — checking it locks
 every control that would send a now-rejected write (Person/Sensor/Food/
-Exercise Configure, Fast mode, Model Only, Start/Pause/Stop, Insert Food/
-Exercise Now) and discards the local `SimulationEngine` entirely — no
+Exercise Configure, Fast mode, Model Only, Start/Pause/Stop, the Commands
+panels) and discards the local `SimulationEngine` entirely — no
 "expected" line, no local model run at all, purely a passive viewer of
-whatever the board streams. `MainWindow._on_new_message`'s plotting gate
-(normally keyed on `self._run_state == "running"`, driven by Start/Stop)
-is bypassed in favor of `self._cgms_only` directly, since this mode has no
+whatever the board streams. `SensorController.on_new_message`'s recording gate
+(normally keyed on `RunController.state == "running"`, driven by Start/Stop)
+is bypassed in favor of `state.cgms_only` directly, since this mode has no
 Start/Stop concept of its own — the board manages its run state
 autonomously. Unchecking sends the disabling write and unlocks the app
 again. Verified on hardware (2026-08-18): a blocked write during CGMS Only
@@ -724,17 +725,18 @@ Status notification each (§2). The Dexcom comm profile is single-sensor only.
 name's trailing digit (1-based) to a 0-based `_own_instance_index` and shows
 only that CGMS instance's measurements and that slot's Food/Exercise Status,
 ignoring the siblings visible on the shared GATT DB. Connecting to all four
-addresses gives four tree rows; the graph plots whichever tree row is selected.
+addresses gives four tabs, each with its own graphs and Commands panel.
 A numbered identity also sets `_require_pairing = False` — `BleSession` skips
 its Windows `pair_with_pin()` step for these (Option A firmware needs no
 pairing, and *attempting* it wedges the Windows BLE stack into a
 connect/disconnect storm).
 
-**App — board layout (Phase 2, done 2026-09).** The **Board Layout** window
-(`gui/board_layout_window.py`, opened from Configuration → "Board layout")
-assigns a saved Person + Sensor profile to each of the 4 slots, persisted to
-`data/board_layout.json` (`models/board_layout.py`). "Send layout to Board"
-calls `BleSession.send_board_layout(slots)`: over one connection to any
+**App — board layout (Phase 2, done 2026-09; the window was later removed).**
+The slot → Person + Sensor record is persisted to `data/board_layout.json`
+(`models/board_layout.py`) and is now written by the individual "Send to Board"
+actions rather than a dedicated Board Layout window.
+`BleSession.send_board_layout(slots)` remains as the programmatic whole-board
+push (used by `scripts/e2e_4sensor.py`): over one connection to any
 identity, for each slot it writes the **Sensor select** cursor, then that
 slot's `person` / `sensor` / `data_source` / cleared-then-listed food+exercise
 events (paced ~50 ms apart so the firmware's 16-deep config queue keeps up),

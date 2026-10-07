@@ -256,9 +256,9 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 
 | ID | Do | Expect |
 |---|---|---|
-| S7-01 | Insert Food Now 80 g / 10 min (model) | serial `instant food added`; carbs on Food/Exercise Status; glucose excursion; `sim_clock_min` **not** reset |
-| S7-02 | Insert Exercise Now 30 min / 70 % (Deichmann) | serial `instant exercise added`; exercise_pct on status; glucose drop |
-| S7-03 | Insert PISA Now 40 % / 10 min | serial `instant PISA added` + `pisa` factor tracing `→0.60→` and back; **streamed** value dips to ≈ level·0.6 while **model `glucose=` unchanged**; app shades the interval (`_pisa_spans` len == 1) |
+| S7-01 | Food command 80 g / 10 min (Commands panel, model) | serial `instant food added`; carbs on Food/Exercise Status; glucose excursion; `sim_clock_min` **not** reset |
+| S7-02 | Exercise command 30 min / 70 % (Deichmann) | serial `instant exercise added`; exercise_pct on status; glucose drop |
+| S7-03 | PISA command 40 % / 10 min | serial `instant PISA added` + `pisa` factor tracing `→0.60→` and back; **streamed** value dips to ≈ level·0.6 while **model `glucose=` unchanged**; app shades the interval (the page's `graph.buf.pisa_spans` len == 1) |
 | S7-04 | PISA on the CSV data source | CSV rows still emitted but attenuated by the same factor |
 | S7-05 | fire a config write (e.g. Stop) while an instant event is active | instant slots cleared by `apply_config_locked()` (no bleed into next run) |
 | S7-06 | > 8 instant events of one kind queued | 9th logged as "dropped, no free slot", not a crash |
@@ -326,7 +326,7 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 | S16-03 | persistence | power-cycle after Dexcom write → boots advertising `DXCM01` |
 | S16-04 | PISA + speed in Dexcom mode | both still shape the streamed value (they act upstream in `model_thread`) |
 
-### S17 — Scenario runner (`models/scenario.py`, `scenarios/*.json`)
+### S17 — Scenario runner (`scripts/scenario.py`, `scenarios/*.json`; test tooling, not part of the app)
 
 | ID | Do | Expect |
 |---|---|---|
@@ -407,7 +407,7 @@ all. Each fix now ships with a pin:
 | food graph misleads in CSV mode (issue 08) | `tests/test_fe_graph_title.py` (offscreen Qt) |
 | model param order vs firmware C struct (issue 05) | `tests/test_param_order.py` + `tests/param_order/*.golden` |
 | engine tick logic (issue 01) | `tests/test_engine_step.py` — raw-model equivalence |
-| ScenarioDispatch extraction (issue 18) | `tests/test_scenario_dispatch.py` — each step kind reaches its app action |
+| Scenario step vocabulary (`scripts/scenario_dispatch.py`, test tooling) | `tests/test_scenario_dispatch.py` — each step kind reaches its app action |
 | "connected but no data" — app Start must reach an idle board (2026-09-08 report) | E2E **F17** (`e2e_4sensor.py`) — STOPPED board streams no glucose; the app's own Start resumes it |
 | CSV replay fidelity — the plotted line **is** the recorded 24 h window (2026-09-09 report) | `tests/test_csv_replay.py` — parametrized over every `dataset/Dexcom_*.csv`: the engine's `_tick_csv` output == `dexcom_csv.resample(window)`, plus a MainWindow check that CSV mode runs no model and hides the food/exercise graph |
 
@@ -473,10 +473,10 @@ through the real `BoardLayoutWindow` + `send_board_layout`.
 | **F10** `disconnect_one_others_run` | Drop one identity's `BleSession`: the board logs the disconnect, keeps emitting fresh `model_tick` lines for the other slots, and stays RUNNING — it's autonomous. Reconnect is best-effort. |
 | **F11** `layout_survives_reboot` | Push a 4-model layout, hardware-reset the board via J-Link, wait for the sim clock to restart at 0, reconnect: all 4 slots' configs read back byte-identical — the v5 `sim_config` persisted to external flash. |
 | **F12** `config_window_target_slot` | Drive the real `PersonConfigWindow` / `SensorConfigWindow`: pick "Slot 2", Send to Board → slot 2's model changes, slots 0/1 don't; pick "Slot 1", Read from Board → the form loads slot 1's config (proves the FIFO-ordered cursor+read). |
-| **F13** `instant_dialog_target_slot` | "Insert Food Now" dialog with Slot 1 picked → slot 1 `carbs>0`, slots 0/2/3 stay 0 — `_send_instant` writes once to one session, not a 4× broadcast. |
+| **F13** `instant_dialog_target_slot` | Food command sent from **slot 1's own page** (Commands panel; the harness Starts a run first because the panel is blocked until one is going) → slot 1 `carbs>0`, slots 0/2/3 stay 0 — `send_instant` writes once to one session, not a 4× broadcast. (Case id kept; it used to drive the removed Insert Food dialog.) |
 | **F14** `identity_shows_patient_name` | Unassigned slot → the raw `"Nordic Glucose Sensor 3"` in the device list + session name; assign a patient in `board_layout.json` → `"<patient> — Sensor 3"` in the list, `"<patient>"` on the tree row, demux still bound to slot 2; `relabel()` updates the list live. |
 | **F16** `four_way_concurrent_streams` | All four identities connected at once; ≥3 of 4 stream glucose concurrently (issue 07 — newest links were starved off mid-subscribe before the retry + relaxed-conn-interval fix). |
-| **F17** `app_start_wakes_idle_board` | Connect to a board left in **STOPPED** run state: the link is up and the food/exercise-status heartbeat flows, but zero glucose (`model_thread.c:540` only ticks while RUNNING) — the "connected but no data" report. Pressing the app's **Start** (`_on_start_pause_clicked` → broadcast `RUN_STATE_RUNNING`) resumes glucose and a tree row appears. Every other case pre-arms RUNNING itself, so nothing else covers the app's own Start reaching the board. |
+| **F17** `app_start_wakes_idle_board` | Connect to a board left in **STOPPED** run state: the link is up and the food/exercise-status heartbeat flows, but zero glucose (`model_thread.c:540` only ticks while RUNNING) — the "connected but no data" report. Pressing the app's **Start** (`RunController.toggle()` → broadcast `RUN_STATE_RUNNING`) resumes glucose and the sensor's tab appears. Every other case pre-arms RUNNING itself, so nothing else covers the app's own Start reaching the board. |
 
 ```
 python scripts\e2e_4sensor.py                 # all 16 cases (~35 min incl. the F11 reboot)
@@ -488,7 +488,30 @@ python scripts\e2e_4sensor.py --loop 3         # 3 fresh processes back to back
 Artifacts land in `test-artifacts/4sensor-<run-id>/` with the same per-case
 `serial.slice.log` / `result.json` / `FAILURE.md` layout as `e2e.py`.
 
-## 10. Appendix — 5-minute manual smoke (no harness)
+## 10. Reliability, long-run and unit-level gates
+
+Beyond the case suites above, these probe what a short run cannot:
+
+| Harness | What it answers |
+|---|---|
+| `scripts/ble_soak.py` (+ `ble_soak_serial.ps1` on the board side) | Overnight: does every link keep delivering? Talks to bleak directly (no `BleSession`) so the Qt layer cannot masquerade as BLE flakiness; found the 1-hour CGMS session expiry |
+| `scripts/ble_ab_batch.py` | A/B a host configuration matrix per firmware build (e.g. notification stagger on/off); refuses to run two batches at once because they split the board's links |
+| `scripts/watchdog_check.py` | Through real `BleSession`s: does the silent-link watchdog re-arm a stalled subscription and report a silent one, with no false alarms on the shipping build |
+| `scripts/e2e_long_3sensor.py` | Two-hour functional run, real app path: every BLE value is one the board pushed, per-sensor completeness and worst gap, each slot's trajectory against the host-side model, the CSV slot against its samples |
+| `scripts/e2e_overnight_3sensor.py` | Unattended cycles that send every command the app has and check read-back, event lists, CSV playback, speed / run-state / CGMS-only, instant events on the right slot, and a dropped-and-reopened link |
+| `tests/` (pytest, ~280 tests, no hardware) | Engine maths, wire codecs, and the app's own pieces in isolation: `test_run_controller` (state machine, blocked rule), `test_sensor_tabs` (tabs, alerts, blink, acknowledgement), `test_sensor_pages` (independent pages, one timeline), `test_commands_panel` / `test_commands_routing` (a command reaches only its own sensor), `test_alerts` (threshold boundaries), `test_link_silent` (watchdog, link drop, reconnect races) |
+
+The suite is isolated from the user's `data/` folder (`tests/conftest.py` gives
+each test a private copy), and the hardware harnesses restore `data/` on exit
+instead of discarding the user's edits (`scripts/userdata_guard.py`).
+
+Harness API note: the app no longer exposes the compatibility properties the
+scripts used to poll (`window._graph_y`, `window._user_items`, …). Read the
+plotted series through the page on screen — `window.sensors.current_page().graph.buf`
+— the tabs through `window.tabs`, the run state through `window._run`, and the
+local model through `window.sim`.
+
+## 11. Appendix — 5-minute manual smoke (no harness)
 
 1. `firmware\scripts\flash.ps1`; open COM10, see `model_tick:` at `dt=0.0167`.
 2. `python src\main.py` → Connect Bluetooth → connect the board → select its tree row.

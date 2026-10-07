@@ -38,13 +38,10 @@ os.chdir(_ROOT)
 import userdata_guard
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtWidgets import QApplication
 
 import gui.main_window as mw
 from api import protocol
-from gui.instant_event_dialog import (
-    PisaInstantDialog,
-)
 from models import cambridge
 from models.types import ModelId, PersonProfile
 from services.ble_session import BleSession
@@ -309,9 +306,9 @@ class Ctx:
         return sess
 
     def stop_sessions(self) -> None:
-        if self.w._bluetooth_window is not None:
+        if self.w.windows.bluetooth is not None:
             with contextlib.suppress(Exception):
-                self.w._bluetooth_window.stop_all_sessions()
+                self.w.windows.bluetooth.stop_all_sessions()
         self.sessions.clear()
 
     # -- serial helpers -------------------------------------------------
@@ -517,7 +514,7 @@ def sig_stream(ctx: Ctx) -> list[float]:
 
 def new_person(w, name: str, model=ModelId.CAMBRIDGE, params=None) -> PersonProfile:
     p = PersonProfile(name=name, model_id=model, params=params or cambridge.default_params())
-    w._person_profiles.append(p)
+    w.state.person_profiles.append(p)
     w._on_profiles_changed()
     cfg = w._configuration_window
     for i in range(cfg.person_combo.count()):
@@ -528,11 +525,11 @@ def new_person(w, name: str, model=ModelId.CAMBRIDGE, params=None) -> PersonProf
 
 
 def set_speed(w, mult: int) -> None:
-    """Set the speed multiplier via the real slider. Calls _on_speed_changed
-    directly too, so it still restarts the board/engine even when the slider
-    value doesn't change (e.g. already at x1)."""
-    cfg = w._configuration_window
-    cfg.speed_slider.setValue(cfg._speed_to_slider(mult))
+    """Set the speed multiplier. The window only offers x1 and x60, so show the
+    value through the controller (as a scenario step would) and call
+    _on_speed_changed directly, which restarts the board/engine even when the
+    value is unchanged (e.g. already at x1)."""
+    w._configuration_window._show_speed(float(mult))
     w._on_speed_changed(float(mult))
     pump(150)
 
@@ -631,27 +628,32 @@ def s7_pisa(ctx: Ctx):
         new_person(w, "E2E PISA", ModelId.CAMBRIDGE, cambridge.default_params())
         w._configuration_window.model_only_check.setChecked(True)
         set_speed(w, 60)
-        QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
-        c.wait_until(lambda: len(w._graph_y) >= 6, 15, "baseline points")
-        base = sum(w._graph_y[-3:]) / 3
-        base_n = len(w._graph_y)
+        QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
+        c.wait_until(
+            lambda: len(w.sensors.current_page().graph.buf.graph_y) >= 6, 15, "baseline points"
+        )
+        base = sum(w.sensors.current_page().graph.buf.graph_y[-3:]) / 3
+        base_n = len(w.sensors.current_page().graph.buf.graph_y)
         c.measure("baseline", round(base, 1))
         c.step("inject PISA 40% / 12 min")
-        PisaInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(12),
-            self._depth_spin.setValue(40.0),
-            QDialog.DialogCode.Accepted,
-        )[-1]
-        w._open_insert_pisa()
-        c.wait_until(lambda: len(w._graph_y) >= base_n + 12, 20, "post-event points")
-        post = w._graph_y[base_n:]
+        w.sensors.current_page().commands.send_pisa(12, 40.0)
+        c.wait_until(
+            lambda: len(w.sensors.current_page().graph.buf.graph_y) >= base_n + 12,
+            20,
+            "post-event points",
+        )
+        post = w.sensors.current_page().graph.buf.graph_y[base_n:]
         trough = min(post)
         c.measure("trough", round(trough, 1))
         c.measure("recovered", round(post[-1], 1))
         c.assert_(trough < base - 10, "streamed value dips >10 mg/dL", f"{base:.0f}->{trough:.0f}")
         c.assert_(post[-1] > trough + 3, "recovers after the bout")
-        c.assert_(len(w._pisa_spans) == 1 and len(w._pisa_patches) == 1, "graph interval shaded")
-        QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+        c.assert_(
+            len(w.sensors.current_page().graph.buf.pisa_spans) == 1
+            and len(w.sensors.current_page().graph.pisa_patches) == 1,
+            "graph interval shaded",
+        )
+        QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
         w._configuration_window.model_only_check.setChecked(False)
 
 
@@ -807,33 +809,50 @@ def s10_window(ctx: Ctx):
         new_person(w, "E2E Window", ModelId.CAMBRIDGE, cambridge.default_params())
         w._configuration_window.model_only_check.setChecked(True)
         set_speed(w, 60)
-        QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
-        c.wait_until(lambda: len(w._graph_y) >= 14, 20, ">=14 points")
-        total = len(w._graph_y)
-        full = w._visible_xlim[1] - w._visible_xlim[0]
+        QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
+        c.wait_until(
+            lambda: len(w.sensors.current_page().graph.buf.graph_y) >= 14, 20, ">=14 points"
+        )
+        total = len(w.sensors.current_page().graph.buf.graph_y)
+        full = (
+            w.sensors.current_page().graph.visible_xlim[1]
+            - w.sensors.current_page().graph.visible_xlim[0]
+        )
         app_settings.save_pref("view_window_s", 5)
         w._on_view_window_changed()
         pump(200)
-        win = w._visible_xlim[1] - w._visible_xlim[0]
-        vis = len(w._in_view(w._graph_x, w._graph_y))
+        win = (
+            w.sensors.current_page().graph.visible_xlim[1]
+            - w.sensors.current_page().graph.visible_xlim[0]
+        )
+        vis = len(
+            w.sensors.current_page().graph.in_view(
+                w.sensors.current_page().graph.buf.graph_x,
+                w.sensors.current_page().graph.buf.graph_y,
+            )
+        )
         app_settings.save_pref("view_window_s", 0)
         w._on_view_window_changed()
         pump(200)
-        restored = w._visible_xlim[1] - w._visible_xlim[0]
+        restored = (
+            w.sensors.current_page().graph.visible_xlim[1]
+            - w.sensors.current_page().graph.visible_xlim[0]
+        )
         c.measure("full_s", round(full))
         c.measure("win_s", round(win, 1))
         c.measure("vis", f"{vis}/{total}")
         c.assert_(win <= 6.0, "windowed span ~5 s", f"{win:.1f}")
         c.assert_(vis < total, "fewer points visible when windowed")
         c.assert_(restored >= full - 1.0, "'Entire run' restores full span")
-        QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
         w._configuration_window.model_only_check.setChecked(False)
         app_settings.save_pref("view_window_s", 3600)
 
 
 def s17_scenario(ctx: Ctx):
     with Case(ctx, "S17-01", "scenario_runner", "S17") as c:
-        from models import scenario as scn
+        import scenario as scn
+        from scenario_dispatch import ScenarioDispatch
 
         w = ctx.w
         new_person(w, "E2E Scenario", ModelId.CAMBRIDGE, cambridge.default_params())
@@ -844,7 +863,7 @@ def s17_scenario(ctx: Ctx):
         # spy the dispatch so a trailing run_state:stop (which clears the graph)
         # doesn't erase the evidence a fault was injected
         seen = {"speed": 0, "food": 0, "pisa": 0, "start": 0, "stop": 0}
-        real = w._scenario_dispatch
+        real = ScenarioDispatch(w, w._events).dispatch
 
         def spy(kind, args):
             if kind == "speed":
@@ -874,8 +893,9 @@ def s17_scenario(ctx: Ctx):
             "speed / food / PISA / start / stop all dispatched",
             str(seen),
         )
-        c.assert_(w._speed_mult == 60.0, "speed action reached the app", f"x{w._speed_mult}")
-        QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+        speed = w.state.speed_mult
+        c.assert_(speed == 60.0, "speed action reached the app", f"x{speed}")
+        QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
         w._configuration_window.model_only_check.setChecked(False)
 
 

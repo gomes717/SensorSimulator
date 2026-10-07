@@ -36,16 +36,16 @@ def win(app):
     import gui.main_window as mw
 
     w = mw.MainWindow()
-    w._model_only = False
-    w._person_profiles[:] = [
+    w.state.model_only = False
+    w.state.person_profiles[:] = [
         PersonProfile(name="modelPt", model_id=ModelId.UVA_PADOVA),
         PersonProfile(name="csvPt", model_id=ModelId.CAMBRIDGE, data_source="csv"),
     ]
-    w._board_layout = bl.BoardLayout(
+    w.state.board_layout = bl.BoardLayout(
         [bl.SlotAssignment(person="modelPt"), bl.SlotAssignment(person="csvPt")]
     )
     yield w
-    w._engines.stop_all()
+    w.sim.engines.stop_all()
     w.close()
 
 
@@ -100,20 +100,20 @@ def _detach_bluetooth_window(win):
     a real BluetoothWindow can do that safely, a test's fake sessions dict cannot,
     so make sure teardown never sees the fake."""
     yield
-    win._bluetooth_window = None
+    win.windows.bluetooth = None
 
 
 def test_a_read_for_slot_x_lands_on_slot_x_even_after_the_user_switches_rows(win):
     """The historical bug: _on_board_mode_read used to re-ask "what's selected
     now" instead of using the slot the read was actually requested for."""
-    slot0_id, slot1_id = win._slot_user_id(0), win._slot_user_id(1)
+    slot0_id, slot1_id = win.directory.slot_user_id(0), win.directory.slot_user_id(1)
     session_a = _FakeSession(slot_index=0, user_id=slot0_id)
     session_b = _FakeSession(slot_index=1, user_id=slot1_id)
-    win._bluetooth_window = _FakeBt({"a": session_a, "b": session_b})
+    win.windows.bluetooth = _FakeBt({"a": session_a, "b": session_b})
 
-    win._on_user_selected(slot1_id)  # select csvPt (slot 1) -> triggers a read
+    win.sensors.on_user_selected(slot1_id)  # select csvPt (slot 1) -> triggers a read
     # Before the (simulated) response arrives, the user switches back to slot 0.
-    win._on_user_selected(slot0_id)
+    win.sensors.on_user_selected(slot0_id)
 
     # The response for slot 1's read arrives late, tagged to session_b (slot 1).
     session_b.config_read.emit("addr-b", "data_source", protocol.encode_data_source(True))
@@ -131,38 +131,46 @@ def test_fe_title_agrees_with_the_main_title_for_an_unsent_csv_change(win):
     own and flip to CSV immediately."""
     slot = 1
     win._board_mode._model[slot] = "Cambridge (Hovorka)"  # confirmed by an earlier read
-    user_id = win._slot_user_id(slot)
-    win._bluetooth_window = _FakeBt({"b": _FakeSession(slot_index=slot, user_id=user_id)})
+    user_id = win.directory.slot_user_id(slot)
+    win.windows.bluetooth = _FakeBt({"b": _FakeSession(slot_index=slot, user_id=user_id)})
 
-    win._on_user_selected(user_id)
+    win.sensors.on_user_selected(user_id)
 
-    assert win._data_source_label() == "Cambridge (Hovorka)"
-    # The old bug: _fe_graph_title read self._selected_person().data_source
-    # unconditionally ("csv" — never sent to the board) and switched to the
-    # report-only CSV label immediately, disagreeing with the title above.
-    assert win._fe_graph_title() == "Food / Exercise"
+    assert win.sensors.data_source_label() == "Cambridge (Hovorka)"
+    page = win.sensors.current_page()
+    # The old bug: the food/exercise title read the saved profile unconditionally
+    # ("csv" — never sent to the board) and switched to the report-only CSV label
+    # immediately, disagreeing with the title above.
+    win.sensors.apply_csv_mode_view()
+    page.graph.redraw_food_ex()
+    assert page.graph.fe_ax.get_title() == "Food / Exercise"
 
     win._board_mode._is_csv[slot] = True  # the board now genuinely confirms CSV
-    assert win._data_source_label() == "CSV replay"
-    assert "report-only" in win._fe_graph_title().lower()
+    win.sensors.apply_csv_mode_view()
+    page.graph.redraw_food_ex()
+    assert win.sensors.data_source_label() == "CSV replay"
+    assert "report-only" in page.graph.fe_ax.get_title().lower()
 
 
 def test_pisa_span_only_shades_the_targeted_slot(win):
-    win._restart_engine()
-    win._on_user_selected(win._slot_user_id(0))  # viewing slot 0
+    win.sim.restart()
+    win.sensors.on_user_selected(win.directory.slot_user_id(0))  # viewing slot 0
 
-    win._record_pisa_span(1, 100.0, 160.0)  # fault targets slot 1, not the one on screen
+    win.sim.record_pisa_span(1, 100.0, 160.0)  # fault targets slot 1, not the one on screen
 
-    assert win._hist(win._slot_user_id(1))["pisa"] == [(100.0, 160.0)]
-    assert win._hist(win._slot_user_id(0))["pisa"] == []
-    assert win._graph.buf.pisa_spans == []  # slot 0 is bound and must stay unshaded
+    page0 = win.tabs.pages.get(win.directory.slot_user_id(0))
+    page1 = win.tabs.pages.get(win.directory.slot_user_id(1))
+    assert page1.graph.buf.pisa_spans == [(100.0, 160.0)]
+    assert page0.graph.buf.pisa_spans == []  # the page on screen must stay unshaded
+    assert win.sensors.current_page() is page0
 
-    win._on_user_selected(win._slot_user_id(1))  # switch to the targeted slot
-    assert win._graph.buf.pisa_spans == [(100.0, 160.0)]
+    win.sensors.on_user_selected(win.directory.slot_user_id(1))  # switch to the targeted slot
+    assert win.sensors.current_page().graph.buf.pisa_spans == [(100.0, 160.0)]
 
 
 def test_pisa_span_targeting_all_sensors_reaches_every_slot(win):
-    win._restart_engine()
-    win._record_pisa_span(None, 5.0, 20.0)
+    win.sim.restart()
+    win.sim.record_pisa_span(None, 5.0, 20.0)
     for slot in range(bl.MAX_SLOTS):
-        assert (5.0, 20.0) in win._hist(win._slot_user_id(slot))["pisa"]
+        page = win.tabs.pages.get(win.directory.slot_user_id(slot))
+        assert (5.0, 20.0) in page.graph.buf.pisa_spans

@@ -120,3 +120,101 @@ def test_bluetooth_window_shows_and_clears_the_silent_state():
     assert shown["AA:BB"] == "No data" and "Sensor 4" in shown["message"]
     BluetoothWindow._on_link_silent(fake, "AA:BB", False)
     assert shown["AA:BB"] == "Connected"
+
+
+# ---------------------------------------------------------------------------
+# Link drop + reconnect race (board power-cycled while the app is running)
+# ---------------------------------------------------------------------------
+
+
+def _window_double(sessions):
+    log = SimpleNamespace(offline=[], note_disconnected=lambda a: log.offline.append(a))
+    shown = {}
+    return SimpleNamespace(
+        _sessions=sessions,
+        _names={"AA:BB": "Sensor 1"},
+        _advertised={"AA:BB": "Nordic Glucose Sensor 1"},
+        _statuses={"AA:BB": "Connected"},
+        _ble_log=log,
+        shown=shown,
+        _set_status_cell=lambda addr, text: shown.__setitem__(addr, text),
+        _status=SimpleNamespace(setText=lambda text: shown.__setitem__("message", text)),
+        _update_button_states=lambda: None,
+    )
+
+
+def test_a_late_finish_from_the_old_session_leaves_the_new_one_alone():
+    old, new = object(), object()
+    win = _window_double({"AA:BB": new})
+    BluetoothWindow._on_session_finished(win, "AA:BB", old)
+    assert win._sessions == {"AA:BB": new}
+    assert win._advertised == {"AA:BB": "Nordic Glucose Sensor 1"}
+    assert win._statuses == {"AA:BB": "Connected"}
+
+
+def test_finishing_the_current_session_cleans_up_but_keeps_the_advertised_name():
+    """A failed connect must not cost the row its name: the retry would otherwise
+    open under the bare MAC and stream every sensor into one row."""
+    cur = object()
+    win = _window_double({"AA:BB": cur})
+    BluetoothWindow._on_session_finished(win, "AA:BB", cur)
+    assert win._sessions == {} and win._statuses == {}
+    assert win._advertised == {"AA:BB": "Nordic Glucose Sensor 1"}
+
+
+def test_a_late_disconnect_from_the_old_session_does_not_badge_the_new_one():
+    old, new = object(), object()
+    win = _window_double({"AA:BB": new})
+    BluetoothWindow._on_session_disconnected(win, "AA:BB", old)
+    assert win._ble_log.offline == [] and "AA:BB" not in win.shown
+
+
+def test_the_current_sessions_disconnect_badges_it_offline():
+    cur = object()
+    win = _window_double({"AA:BB": cur})
+    win._on_disconnected = lambda addr: BluetoothWindow._on_disconnected(win, addr)
+    BluetoothWindow._on_session_disconnected(win, "AA:BB", cur)
+    assert win._ble_log.offline == ["AA:BB"]
+
+
+def test_a_dropped_link_ends_the_session_loop(monkeypatch):
+    """The peripheral vanishing (board powered off) must end the session: it used
+    to idle forever on a dead client, still flagged live and "Connected"."""
+
+    class DroppingClient:
+        is_connected = True
+        services = ()
+
+        def __init__(self, _address, disconnected_callback=None):
+            self._cb = disconnected_callback
+
+        async def __aenter__(self):
+            asyncio.get_running_loop().call_later(0.3, self._cb, self)
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(ble_session, "BleakClient", DroppingClient)
+    s = BleSession("AA:BB", "Nordic Glucose Sensor 1")
+    seen = []
+    s.disconnected.connect(seen.append)
+    asyncio.run(asyncio.wait_for(s._session(), timeout=5))
+    assert seen == ["AA:BB"] and s.is_live is False
+
+
+def test_a_rescan_without_a_name_keeps_the_name_already_learned():
+    rows = []
+    win = SimpleNamespace(
+        _addresses=[],
+        _advertised={"AA:BB": "Nordic Glucose Sensor 2"},
+        _statuses={},
+        _table=SimpleNamespace(
+            rowCount=lambda: 0,
+            insertRow=lambda row: None,
+            setItem=lambda row, col, item: rows.append((col, item.text())),
+        ),
+    )
+    BluetoothWindow._add_device(win, "Unknown device", "AA:BB", -50)
+    assert win._advertised["AA:BB"] == "Nordic Glucose Sensor 2"
+    assert (0, "Nordic Glucose Sensor 2") in rows

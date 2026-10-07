@@ -26,7 +26,7 @@ from models.types import ExerciseEvent, PersonProfile
 
 
 class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attributes  # see issue 18
-    """Add/remove recurring-daily exercise bouts for whichever person is currently active.
+    """Add/remove recurring-daily exercise bouts for the patient on the target device's slot.
 
     Only the Roy/Parker and Deichmann models actually react to exercise —
     Cambridge and UVA/Padova have no exercise term, so entries here are simply
@@ -35,7 +35,8 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
 
     def __init__(
         self,
-        get_active_person: Callable[[], PersonProfile | None],
+        get_person: Callable[[int | None], PersonProfile | None],
+        is_csv: Callable[[int | None, PersonProfile | None], bool],
         on_change: Callable[[], None],
         get_bluetooth_window: Callable[[], BluetoothWindow],
         parent=None,
@@ -45,7 +46,8 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         self.setWindowTitle("Exercise Configuration")
         self.resize(480, 420)
 
-        self._get_active_person = get_active_person
+        self._get_person = get_person
+        self._is_csv = is_csv
         self._on_change = on_change
         self._read_session = None  # tracks which BleSession config_read is currently connected to
 
@@ -114,12 +116,18 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
             self._read_btn,
         ]
         self._events: list[ExerciseEvent] = []
+        # Picking another device edits that device's patient.
+        self._target_bar.combo.currentIndexChanged.connect(lambda _i: self.refresh())
         self.refresh()
+
+    def _person(self) -> PersonProfile | None:
+        """The patient on the *target device's* slot (not the globally active one)."""
+        return self._get_person(self._target_bar.selected_slot())
 
     def refresh(self) -> None:
         """Reload the table from the currently active person's saved exercise events."""
-        person = self._get_active_person()
-        is_csv = person is not None and getattr(person, "data_source", "model") == "csv"
+        person = self._person()
+        is_csv = person is not None and self._is_csv(self._target_bar.selected_slot(), person)
         if person is None:
             self._active_label.setText("No active person selected — pick one in the main window.")
             self._events = []
@@ -176,7 +184,7 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         self._redraw_table()
 
     def _save(self) -> bool:
-        person = self._get_active_person()
+        person = self._person()
         if person is None:
             QMessageBox.information(self, "Exercise Configuration", "No active person selected.")
             return False
@@ -199,7 +207,7 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
 
     def _read_from_board(self) -> None:
         """Request the board's currently stored exercise event list and load it into the active person."""
-        if self._get_active_person() is None:
+        if self._person() is None:
             QMessageBox.information(self, "Exercise Configuration", "No active person selected.")
             return
         session = self._target_bar.begin()
@@ -222,7 +230,7 @@ class ExerciseConfigWindow(QWidget):  # pylint: disable=too-many-instance-attrib
         if char_key != "exercise_list":
             return
         self._events = protocol.decode_exercise_events(data)
-        person = self._get_active_person()
+        person = self._person()
         if person is not None:
             person.exercise_events = list(self._events)
         self._redraw_table()

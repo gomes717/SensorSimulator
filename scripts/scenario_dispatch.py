@@ -1,9 +1,9 @@
 """Interpret one scenario step — ``(kind, args) -> log line`` — by driving the app.
 
-An orchestration adapter (issue 18): it deliberately reaches into MainWindow's
+Test tooling (not part of the app): it deliberately reaches into MainWindow's
 high-level actions (speed / run-state / person selection / comm profile) and
 :class:`InstantEvents`, the same way a scripted operator would click through the
-UI. ``models.scenario.ScenarioRunner`` owns the *timing*; this owns the
+UI. ``scripts/scenario.py``'s ``ScenarioRunner`` owns the *timing*; this owns the
 *vocabulary*, in one place instead of a 60-line ``if/elif`` chain on the god
 object.
 """
@@ -35,28 +35,29 @@ class ScenarioDispatch:
 
     def _do_speed(self, args: dict) -> str:
         self._host._on_speed_changed(float(args.get("multiplier", 1)))
-        return f"speed → x{int(self._host._speed_mult)}"
+        return f"speed → x{int(self._host.state.speed_mult)}"
 
     def _do_run_state(self, args: dict) -> str:
         h = self._host
         state = str(args.get("state", "")).lower()
-        if state == "start" and h._run_state == "stopped":
-            h._start_run()
+        if state == "start" and h._run.state == "stopped":
+            h._run.start()
         elif state == "stop":
-            h._on_stop_clicked()
+            h._run.stop()
         elif state in ("pause", "resume"):
-            h._on_start_pause_clicked()
+            h._run.toggle()
         return f"run_state → {state}"
 
     def _do_person(self, args: dict) -> str:
         h = self._host
         name = args.get("person")
-        match = next((p for p in h._person_profiles if p.name == name), None)
+        match = next((p for p in h.state.person_profiles if p.name == name), None)
         if match is not None:
             h._on_person_selected(match)
             h._controller.notify_profiles_changed()
-        h._broadcast_data_source()
-        src = getattr(h._active_person, "data_source", "model") if h._active_person else "?"
+        src = (
+            getattr(h.state.active_person, "data_source", "model") if h.state.active_person else "?"
+        )
         return f"person → {name} ({src})"
 
     def _do_comm_profile(self, args: dict) -> str:

@@ -7,6 +7,8 @@ import asyncio
 from bleak import BleakScanner
 from PyQt6.QtCore import QThread, pyqtSignal
 
+UNKNOWN_DEVICE_NAME = "Unknown device"
+
 
 class BluetoothScanThread(QThread):
     """Worker thread that performs a single BLE scan and reports discovered devices.
@@ -30,5 +32,5 @@ class BluetoothScanThread(QThread):
             self.scan_failed.emit(str(exc))
             return
         for device, adv in devices.values():
-            name = device.name or adv.local_name or "Unknown device"
+            name = device.name or adv.local_name or UNKNOWN_DEVICE_NAME
             self.device_found.emit(name, device.address, adv.rssi)

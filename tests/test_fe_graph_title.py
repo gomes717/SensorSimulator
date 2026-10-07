@@ -33,20 +33,27 @@ def win(app):
 
 
 def test_title_is_plain_without_a_csv_person(win):
-    assert win._fe_graph_title() == "Food / Exercise"
+    win.state.active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
+    win.sensors.apply_csv_mode_view()
+    win.sensors.current_page().graph.redraw_food_ex()
+    assert win.sensors.current_page().graph.fe_ax.get_title() == "Food / Exercise"
 
 
 @pytest.mark.parametrize("model_only", [True, False])
 def test_title_says_report_only_for_any_csv_person(win, model_only):
     """A CSV-backed person runs no model, Model Only or board-connected."""
-    win._model_only = model_only
-    win._active_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
-    win._graph.redraw_food_ex()
-    assert "report-only" in win._graph.fe_ax.get_title().lower()
+    win.state.model_only = model_only
+    win.state.active_person = PersonProfile(
+        name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv"
+    )
+    win.sensors.apply_csv_mode_view()
+    win.sensors.current_page().graph.redraw_food_ex()
+    assert "report-only" in win.sensors.current_page().graph.fe_ax.get_title().lower()
 
-    win._active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
-    win._graph.redraw_food_ex()
-    assert win._graph.fe_ax.get_title() == "Food / Exercise"
+    win.state.active_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
+    win.sensors.apply_csv_mode_view()
+    win.sensors.current_page().graph.redraw_food_ex()
+    assert win.sensors.current_page().graph.fe_ax.get_title() == "Food / Exercise"
 
 
 def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
@@ -64,13 +71,13 @@ def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
 
     csv_person = PersonProfile(name="CSV Pt", model_id=ModelId.CAMBRIDGE, data_source="csv")
     model_person = PersonProfile(name="Model Pt", model_id=ModelId.CAMBRIDGE)
-    win._model_only = False
-    win._person_profiles[:] = [csv_person, model_person]
-    win._board_layout = bl.BoardLayout(
+    win.state.model_only = False
+    win.state.person_profiles[:] = [csv_person, model_person]
+    win.state.board_layout = bl.BoardLayout(
         [bl.SlotAssignment(person="CSV Pt"), bl.SlotAssignment(person="Model Pt")]
     )
-    slot0_id, slot1_id = win._slot_user_id(0), win._slot_user_id(1)
-    win._bluetooth_window = _FakeBt(
+    slot0_id, slot1_id = win.directory.slot_user_id(0), win.directory.slot_user_id(1)
+    win.windows.bluetooth = _FakeBt(
         {
             "a": _FakeSession(slot_index=0, user_id=slot0_id),
             "b": _FakeSession(slot_index=1, user_id=slot1_id),
@@ -79,14 +86,21 @@ def test_food_ex_graph_follows_the_selected_sensor_not_the_active_person(win):
     win._board_mode._is_csv[0] = True
     win._board_mode._model[1] = "Cambridge (Hovorka)"
 
-    win._on_user_selected(slot0_id)
-    assert win._graph.fe_canvas.isVisibleTo(win) is False
-    assert "report-only" in win._fe_graph_title().lower()
+    win.sensors.on_user_selected(slot0_id)
+    page0 = win.sensors.current_page()
+    page0.graph.redraw_food_ex()
+    assert page0.graph.fe_canvas.isVisibleTo(page0) is False
+    assert page0.commands.isVisibleTo(page0) is False  # a CSV sensor takes no commands
+    assert "report-only" in page0.graph.fe_ax.get_title().lower()
 
-    win._on_user_selected(slot1_id)
-    assert win._graph.fe_canvas.isVisibleTo(win) is True
-    assert win._fe_graph_title() == "Food / Exercise"
-    win._bluetooth_window = None
+    win.sensors.on_user_selected(slot1_id)
+    page1 = win.sensors.current_page()
+    assert page1 is not page0
+    page1.graph.redraw_food_ex()
+    assert page1.graph.fe_canvas.isVisibleTo(page1) is True
+    assert page1.commands.isVisibleTo(page1) is True
+    assert page1.graph.fe_ax.get_title() == "Food / Exercise"
+    win.windows.bluetooth = None
 
 
 # --- issue 14: CSV Analysis whole-recording metrics panel -----------------

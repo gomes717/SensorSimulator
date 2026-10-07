@@ -1,6 +1,6 @@
 # Application Architecture
 
-The desktop app (`src/`, PyQt6) is organized into six layers reflecting the
+The desktop app (`src/`, PyQt6) is organized into layers reflecting the
 `api → services → core → models → gui` (+ `utils`) directory split — see
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for how this fits into the whole
 system.
@@ -49,6 +49,11 @@ work to that session's asyncio loop; results come back out via the signals
 above. Every connected device gets its own `BleSession`/asyncio loop —
 `bluetooth_window.py`'s `sessions()` dict is the registry.
 
+The GUI thread also owns two small `QTimer`s: `RunController`'s 500 ms re-check
+of whether any sensor link is live (it polls each session's plain `is_live`
+flag, so it never touches bleak across threads), and `SensorTabs`' shared blink
+timer, which runs only while some tab is blinking.
+
 `SimulationEngine` (see [`MODELS.md`](MODELS.md) §7 for what it computes)
 is a plain polling loop (`k_sleep`-equivalent: `self.msleep(...)`), one tick
 per wall-clock second, independent of any BLE activity — it's the Python-side
@@ -94,9 +99,20 @@ without creating a dependency on the GUI or BLE stack.
   slot" stays ordered. `send_board_layout(slots)` runs the whole multi-slot push
   as one coroutine (cursor + per-slot config + optional per-slot CSV upload,
   paced and retried).
+  **Link lifecycle:** the session registers bleak's `disconnected_callback`, so
+  a board that powers off or leaves range ends the session loop (`is_live`
+  false, `disconnected` emitted) instead of idling on a dead client; a drop
+  *during* setup raises `connect_failed` rather than the confusing "connected,
+  could not subscribe". `link_silent` reports a subscription that delivers
+  nothing (see `silence_watchdog.py`).
+- **`silence_watchdog.py`** — `SilenceWatchdog`, a pure clock-driven state
+  machine fed by CGM Measurement notifications: after four missed intervals it
+  asks for a re-arm of the subscription, after three failed re-arms it reports
+  the link silent, and it never fires while the board is deliberately stopped.
 - **`bluetooth_scanner.py`** — `BluetoothScanThread`, a short-lived BLE
   discovery scan (via `bleak.BleakScanner`), feeding `bluetooth_window.py`'s
-  device list.
+  device list. A device with no name is reported as `UNKNOWN_DEVICE_NAME`, which
+  the window never lets overwrite a name it already learned.
 - **`windows_ble_pairing.py`** — Windows-only, `winrt`-based programmatic
   pairing (typing the fixed test passkey automatically instead of needing
   the OS's own pairing prompt); local-imported from `ble_session.py` only
@@ -107,7 +123,7 @@ without creating a dependency on the GUI or BLE stack.
 
 - **`ble_message_log.py`** — `BleMessageLog`, a single `QObject` with one
   `new_message` signal, instantiated once by `MainWindow` and passed to
-  every window that needs BLE traffic: `main_window.py` (graphs/treeview),
+  every window that needs BLE traffic: `sensor_controller.py` (tabs/graphs),
   `debug_window.py`/`message_detail_window.py` (raw inspection). This is
   the app's internal pub/sub bus — `BleSession` instances feed it, an
   arbitrary number of windows subscribe to it, and none of those windows
@@ -120,20 +136,23 @@ without creating a dependency on the GUI or BLE stack.
   above it.
 - `{cambridge,uva_padova,royparker,deichmann}.py`, `sensors.py` — the model
   math itself, ported verbatim from `cgmsim/src/cgmsim_*.c`.
-- `engine.py` — `SimulationEngine` (§1).
+- `engine.py` — `SimulationEngine` (§1) and `EnginePool`, one engine per
+  occupied board slot sharing one clock and speed (pause / resume / stop and
+  one-shot events fan out).
 - `profile_store.py` — JSON persistence of every saved `PersonProfile`/
   `SensorProfile` to `data/profiles.json` (`dataclasses.asdict` + `json`,
   no external serialization library).
 - `board_layout.py` — the slot → (person, sensor) map for a multi-sensor
   board (`BoardLayout` / `SlotAssignment`), persisted to
   `data/board_layout.json`; applied by `BleSession.send_board_layout()`.
+- `alerts.py` — `alert_for(glucose, thresholds)` → normal / warning / critical
+  plus direction. The single definition shared by the graph's line colour and
+  the sensor tabs' warning icon and blink, so they cannot disagree.
 - `app_settings.py` — same style, for app-wide settings in
   `data/settings.json` (glucose range thresholds, speed multiplier, rolling
   view window, theme).
 - `food_log_csv.py` — reader for D1NAMO-style food-log CSVs, auto-paired to
   a Dexcom export by file id (`Dexcom_001` ↔ `Food_Log_001`).
-- `scenario.py` — timed-action scenario files (`scenarios/*.json`) fired on
-  a wall-clock timeline by the Scenario window.
 - `cgm_metrics.py` — pure `compute()` of the clinical range metrics
   (TIR/TBR1/TBR2/TAR1/TAR2, mean, population variance, SD, CV) for a list
   of glucose values; shared by the CSV Analysis window and the main
@@ -146,36 +165,248 @@ without creating a dependency on the GUI or BLE stack.
 
 ## 3. UI layer (`gui/`)
 
-`MainWindow` is the hub; every other window is created lazily (on first
-open, via `_open_*` methods) and kept as a `None`-until-opened attribute —
-so launching the app never pays for windows the user never opens, and
-re-opening one raises the same instance instead of creating a duplicate.
+### 3.1 Vocabulary
 
-| Window/dialog | Role |
+| Term | Meaning |
 |---|---|
-| `main_window.py` — `MainWindow` | Toolbar (Configuration, CSV Analysis, Bluetooth, Debug, View, Scenario, Faults); user treeview (one row per connected identity — per-user `#id` + generated avatar disc, live glucose, LOW/HIGH badge beside the name when out of range); glucose graph (received solid + expected dashed, TBR2/TBR1/TIR/TAR1/TAR2 range shading, mean line, PISA-shaded intervals, rolling view window); food/exercise graph (carb rate + exercise %); Start/Pause/Resume/Stop; Insert Food/Exercise/PISA Now buttons; live range-metrics panel |
-| `configuration_window.py` — `ConfigurationWindow` | The Person/Sensor selectors + their Configure/Food/Exercise buttons, a **"Board layout (4 sensors)…"** button, the Speed slider (x1–x1000) / Communication-type combo / Model-Only / CGMS-Only toggles, the editable glucose range thresholds, and the per-person data-source choice (physiological model vs CSV region — CSV playback **is** wired, incl. "Send CSV to Board") |
-| `board_layout_window.py` — `BoardLayoutWindow` | Multi-sensor: a Person + Sensor-noise combo per slot (persisted to `data/board_layout.json`), a target-board picker, and **"Send layout to Board"** → `BleSession.send_board_layout()` |
-| `view_config_window.py` — `ViewConfigWindow` | Rolling graph-window length and UI theme |
-| `scenario_window.py` — `ScenarioWindow` | Pick a `scenarios/*.json` file and run its timed action list against the board/engine |
-| `fault_panel.py` — `FaultPanel` | The `FAULTS` registry window; each row opens a dialog → `MainWindow.inject_fault()` (PISA wired) |
-| `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom CGM export (`models/dexcom_csv.py`), zoom/pan the full trace, slide a 24 h window over it, and read range metrics (`models/cgm_metrics.py`: TIR/TBR/TAR as time, mean, variance, SD, CV) — two panels side by side: **whole recording** and the **selected 24 h window**. Analysis only — does not feed the live simulation |
-| `bluetooth_window.py` — `BluetoothWindow` | Device list, scan trigger, multi-device connect/disconnect; owns the `sessions()` dict every other window resolves a "target device" through. Shows `"<patient> — Sensor N"` for a slot assigned in `board_layout.json` (raw `"Nordic Glucose Sensor N"` otherwise); `relabel()` refreshes those live after a Board Layout edit |
-| `device_target.py` — `DeviceTargetBar` | "Target device: [combo] [Slot] [Refresh]" shared by the four config windows, plus the `restart_board()` / `await_send_confirmation()` helpers they all call after a write. The **Slot** combo shows only for a numbered multi-sensor identity; `.begin()` queues the `sensor_select` cursor before the window's own write/read |
-| `debug_window.py` — `DebugWindow` | Live scrolling list of every BLE message received (any device), sourced from `core/ble_message_log.py` |
-| `message_detail_window.py` — `MessageDetailWindow` | Full field dump of one selected message from Debug |
-| `person_config_window.py` — `PersonConfigWindow` | Manage saved `PersonProfile`s (model choice + its parameters), Save/Send to Board/Read from Board |
-| `sensor_config_window.py` — `SensorConfigWindow` | Manage saved `SensorProfile`s (noise model + parameters), same Save/Send/Read pattern |
-| `food_config_window.py` — `FoodConfigWindow` | Recurring-daily meal schedule (table + add row) for the active person |
-| `exercise_config_window.py` — `ExerciseConfigWindow` | Recurring-daily exercise schedule, same pattern |
-| `instant_event_dialog.py` — `FoodInstantDialog`/`ExerciseInstantDialog` | One-shot "insert now" prompts, invoked from `MainWindow`, not tied to a saved profile |
+| **Sensor** | One simulated CGM on the board — a BLE identity, a CGMS service instance and a config. A multi-sensor board has up to 4 (3 in the current build). |
+| **Slot** | A sensor's 0-based index on the board. A numbered advertised name (`"Nordic Glucose Sensor 3"`) is slot 2. A single-sensor board has no slot (`None`). |
+| **Session** | One `BleSession` — the live connection to one BLE identity. Its `user_id` is the label every message it emits carries. |
+| **Tab** | One sensor in the browser-style strip: avatar, name, alert icon (no number — the tooltip has the value). |
+| **Page** | Everything for one sensor: its own graphs, history, stats and Commands panel. One page per tab, plus one default page (Model Only / "nothing selected"). |
+| **Run** | One Start → Stop of the simulation. All pages share its timeline (the run clock). |
+| **Board mode** | What the *board* says a slot runs — "CSV replay" or a model's name — as opposed to what the app last tried to send. |
 
-The four config windows (`Person`/`Sensor`/`Food`/`Exercise`) all share one
-shape — table or form + Save (local) / Send to Board (BLE write) / Read from
-Board (BLE read, round-trips through `protocol.py`'s `decode_*`) — which is
-why `device_target.py` factors out exactly the pieces that differ from
-window to window: which device to target, and how to show "did that write
-land" feedback.
+### 3.2 How the window is put together
+
+`MainWindow` is composition plus the few actions that cut across the rest
+(speed, Model Only / CGMS Only, profile changes). Everything else lives in the
+piece that owns it:
+
+```mermaid
+flowchart TD
+    MW["MainWindow<br/>(composition + app-level actions)"]
+    MW --> ST["AppState<br/>profiles · board layout · speed ·<br/>thresholds · Model/CGMS-only"]
+    MW --> TABS["SensorTabs<br/>start screen · tab strip · page stack"]
+    TABS --> PAGES["SensorPages → SensorPage ×N<br/>GlucoseGraph · history · stats · CommandsPanel"]
+    MW --> SC["SensorController<br/>selection · titles · CSV view ·<br/>commands · BLE data routing"]
+    MW --> SIM["SimulationCoordinator<br/>EnginePool · restart · expected → page"]
+    MW --> RUN["RunController<br/>Start/Pause/Stop · blocked rule"]
+    MW --> DIR["SensorDirectory<br/>slot ⇄ session ⇄ label ⇄ live"]
+    MW --> BM["BoardMode<br/>what the board says each slot runs"]
+    MW --> EV["InstantEvents<br/>Food / Exercise / PISA fan-out"]
+    MW --> CW["ChildWindows<br/>lazy secondary windows"]
+    MW --> CC["ConfigController<br/>seam to the Configuration window"]
+    RUN -. "RunClock (shared t=0)" .- PAGES
+    SIM -. "expected line · PISA shading" .-> PAGES
+    SC --> PAGES
+    SC --> TABS
+```
+
+Dependencies point one way. The pieces talk through constructor-supplied
+callbacks and Qt signals rather than reaching into `MainWindow`, which is why
+each one can be tested on its own (`tests/test_run_controller.py`,
+`test_sensor_tabs.py`, `test_sensor_pages.py`, …).
+
+| Module | Owns |
+|---|---|
+| `main_window.py` | Builds and wires the pieces; the actions that touch several of them: speed, Model Only / CGMS Only, profile / person / sensor changes, comm-profile switch |
+| `app_state.py` — `AppState` | Person/sensor profiles, `board_layout` (slot → patient/sensor record), active person/sensor, speed multiplier, graph view window, range thresholds, the `model_only` / `cgms_only` flags; `engine_slots()` (which person runs on which slot) and persistence to `data/` |
+| `run_clock.py` — `RunClock` | The run's t=0 and speed multiplier; converts a timestamp to simulated seconds. Every graph reads it, so Start re-anchors all of them at once |
+| `start_push.py` — `StartPush` | Start's first step: writes the app's per-sensor profiles (person, sensor, schedules) to the board before the run begins |
+| `run_controller.py` — `RunController` | The run state machine (stopped / starting / running / paused), the toolbar Start/Pause/Resume and Stop buttons, the run-state broadcast to the boards and its "reached N of M sensors" report; decides when the buttons and the Commands panels are blocked |
+| `simulation.py` — `SimulationCoordinator` | The `EnginePool`, the single restart point every profile/mode/layout change goes through, and where each slot's expected line and PISA shading land |
+| `sensor_directory.py` — `SensorDirectory` | Read-only answers about the connected sessions: a slot's session id, a session's slot, whether it is live, its visible label |
+| `sensor_tabs.py` — `SensorTabs` | The "Connect Bluetooth" start screen, the tab strip (avatar, name, alert icon, close button, and a "+" to connect another sensor), the page stack, tab alerts and the shared blink timer |
+| `sensor_pages.py` / `sensor_page.py` | The page stack and one sensor's page (see §3.4) |
+| `sensor_controller.py` — `SensorController` | Which page is showing, each page's title / CSV view, wiring each page's Commands panel to its sensor, recording BLE messages onto the right page, tab events (connect, close, select) |
+| `commands_panel.py` — `CommandsPanel`, `command_dialogs.py` | The Food… / Exercise… / PISA… buttons of one sensor, each opening a small modal form for that event's numbers |
+| `instant_events.py` — `InstantEvents` | Fans a one-shot event out to the local engine, the board, and the target page's shading; returns the outcome text |
+| `board_mode.py` — `BoardMode` | Reads each slot's Data Source / model name back from the board, for titles and the CSV view (§3.6) |
+| `board_link.py` — `BoardLink` | "For every live session, write …" and per-slot sends, with reach counts |
+| `child_windows.py` — `ChildWindows` | Lazily creates, shows and closes the secondary windows; the Bluetooth window is special because sessions live in it |
+| `toolbar.py` | Builds the toolbar: Start/Stop on the left, the window buttons (View, Configuration, Debug) on the right — there is no Connect Bluetooth button; connecting is the start screen's button and the tab strip's "+" |
+| `config_controller.py` — `ConfigController` | The typed signal seam between `MainWindow` and the Configuration window |
+| `glucose_graph.py` — `GlucoseGraph` | The two matplotlib canvases of one page and every draw decision (range bands, trace coloured exactly at the limits, optional sample dots, PISA shading, rolling window) |
+| `range_stats.py` — `RangeStatsPanel` | The TIR/TBR/TAR grid under a page's graphs |
+| `avatar.py` | Generated initials disc used on tabs (profile avatars are not implemented yet) |
+| `theme.py`, `widgets.py` | Light/dark/system palette; shared spin boxes and label helpers |
+
+### 3.3 Secondary windows
+
+Opened from the toolbar or from the Configuration window; created on first use
+by `ChildWindows` and kept, so re-opening raises the same instance.
+
+| Window | Role |
+|---|---|
+| `configuration_window.py` — `ConfigurationWindow` | Person/Sensor editors' launch buttons, the Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Communication-type combo, Model-Only and CGMS-Only toggles, the editable glucose range thresholds |
+| `person_config_window.py` / `sensor_config_window.py` | Manage saved `PersonProfile` / `SensorProfile`s; Save, **Send to Board** (which also sends the patient's data source, incl. a CSV upload), **Read from Board**. A send reports which slot got which patient so the slot record stays true |
+| `data_source_group.py` | The per-patient model-vs-CSV chooser inside Person Configuration (the 24 h region is picked in CSV Analysis) |
+| `food_config_window.py` / `exercise_config_window.py` | Recurring-daily meal / exercise schedules for the patient on the **target device's** slot (the one recorded for that slot, else the active patient); locked only when *that sensor* replays a CSV (the board's answer first, the saved profile as a fallback) — not because the globally active patient does. Picking another device switches the patient |
+| `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom export, slide a 24 h window, read range metrics for the whole recording and the selection; assigns the window to a person |
+| `bluetooth_window.py` — `BluetoothWindow` | Device list, scan, multi-device connect / disconnect; owns the `sessions()` dict; emits `session_connected` (opens that sensor's tab) and offers `disconnect_device()` (the tab's close button) |
+| `device_target.py` — `DeviceTargetBar` | "Target device / Slot" picker shared by the config windows, plus `restart_board()` / `await_send_confirmation()` |
+| `view_config_window.py` | Rolling graph-window length and UI theme |
+| `debug_window.py` / `message_detail_window.py` | Live list of every BLE message; field dump of one |
+
+There is no Board Layout window and no Faults window any more: the slot →
+patient record is written by the individual "Send to Board" actions, and PISA
+is one of the Commands panel's three commands. `BleSession.send_board_layout()`
+remains as a programmatic whole-board push used by `scripts/e2e_4sensor.py`.
+
+### 3.4 Sensor tabs and pages
+
+The central area is a `SensorTabs`:
+
+- **Nothing connected → start screen.** A centered "Connect a sensor to begin"
+  with a **Connect Bluetooth** button. Model Only has no board, so it shows the
+  pages without a tab strip.
+- **Browser-style look.** The strip is a band a little darker than the page; the
+  selected tab is drawn in the page colour with rounded top corners (so it reads as
+  part of the page), the other tabs sit flat on the band with thin dividers and a
+  slight lift on hover. It is painted from the live palette, so light and dark themes
+  both work.
+- **A "+" after the last tab** (as in a browser) opens the Bluetooth window to connect
+  another sensor; it is the only way in once tabs exist, since the toolbar has no
+  Connect Bluetooth button.
+- **A sensor connects → its tab appears** (`BluetoothWindow.session_connected`),
+  with no alert until the first reading. A sensor that reconnects after a power
+  cycle keeps its tab and history, matched by slot (or by address on a
+  single-sensor board), even if its session id changed meanwhile.
+- **A sensor drops → its tab greys out** ("offline", alert cleared)
+  with its graph intact; it revives on reconnect.
+- **The tab's close button disconnects that sensor and discards its page**
+  (no confirmation).
+
+Each tab owns an independent **page**: its own `GlucoseGraph` (glucose +
+food/exercise canvases), its own history buffers, `RangeStatsPanel` and
+`CommandsPanel`. A BLE message or an expected-model tick for sensor B is
+appended to B's page and nowhere else; switching tabs only brings another page
+forward, so nothing is rebound, copied or lost. All pages share one `RunClock`
+timeline. The cost is one set of matplotlib canvases per sensor; a page that is
+not on screen records data but defers its redraw until it is shown.
+
+**Alerts** use `models/alerts.py` (the same function colours the graph line):
+
+| Level | Condition (default thresholds) | Tab |
+|---|---|---|
+| normal | 70 – 180 mg/dL | no icon |
+| warning | 54 – 70 or 180 – 250 | amber ⚠ |
+| critical | < 54 or > 250 | red ⚠; the tab **blinks red until opened**, then stays solid red until the reading leaves the critical range |
+
+A critical tab that is already the open one goes straight to solid. Recovering
+and going critical again blinks afresh. A going-offline tab clears its alert (a
+stale reading must not alarm). Changing the thresholds re-evaluates every tab at
+once. One shared timer drives all blinking and runs only while some tab is
+blinking. The tab shows no number; the tooltip gives the value and direction
+("262 mg/dL — critically high").
+
+**The graph.** The received trace is drawn in the same range colours (green in
+range, yellow borderline, red low/high — deliberately light), and it changes
+colour **exactly where it crosses a limit**: a segment between two samples is cut
+at the threshold crossing by linear interpolation, so the colour does not wait for
+the next sample. A **Show points** checkbox under the statistics draws each
+received sample as a dot (off by default; one app-wide choice, remembered in
+`data/settings.json`, that every page follows). The glucose graph takes every
+spare pixel (its margins are in inches, so the legend keeps its room however tall
+it is stretched), the statistics and the command buttons sit in a compact strip
+below, and when the food/exercise graph is hidden (a CSV sensor) the glucose
+graph carries its own "Time (s)" axis label and drops the "Expected (model)"
+legend entry (no model runs behind a replayed recording).
+
+### 3.5 Run controls and the Commands panel
+
+**Start / Pause / Resume and Stop live in the toolbar** (`RunController`). They
+are **blocked until there is something to run**: at least one sensor with a live
+link, or Model Only (which has no board). A run already in progress keeps them
+usable so it can always be paused or stopped, even if every sensor has dropped;
+CGMS Only locks them.
+
+**Each page has a Commands panel** — three buttons under the statistics, **Food…**,
+**Exercise…** and **PISA…**. Each opens a small modal form for that event's numbers
+(Food: carbs and spread; Exercise: duration and intensity; PISA: duration and peak
+attenuation) and, once accepted, sends it; a one-line result sits beside the
+buttons. A command goes to *that page's sensor* — never to whatever
+tab happens to be selected — and PISA shading is drawn on that page's graph. The
+panel is disabled, with the reason shown, until the run is going **and** that
+sensor's own link is live ("Start a run…", "No live sensor…", "This sensor is
+offline…", "paused", "locked in CGMS-only mode"). It is hidden altogether for a
+sensor the board reports as CSV replay: food and exercise are report-only there
+and nothing the panel sends would mean anything.
+
+### 3.6 The board is the authority
+
+The app's profile only records what it *tried* to send; a CSV uploaded in an
+earlier session, a change made from elsewhere, or a send that silently failed
+all leave it disagreeing with what the board runs — and the board is what
+produces the trace. So every per-sensor display decision asks `BoardMode`, which
+reads each slot's **Data Source** and **Person Config** characteristics back
+(attributing each answer to the session that sent it, never to "whatever tab is
+selected"):
+
+- the graph title names "CSV replay" or the model, and says "waiting for the
+  board to confirm…" instead of guessing;
+- the food/exercise graph and the Commands panel are hidden for a CSV sensor;
+- expected-model ticks for a CSV slot are dropped, and an expected line already
+  drawn is discarded the moment the board reveals CSV (there is no model behind
+  that trace);
+- the slot → patient rename waits for the board's acknowledgement;
+- reads are serialized, one slot at a time, because the Sensor-select cursor is a
+  single value on the board.
+
+The local "expected" model is **not** built from these reads. **Start writes the
+app's profile for every model-backed sensor to the board** — person model and
+parameters, sensor profile, meal and exercise schedules (`start_push.py`) — and the
+expected model is built from that same list (`AppState.board_plan()`), so the two
+start from identical inputs. A sensor that replays a CSV is ignored by Start and
+gets no expected line; so does a sensor with no patient assigned. See
+[ADR 0005](adr/0005-start-pushes-the-app-profile.md).
+
+Model Only and the empty page have no board to ask, so there the saved profile is
+read directly.
+
+**A sensor's Food/Exercise Status feeds only that sensor's own model.** While a
+board runs, each sensor's reported carbs and exercise are handed to its own local
+engine so the expected line follows the sensor's actual meal input. The status is
+routed by the sensor it came from (`SimulationCoordinator.feed_board_food_exercise`):
+with sensor 1 modelled and sensors 2 and 3 merely connected, their statuses are
+dropped, not fed to sensor 1's engine (which used to make sensor 1's expected line
+climb on meals only the other sensors had).
+
+**A write the board refuses is reported.** Every write goes through the session's
+queue; when the board rejects one (an Insert Food, a config write) the status bar
+says "⚠ The board refused '<characteristic>' (<error>)" instead of leaving the
+Commands panel's "sent" as the last word.
+
+**Choosing is not sending.** Clicking a patient or sensor in a configuration
+window only changes which one is being edited: with a board connected it does not
+reset the graphs, and neither does Save (nothing changed on the board). What
+resets a run is what changes it — Start, a Send to Board, a speed change, toggling
+Model Only (which runs the chosen patient locally, so there a change does restart).
+The Food and Exercise editors follow the patient chosen in Person Configuration.
+
+### 3.7 BLE link health, as the app sees it
+
+- **A dropped link ends the session.** `BleSession` registers bleak's
+  `disconnected_callback`; when the board powers off or goes out of range the
+  session loop ends, `is_live` turns false, `disconnected` fires (the tab greys
+  out) and the session leaves the Bluetooth window's list. Before this a dead
+  link idled forever, still "Connected".
+- **Silent subscriptions are noticed.** `services/silence_watchdog.py` watches
+  CGM Measurement notifications only (the board's other characteristics kept
+  notifying while a sensor was silent). After four missed intervals it re-arms
+  the subscription on the same connection; after three failed re-arms it emits
+  `link_silent`, shown as **"No data"** in the Bluetooth window. A stopped board
+  is not silent.
+- **Reconnects do not cross wires.** Closing a session and opening a new one for
+  the same address (Disconnect then Connect, or the comm-profile reconnect) can
+  deliver the old thread's `finished` / `disconnected` after the new session is
+  already registered; both handlers ignore a session that has been replaced.
+  The advertised name is kept across a failed attempt and across a rescan that
+  returned "Unknown device", so a retry opens under `"Nordic Glucose Sensor N"`
+  (which picks the slot) and never under the bare MAC.
+- **Subscribe retries.** `start_notify` is retried (4 attempts, ~0.9 s apart)
+  with the CGM Measurement first, because a congested 3rd/4th link times out.
 
 ## 4. Data flow examples
 
@@ -184,30 +415,57 @@ land" feedback.
 (`profile_store.save()`, writes `data/profiles.json`) → Send to Board
 (`api.protocol.encode_person_config()` → `services.ble_session.BleSession.queue_write()`
 → GATT write → firmware) → `await_send_confirmation()` waits for the
-board's `reset_sync` notification to show "✓ Applied on board".
+board's `reset_sync` notification to show "✓ Applied on board" →
+`MainWindow.record_slot_assignment()` records which patient now sits on which
+slot, persists it, relabels the tabs / Bluetooth list, restarts the local
+engines, and re-asks the board what that slot runs.
+
+**A sensor connects:**
+`BleSession` finishes subscribing → `BluetoothWindow._on_connected()` →
+`session_connected(address, session)` → `SensorController.on_session_connected()`
+→ `SensorTabs.ensure_tab()` (or revives the tab of the same slot/address) → the
+tab appears with "—"; the first tab is selected, which brings its page forward.
 
 **A CGM reading arrives:**
 firmware notify → `BleSession`'s notification handler (asyncio callback) →
 (multi-sensor: dropped unless it's this identity's own CGMS instance) →
 decodes the standard CGMS SFLOAT payload → emits on `core.BleMessageLog`'s
-`new_message` signal (queued onto the GUI thread) → `MainWindow._on_new_message()`
-updates the treeview row (`_update_user_alert()` badges it LOW/HIGH vs the
-current thresholds) and, if that device is selected and a run is active,
-appends to the glucose graph.
+`new_message` signal (queued onto the GUI thread) →
+`SensorController.on_new_message()`: `SensorTabs.note_message()` updates the
+tab's value and alert (`models.alerts`), and — while a run is going — the
+reading is appended to **that sensor's page** (`SensorPage.add_received()`),
+which redraws only if it is the page on screen.
 
-**A multi-sensor board layout is pushed:**
-`board_layout_window.py` (`BoardLayout` in memory, saved to
-`data/board_layout.json`) → `_build_slots()` encodes each slot's
-person/sensor/data-source/food/exercise (+ CSV tracks when the person is
-CSV-backed) → `BleSession.send_board_layout(slots)` runs one coroutine:
-per slot, write `sensor_select` then the per-slot writes (paced ~80 ms,
-retried on a full config queue) then any CSV upload, finally `run_state =
-RUNNING` → `board_layout_progress` / `board_layout_finished` signals drive
-the window's status label. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §4.5.
+**A run starts:** the toolbar Start → `RunController.start()` (button reads
+"Starting…", both buttons blocked) → `StartPush` writes the app's profile for every
+live, non-CSV sensor to the board (speed, person, sensor, data source, meal and
+exercise schedules, one slot after another through one session) → once the board has
+taken them all, `SimulationCoordinator.restart()` (stop the pool, `RunClock`
+re-anchored to now, every page cleared, one engine rebuilt per slot from the same
+profiles) → engines resumed → `RUN_STATE_STOPPED` then `RUN_STATE_RUNNING` to every
+connected board, with a status-bar report of how many sensors it reached. If the push
+fails the run does not start (status bar says why). Model Only and a board with only
+CSV sensors skip the push. The local engines and every board's `model_thread`
+begin ticking from the same nominal t=0, independently (see
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §5 for why they're not kept in lockstep
+beyond that shared starting point). Each engine tick lands on its slot's page as
+the dashed "expected" line.
 
-**A run starts:** `MainWindow._start_run()` (re)creates a `SimulationEngine`
-for the active person, anchors the graph's t=0 to now, and writes
-`RUN_STATE_STOPPED` then `RUN_STATE_RUNNING` to every connected board — the
-local engine and every connected board's `model_thread` begin ticking from
-the same nominal t=0, independently (see [`ARCHITECTURE.md`](ARCHITECTURE.md)
-§5 for why they're not kept in lockstep beyond that shared starting point).
+**A command is sent from a tab:** the Commands panel emits the numbers →
+`InstantEvents.inject_food/exercise/fault` for that page's slot → the local
+engine gets the one-shot event, the board gets the one-shot write (no reset) →
+the outcome text ("✓ … sent to N sensor(s)" / "⚠ … NOT sent — no live board
+link") appears on that page's panel and in the status bar; a PISA interval is
+shaded on that page's graph.
+
+**A tab is closed:** close button → `SensorController.on_tab_close_requested()`
+→ `BluetoothWindow.disconnect_device(address)` → the session stops → the tab and
+its page are removed; with no tabs left the start screen returns.
+
+**A multi-sensor layout is pushed programmatically:**
+`scripts/e2e_4sensor.py` builds each slot's writes and calls
+`BleSession.send_board_layout(slots)`, which runs one coroutine: per slot,
+write `sensor_select` then the per-slot writes (paced ~80 ms, retried on a full
+config queue) then any CSV upload, finally `run_state = RUNNING` →
+`board_layout_progress` / `board_layout_finished` signals. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §4.5.

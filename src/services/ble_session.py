@@ -344,7 +344,17 @@ class BleSession(QThread):
                 # subscriptions below fail for lack of an authenticated link.
                 pairing_error = str(exc)
 
-        async with BleakClient(self._address) as client:
+        # Set by bleak when the peripheral goes away on its own (board powered
+        # off, out of range). Without it nothing here ever noticed: _link_up
+        # stayed True, the idle loop below ran forever against a dead client,
+        # and the window kept showing a long-dead sensor as "Connected".
+        link_lost = asyncio.Event()
+
+        def on_link_lost(_client) -> None:
+            self._link_up = False
+            link_lost.set()
+
+        async with BleakClient(self._address, disconnected_callback=on_link_lost) as client:
             if not client.is_connected:
                 raise ConnectionError("Device did not accept the connection")
             self._client = client
@@ -464,9 +474,14 @@ class BleSession(QThread):
                         bytes([SOCP_WRITE_CGM_COMMUNICATION_INTERVAL, FAST_COMM_INTERVAL_SECONDS]),
                     )
 
+            if link_lost.is_set():
+                # Dropped while subscribing: reporting "connected, could not
+                # subscribe (Not connected)" would just be a confusing way of
+                # saying the connection never really came up.
+                raise ConnectionError("link dropped during setup — try connecting again")
             self.connected.emit(self._address, subscribed_count, notify_count, last_error)
 
-            while not self.isInterruptionRequested():
+            while not self.isInterruptionRequested() and not link_lost.is_set():
                 await self._check_silence(client, measurement_char)
                 try:
                     char_key, payload = await asyncio.wait_for(self._write_queue.get(), timeout=0.2)
@@ -701,7 +716,7 @@ class BleSession(QThread):
     # (see models/board_layout.py + PROTOCOL_SPEC.md §7's "Sensor select").
     # ------------------------------------------------------------------
 
-    def send_board_layout(self, slots: list[dict]) -> None:
+    def send_board_layout(self, slots: list[dict], *, run: bool = True) -> None:
         """Thread-safe: apply a whole multi-slot layout to this session's board.
 
         Each entry in *slots* is
@@ -709,12 +724,13 @@ class BleSession(QThread):
         For every slot the sensor-select cursor is set first, then the ordered
         per-sensor writes are sent (paced so the board's config queue keeps up),
         then any CSV tracks. Progress arrives on board_layout_progress; the
-        outcome on board_layout_finished. The board is left RUNNING.
+        outcome on board_layout_finished. The board is left RUNNING unless
+        *run* is False (the caller starts the run itself, once every slot is in).
         """
         if self._loop is None:
             self.board_layout_finished.emit(self._address, False, "not connected")
             return
-        asyncio.run_coroutine_threadsafe(self._do_board_layout(slots), self._loop)
+        asyncio.run_coroutine_threadsafe(self._do_board_layout(slots, run), self._loop)
 
     async def _layout_write(self, characteristic, payload: bytes) -> None:
         """One paced Board-Layout write, retried on a transient board-side
@@ -731,7 +747,7 @@ class BleSession(QThread):
                     raise
                 await asyncio.sleep(0.3 * (attempt + 1))
 
-    async def _do_board_layout(self, slots: list[dict]) -> None:
+    async def _do_board_layout(self, slots: list[dict], run: bool = True) -> None:
         sel = self._config_characteristics.get("sensor_select")
         run_state = self._config_characteristics.get("run_state")
         if sel is None or self._client is None:
@@ -755,7 +771,7 @@ class BleSession(QThread):
                     await self._upload_csv_sets(csv["uploads"])
                 self.board_layout_progress.emit(self._address, done + 1, total)
 
-            if run_state is not None:
+            if run and run_state is not None:
                 await self._layout_write(
                     run_state, protocol.encode_run_state(protocol.RUN_STATE_RUNNING)
                 )

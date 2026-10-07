@@ -39,15 +39,10 @@ os.chdir(_ROOT)
 import userdata_guard
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtWidgets import QApplication
 
 import gui.csv_analysis_window as cav
 import gui.main_window as mw
-from gui.instant_event_dialog import (
-    ExerciseInstantDialog,
-    FoodInstantDialog,
-    PisaInstantDialog,
-)
 from models import app_settings, cambridge, deichmann
 from models.types import ModelId, PersonProfile
 from services.ble_session import BleSession
@@ -114,19 +109,26 @@ def connect_board(w, addr: str, timeout_ms: int = 45000):
 
 
 def select_first_tree_user(w) -> bool:
-    if not wait_until(lambda: w.tree.topLevelItemCount() > 0, 20000, "first CGM message"):
+    if not wait_until(lambda: bool(w.tabs.tab_keys()), 20000, "first CGM message"):
         return False
-    w.tree.setCurrentItem(w.tree.topLevelItem(0))
+    w.tabs.select(w.tabs.tab_keys()[0])
     pump(200)
     return True
 
 
 def graph_ok(w, min_points: int = 3) -> tuple[bool, str]:
-    ys = [v for v in (w._graph_y + w._expected_y) if v == v]
+    ys = [
+        v
+        for v in (
+            w.sensors.current_page().graph.buf.graph_y
+            + w.sensors.current_page().graph.buf.expected_y
+        )
+        if v == v
+    ]
     n = len(ys)
     spread = (max(ys) - min(ys)) if ys else 0.0
     plausible = all(20.0 <= v <= 500.0 for v in ys) if ys else False
-    mean_lbl = w._stat_value_labels["mean"].text()
+    mean_lbl = w.sensors.current_page().stats.labels["mean"].text()
     stats_ok = mean_lbl not in ("—", "")
     ok = n >= min_points and plausible and stats_ok
     return ok, f"points={n} spread={spread:.1f} mean={mean_lbl} plausible={plausible}"
@@ -146,7 +148,7 @@ def scenario_A_csv_on_board(w, board_addr):
 
     # CSV Analysis: open window, load CSV, slide, assign to a CSV patient
     csv_person = PersonProfile(name="CSV Test", model_id=ModelId.CAMBRIDGE)
-    w._person_profiles.append(csv_person)
+    w.state.person_profiles.append(csv_person)
     w._on_profiles_changed()
 
     QTest.mouseClick(w.csv_analysis_btn, Qt.MouseButton.LeftButton)
@@ -164,8 +166,8 @@ def scenario_A_csv_on_board(w, board_addr):
     print(f"    assigned: {cw._assign_status.text()}")
 
     # Data source + Send CSV now live in the Person Configuration window (issue 16).
-    w._open_person_config()
-    pcw = w._person_config_window
+    w.windows.open("person")
+    pcw = w.windows.get("person")
     pump(200)
     row = next(i for i in range(pcw._list.count()) if pcw._list.item(i).text() == "CSV Test")
     pcw._list.setCurrentRow(row)
@@ -189,18 +191,26 @@ def scenario_A_csv_on_board(w, board_addr):
         return
 
     # Fast mode (speed multiplier) + Start, then watch the stream
-    cfg.speed_slider.setValue(cfg._speed_to_slider(60))  # x60 speed multiplier
+    cfg.speed_combo.setCurrentIndex(cfg.speed_combo.findData(60.0))  # x60 speed
     pump(200)
-    QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
     pump(500)
     select_first_tree_user(w)
-    wait_until(lambda: len(w._graph_y) >= 4, 40000, ">=4 CGM points from board")
+    wait_until(
+        lambda: len(w.sensors.current_page().graph.buf.graph_y) >= 4,
+        90000,  # Start first writes the profiles to the board
+        ">=4 CGM points from board",
+    )
     ok, note = graph_ok(w, min_points=4)
     # CSV values must not be the model's flat 100 line
-    flat = len({round(v) for v in w._graph_y}) <= 1 if w._graph_y else True
+    flat = (
+        len({round(v) for v in w.sensors.current_page().graph.buf.graph_y}) <= 1
+        if w.sensors.current_page().graph.buf.graph_y
+        else True
+    )
     ok = ok and not flat
     shot(w, "A_csv_on_board")
-    QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
     pump(300)
     record("A CSV-on-board", ok, note + f" flat={flat}")
 
@@ -215,7 +225,7 @@ def scenario_B_model_on_board(w, board_addr):
     person = PersonProfile(
         name="Model Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
     )
-    w._person_profiles.append(person)
+    w.state.person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
     idx = next(
@@ -235,21 +245,27 @@ def scenario_B_model_on_board(w, board_addr):
     restart_board(sess)
     pump(1000)
 
-    cfg.speed_slider.setValue(cfg._speed_to_slider(60))  # x60 speed multiplier
+    cfg.speed_combo.setCurrentIndex(cfg.speed_combo.findData(60.0))  # x60 speed
     pump(200)
-    QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
     pump(500)
     select_first_tree_user(w)
     wait_until(
-        lambda: len(w._graph_y) >= 3 and len(w._expected_y) >= 5,
+        lambda: (
+            len(w.sensors.current_page().graph.buf.graph_y) >= 3
+            and len(w.sensors.current_page().graph.buf.expected_y) >= 5
+        ),
         40000,
         "received + expected points",
     )
-    recv_pts, exp_pts = len(w._graph_y), len(w._expected_y)  # capture before Stop clears them
+    recv_pts, exp_pts = (
+        len(w.sensors.current_page().graph.buf.graph_y),
+        len(w.sensors.current_page().graph.buf.expected_y),
+    )  # capture before Stop clears them
     ok, note = graph_ok(w, min_points=3)
     ok = ok and exp_pts >= 5  # the local "expected" model line is running in parallel
     shot(w, "B_model_on_board")
-    QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
     pump(300)
     # a default Cambridge patient with no meals sits at its steady state, so a
     # near-flat line here is the *correct* model output, not a stuck one.
@@ -262,7 +278,7 @@ def scenario_B_model_on_board(w, board_addr):
 
 def _model_only_run(w, person, name, do_after, checks, tag):
     """Shared Model-Only driver for the food/exercise scenarios."""
-    w._person_profiles.append(person)
+    w.state.person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
     idx = next(
@@ -273,16 +289,22 @@ def _model_only_run(w, person, name, do_after, checks, tag):
     cfg.person_combo.setCurrentIndex(idx)
     pump(200)
     cfg.model_only_check.setChecked(True)
-    cfg.speed_slider.setValue(cfg._speed_to_slider(60))  # x60 speed multiplier
+    cfg.speed_combo.setCurrentIndex(cfg.speed_combo.findData(60.0))  # x60 speed
     pump(200)
-    QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
-    wait_until(lambda: len(w._graph_y) >= 5, 15000, "baseline model points")
-    base_glucose = list(w._graph_y)
+    QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
+    wait_until(
+        lambda: len(w.sensors.current_page().graph.buf.graph_y) >= 5, 15000, "baseline model points"
+    )
+    base_glucose = list(w.sensors.current_page().graph.buf.graph_y)
     do_after(w)
-    wait_until(lambda: len(w._graph_y) >= len(base_glucose) + 12, 20000, "post-event points")
+    wait_until(
+        lambda: len(w.sensors.current_page().graph.buf.graph_y) >= len(base_glucose) + 12,
+        20000,
+        "post-event points",
+    )
     ok, note = checks(w, base_glucose)
     shot(w, tag)
-    QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
     pump(300)
     cfg.model_only_check.setChecked(False)
     return ok, note
@@ -292,20 +314,23 @@ def scenario_C_model_food(w):
     print("\n[C] model + insert food (Model Only, Cambridge)")
 
     def insert_food(w):
-        FoodInstantDialog.exec = lambda self: (
-            self._carbs_spin.setValue(80.0),
-            self._duration_spin.setValue(10),
-            QDialog.DialogCode.Accepted,
-        )[-1]
-        w._open_insert_food()
+        w.sensors.current_page().commands.send_food(80.0, 10)
         print("    inserted 80 g / 10 min")
 
     def checks(w, base):
-        carbs_peak = max(w._food_ex_carbs_y) if w._food_ex_carbs_y else 0.0
-        rise = (max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
-        mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
+        carbs_peak = (
+            max(w.sensors.current_page().graph.buf.food_ex_carbs_y)
+            if w.sensors.current_page().graph.buf.food_ex_carbs_y
+            else 0.0
+        )
+        rise = (
+            (max(w.sensors.current_page().graph.buf.graph_y) - max(base))
+            if (w.sensors.current_page().graph.buf.graph_y and base)
+            else 0.0
+        )
+        mean_ok = w.sensors.current_page().stats.labels["mean"].text() not in ("—", "")
         ok = carbs_peak > 0.0 and rise > 2.0 and mean_ok
-        mean_txt = w._stat_value_labels["mean"].text()
+        mean_txt = w.sensors.current_page().stats.labels["mean"].text()
         return (
             ok,
             f"carbs_peak={carbs_peak:.2f} glucose_rise={rise:.1f} mean={mean_txt}",
@@ -322,20 +347,23 @@ def scenario_D_model_exercise(w):
     print("\n[D] model + insert exercise (Model Only, Deichmann)")
 
     def insert_ex(w):
-        ExerciseInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(30),
-            self._intensity_spin.setValue(70.0),
-            QDialog.DialogCode.Accepted,
-        )[-1]
-        w._open_insert_exercise()
+        w.sensors.current_page().commands.send_exercise(30, 70.0)
         print("    inserted 30 min / 70 %")
 
     def checks(w, base):
-        ex_peak = max(w._food_ex_exercise_y) if w._food_ex_exercise_y else 0.0
-        moved = abs(max(w._graph_y) - max(base)) if (w._graph_y and base) else 0.0
-        mean_ok = w._stat_value_labels["mean"].text() not in ("—", "")
+        ex_peak = (
+            max(w.sensors.current_page().graph.buf.food_ex_exercise_y)
+            if w.sensors.current_page().graph.buf.food_ex_exercise_y
+            else 0.0
+        )
+        moved = (
+            abs(max(w.sensors.current_page().graph.buf.graph_y) - max(base))
+            if (w.sensors.current_page().graph.buf.graph_y and base)
+            else 0.0
+        )
+        mean_ok = w.sensors.current_page().stats.labels["mean"].text() not in ("—", "")
         ok = ex_peak > 0.0 and mean_ok
-        mean_txt = w._stat_value_labels["mean"].text()
+        mean_txt = w.sensors.current_page().stats.labels["mean"].text()
         return (
             ok,
             f"exercise_peak={ex_peak:.1f} glucose_delta={moved:.1f} mean={mean_txt}",
@@ -352,21 +380,16 @@ def scenario_E_model_pisa(w):
     print("\n[E] model + insert PISA (Model Only, Cambridge)")
 
     def insert_pisa(w):
-        PisaInstantDialog.exec = lambda self: (
-            self._duration_spin.setValue(15),
-            self._depth_spin.setValue(30.0),
-            QDialog.DialogCode.Accepted,
-        )[-1]
-        w._open_insert_pisa()
+        w.sensors.current_page().commands.send_pisa(15, 30.0)
         print("    inserted PISA 30 % / 15 min")
 
     def checks(w, base):
         base_lvl = sum(base) / len(base) if base else 0.0
-        post = w._graph_y[len(base) :]
+        post = w.sensors.current_page().graph.buf.graph_y[len(base) :]
         trough = min(post) if post else base_lvl
         recovered = post[-1] if post else base_lvl
-        spans = len(w._pisa_spans)
-        patches = len(w._pisa_patches)
+        spans = len(w.sensors.current_page().graph.buf.pisa_spans)
+        patches = len(w.sensors.current_page().graph.pisa_patches)
         ok = (
             (trough < base_lvl - 8.0) and (recovered > trough + 3.0) and spans == 1 and patches == 1
         )
@@ -387,7 +410,7 @@ def scenario_F_view_window(w):
     person = PersonProfile(
         name="Window Test", model_id=ModelId.CAMBRIDGE, params=cambridge.default_params()
     )
-    w._person_profiles.append(person)
+    w.state.person_profiles.append(person)
     w._on_profiles_changed()
     cfg = w._configuration_window
     idx = next(
@@ -397,32 +420,45 @@ def scenario_F_view_window(w):
     )
     cfg.person_combo.setCurrentIndex(idx)
     cfg.model_only_check.setChecked(True)
-    cfg.speed_slider.setValue(cfg._speed_to_slider(60))
+    cfg.speed_combo.setCurrentIndex(cfg.speed_combo.findData(60.0))
     pump(200)
-    QTest.mouseClick(w._start_pause_btn, Qt.MouseButton.LeftButton)
-    wait_until(lambda: len(w._graph_y) >= 14, 20000, ">=14 points")
-    total_pts = len(w._graph_y)
-    full_span = w._visible_xlim[1] - w._visible_xlim[0]
+    QTest.mouseClick(w._run.start_pause_btn, Qt.MouseButton.LeftButton)
+    wait_until(lambda: len(w.sensors.current_page().graph.buf.graph_y) >= 14, 20000, ">=14 points")
+    total_pts = len(w.sensors.current_page().graph.buf.graph_y)
+    full_span = (
+        w.sensors.current_page().graph.visible_xlim[1]
+        - w.sensors.current_page().graph.visible_xlim[0]
+    )
 
     # shrink the window to 5 s of wall time
     app_settings.save_pref("view_window_s", 5)
     w._on_view_window_changed()
     pump(200)
-    win_span = w._visible_xlim[1] - w._visible_xlim[0]
-    visible_pts = len(w._in_view(w._graph_x, w._graph_y))
+    win_span = (
+        w.sensors.current_page().graph.visible_xlim[1]
+        - w.sensors.current_page().graph.visible_xlim[0]
+    )
+    visible_pts = len(
+        w.sensors.current_page().graph.in_view(
+            w.sensors.current_page().graph.buf.graph_x, w.sensors.current_page().graph.buf.graph_y
+        )
+    )
 
     # back to entire run
     app_settings.save_pref("view_window_s", 0)
     w._on_view_window_changed()
     pump(200)
-    restored_span = w._visible_xlim[1] - w._visible_xlim[0]
+    restored_span = (
+        w.sensors.current_page().graph.visible_xlim[1]
+        - w.sensors.current_page().graph.visible_xlim[0]
+    )
 
     shot(w, "F_view_window")
-    QTest.mouseClick(w._stop_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(w._run.stop_btn, Qt.MouseButton.LeftButton)
     pump(200)
     cfg.model_only_check.setChecked(False)
     app_settings.save_pref("view_window_s", 3600)  # restore default
-    w._view_window_s = 3600.0
+    w.state.view_window_s = 3600.0
 
     ok = win_span <= 6.0 and visible_pts < total_pts and restored_span >= full_span - 1.0
     record(
@@ -481,8 +517,8 @@ def main() -> int:
         # the assign/config/speed/window steps persist to data/ — restore it
         userdata_guard.restore(saved_userdata)
         try:
-            if w._bluetooth_window is not None:
-                w._bluetooth_window.stop_all_sessions()
+            if w.windows.bluetooth is not None:
+                w.windows.bluetooth.stop_all_sessions()
         except Exception:
             pass
 

@@ -39,6 +39,10 @@ class BoardLink:
         """
         return [s for s in self.sessions().values() if s.is_live]
 
+    def live_slots(self) -> set[int]:
+        """The slots the live sessions stand for (see board_layout.live_slots)."""
+        return board_layout.live_slots(self.sessions().values())
+
     def broadcast(self, char_key: str, payload: bytes) -> int:
         """Queue *payload* on *char_key* for every live session.
 

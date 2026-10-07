@@ -175,9 +175,9 @@ scenarios and asserts on the live graph/metrics state:
 |---|---|
 | **A** CSV on board | connect board → CSV Analysis (open + slider + assign) → Send CSV to Board → Fast mode → Start → received line carries the CSV rows (not the flat model line), stats populate |
 | **B** model on board | model patient → Fast → Start → board streams + local "expected" model line runs in parallel |
-| **C** model + food | Model Only, Cambridge → x60 → Start → Insert Food Now → carbs trapezoid on the food/exercise graph, glucose excursion, stats update |
-| **D** model + exercise | Model Only, Deichmann → x60 → Start → Insert Exercise Now → exercise step on the graph, glucose drop |
-| **E** model + PISA | Model Only, Cambridge → x60 → Start → Insert PISA Now → glucose dips to ≈ level·(1−depth) at the midpoint and recovers; the interval is shaded (`_pisa_spans` / `_pisa_patches`) |
+| **C** model + food | Model Only, Cambridge → x60 → Start → Food command (Commands panel) → carbs trapezoid on the food/exercise graph, glucose excursion, stats update |
+| **D** model + exercise | Model Only, Deichmann → x60 → Start → Exercise command → exercise step on the graph, glucose drop |
+| **E** model + PISA | Model Only, Cambridge → x60 → Start → PISA command → glucose dips to ≈ level·(1−depth) at the midpoint and recovers; the interval is shaded (the page's `graph.buf.pisa_spans` / `graph.pisa_patches`) |
 | **F** rolling window | run, shrink the View-window to a few seconds → only the recent slice is shown (`_visible_xlim` + windowed metrics) → "Entire run" restores the full span |
 
 All pass; screenshots land in `scratchpad_ui/` (gitignored). The speed

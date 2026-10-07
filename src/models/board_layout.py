@@ -93,6 +93,13 @@ def slot_of(advertised_name: str) -> int | None:
     return slot if 0 <= slot < MAX_SLOTS else None
 
 
+def live_slots(sessions) -> set[int]:
+    """The slots behind the live *sessions*: each numbered identity is its own slot, and
+    a lone unnumbered (single-sensor) board is slot 0."""
+    live = [s for s in sessions if s.is_live]
+    return {s.slot_index for s in live if s.slot_index is not None} or ({0} if live else set())
+
+
 def person_for(advertised_name: str, layout: BoardLayout | None = None) -> str | None:
     """The patient name assigned to the slot *advertised_name* represents, or
     None if that slot is unassigned / the name isn't a numbered identity.

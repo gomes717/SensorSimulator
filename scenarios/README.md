@@ -20,7 +20,7 @@ Timed-action scripts for the **Scenario** window (toolbar → Scenario). Load a
 | `speed` | `{ "multiplier": 1..1000 }` | sets the simulation speed slider |
 | `run_state` | `{ "state": "start" \| "stop" \| "pause" \| "resume" }` | drives Start/Stop/Pause |
 | `person` | `{ "person": "<profile name>" }` | selects that patient (no-op if not found) |
-| `data_source` | `{ "person": "<profile name>" }` | selects the patient + pushes its model/CSV source to the board |
+| `data_source` | `{ "person": "<profile name>" }` | selects the patient (it reaches the board at the next Start) |
 | `comm_profile` | `{ "profile": "sig" \| "dexcom" }` | switches the board's BLE profile (reconnect after) |
 | `insert_food` | `{ "carbs_g": <g>, "duration_min": <min> }` | one-shot carb bolus (no reset) |
 | `insert_exercise` | `{ "duration_min": <min>, "intensity_pct": 0..100 }` | one-shot exercise bout |

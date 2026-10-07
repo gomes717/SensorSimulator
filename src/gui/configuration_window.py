@@ -11,9 +11,6 @@ Configuration window (issue 16), next to the model it replaces.
 
 from __future__ import annotations
 
-import math
-
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,13 +21,12 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from gui.config_controller import ConfigController
-from gui.widgets import NoWheelDoubleSpinBox, NoWheelSpinBox
+from gui.widgets import NoWheelDoubleSpinBox
 from models import app_settings
 
 _THRESHOLD_ROWS = (
@@ -135,28 +131,15 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         box = QVBoxLayout(group)
 
         speed_row = QHBoxLayout()
-        speed_row.addWidget(QLabel("Speed:"))
-        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self.speed_slider.setRange(0, 1000)
-        self.speed_slider.setValue(self._speed_to_slider(self._c.speed_mult))
-        self.speed_slider.valueChanged.connect(self._on_speed_slider)
-        speed_row.addWidget(self.speed_slider, 1)
-        # Type an exact multiplier here — the log-scaled slider alone makes
-        # precise values (e.g. x30) fiddly. keyboardTracking off: commit on
-        # Enter / focus-out, not on every digit.
-        self.speed_spin = NoWheelSpinBox()
-        self.speed_spin.setRange(1, 1000)
-        self.speed_spin.setPrefix("x")
-        self.speed_spin.setKeyboardTracking(False)
-        self.speed_spin.setValue(int(self._c.speed_mult))
-        self.speed_spin.setMinimumWidth(72)
-        self.speed_spin.valueChanged.connect(self._on_speed_spin)
-        speed_row.addWidget(self.speed_spin)
+        speed_row.addWidget(QLabel("Simulated time per second:"))
+        # Exactly two speeds: real time, or one simulated minute per real second.
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItem("1 second (real time, x1)", 1.0)
+        self.speed_combo.addItem("1 minute (x60)", 60.0)
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_chosen)
+        speed_row.addWidget(self.speed_combo, 1)
         box.addLayout(speed_row)
-        hint = QLabel("x1 = real time · x60 = 1 s per sim-minute · up to x1000")
-        hint.setEnabled(False)
-        hint.setWordWrap(True)
-        box.addWidget(hint)
+        self._show_speed(self._c.speed_mult)
 
         comm_row = QHBoxLayout()
         comm_row.addWidget(QLabel("Communication type:"))
@@ -181,37 +164,33 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         box.addWidget(self.cgms_only_check)
         return group
 
-    # Log map so the 0..1000 slider gives fine control at low speeds:
-    # 0 -> x1, 333 -> x10, 667 -> x100, 1000 -> x1000.
-    @staticmethod
-    def _slider_to_speed(s: int) -> int:
-        return max(1, min(1000, round(10 ** (3 * s / 1000))))
+    def _on_speed_chosen(self, _index: int) -> None:
+        if self._syncing:
+            return
+        self._drop_custom_speed()
+        self._c.speed_change_requested.emit(float(self.speed_combo.currentData()))
 
-    @staticmethod
-    def _speed_to_slider(mult: float) -> int:
-        mult = max(1.0, min(1000.0, float(mult)))
-        return max(0, min(1000, round(1000 * math.log10(mult) / 3)))
-
-    def _on_speed_slider(self, s: int) -> None:
-        mult = self._slider_to_speed(s)
-        self.speed_spin.blockSignals(True)
-        self.speed_spin.setValue(mult)
-        self.speed_spin.blockSignals(False)
-        if not self._syncing:
-            self._c.speed_change_requested.emit(float(mult))
-
-    def _on_speed_spin(self, mult: int) -> None:
-        self.speed_slider.blockSignals(True)
-        self.speed_slider.setValue(self._speed_to_slider(mult))
-        self.speed_slider.blockSignals(False)
-        if not self._syncing:
-            self._c.speed_change_requested.emit(float(mult))
+    def _drop_custom_speed(self) -> None:
+        """Remove the transient "xN" entry once a real choice is made."""
+        custom = self.speed_combo.findData("custom")
+        if custom >= 0 and self.speed_combo.currentIndex() != custom:
+            self.speed_combo.removeItem(custom)
 
     def _show_speed(self, mult: float) -> None:
-        """Move the slider + spin to *mult* without emitting a change back."""
+        """Show *mult* without emitting a change back. A multiplier that is neither
+        choice (a scenario step, an older saved setting) appears as a read-only
+        "xN" entry until the user picks one of the two."""
         self._syncing = True
-        self.speed_slider.setValue(self._speed_to_slider(mult))
-        self.speed_spin.setValue(int(max(1.0, min(1000.0, mult))))
+        index = self.speed_combo.findData(float(mult))
+        if index < 0:
+            custom = self.speed_combo.findData("custom")
+            label = f"x{mult:g} (set elsewhere)"
+            if custom < 0:
+                self.speed_combo.addItem(label, "custom")
+            else:
+                self.speed_combo.setItemText(custom, label)
+            index = self.speed_combo.findData("custom")
+        self.speed_combo.setCurrentIndex(index)
         self._syncing = False
 
     def _on_comm_profile_changed(self, _index: int) -> None:
@@ -245,8 +224,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
             self.food_btn,
             self.exercise_btn,
             self.sensor_configure_btn,
-            self.speed_slider,
-            self.speed_spin,
+            self.speed_combo,
             self.model_only_check,
         ):
             widget.setEnabled(not locked)

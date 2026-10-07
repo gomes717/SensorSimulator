@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -17,7 +18,7 @@ from PyQt6.QtWidgets import (
 from core.ble_message_log import BleMessageLog
 from models import board_layout
 from services.ble_session import BleSession
-from services.bluetooth_scanner import BluetoothScanThread
+from services.bluetooth_scanner import UNKNOWN_DEVICE_NAME, BluetoothScanThread
 
 
 class BluetoothWindow(QWidget):
@@ -33,6 +34,10 @@ class BluetoothWindow(QWidget):
     and are only stopped by selecting a connected device and pressing
     Disconnect, or on app exit (see :meth:`stop_all_sessions`).
     """
+
+    # A session finished connecting: (address, the BleSession). The main window
+    # opens that sensor's tab from this, not from its first glucose reading.
+    session_connected = pyqtSignal(str, object)
 
     def __init__(self, ble_log: BleMessageLog) -> None:
         """Build the device table and controls, then kick off the first scan."""
@@ -125,6 +130,10 @@ class BluetoothWindow(QWidget):
         """
         if address in self._addresses:
             return
+        if name == UNKNOWN_DEVICE_NAME and address in self._advertised:
+            # A rescan that missed this device's name must not forget the one we
+            # already learned: the numbered name is what picks the sensor slot.
+            name = self._advertised[address]
         self._advertised[address] = name
         label = board_layout.device_label(name)
         self._addresses.append(address)
@@ -182,10 +191,13 @@ class BluetoothWindow(QWidget):
         session.connected.connect(self._on_connected)
         session.connect_failed.connect(self._on_connect_failed)
         session.link_silent.connect(self._on_link_silent)
-        session.disconnected.connect(self._on_disconnected)
-        session.disconnected.connect(self._ble_log.note_disconnected)
+        session.disconnected.connect(
+            lambda addr, mine=session: self._on_session_disconnected(addr, mine)
+        )
         session.new_message.connect(self._ble_log.add_message)
-        session.finished.connect(lambda addr=address: self._on_session_finished(addr))
+        session.finished.connect(
+            lambda addr=address, ended=session: self._on_session_finished(addr, ended)
+        )
         self._sessions[address] = session
         session.start()
         self._update_button_states()
@@ -211,6 +223,9 @@ class BluetoothWindow(QWidget):
     ) -> None:
         """Report a successful connection and whether the device can push any data at all."""
         self._set_status_cell(address, "Connected")
+        session = self._sessions.get(address)
+        if session is not None:
+            self.session_connected.emit(address, session)
         if notify_total == 0:
             self._status.setText(
                 f"Connected to {address}, but it exposes no notify/indicate characteristics — "
@@ -262,25 +277,51 @@ class BluetoothWindow(QWidget):
             self._set_status_cell(address, "Connected")
             self._status.setText(f"{label}: measurements are flowing again.")
 
+    def _on_session_disconnected(self, address: str, ended: BleSession) -> None:
+        """Handle a session ending — unless a newer one already replaced it.
+
+        A reconnect opens the new session before the old one finishes closing, so
+        its late ``disconnected`` must not blank the new row's status or badge the
+        live sensor offline."""
+        if self._sessions.get(address, ended) is not ended:
+            return
+        self._on_disconnected(address)
+        self._ble_log.note_disconnected(address)
+
     def _on_disconnected(self, address: str) -> None:
         """Report that a previously connected device disconnected."""
         self._set_status_cell(address, "")
         self._status.setText(f"Disconnected from {address}.")
 
-    def _on_session_finished(self, address: str) -> None:
-        """Drop the finished session and refresh button state once its thread has stopped."""
+    def _on_session_finished(self, address: str, ended: BleSession | None = None) -> None:
+        """Drop the finished session and refresh button state once its thread has stopped.
+
+        *ended* is the session whose thread just stopped. A Disconnect (or the
+        automatic reconnect) followed by a new Connect to the same address puts
+        a NEW session under that key before the old thread's ``finished`` arrives;
+        cleaning up by address alone then wiped the new session's entry, name and
+        status — the row went back to "Connect", and the next Connect re-opened
+        it under the bare MAC instead of the advertised name."""
+        current = self._sessions.get(address)
+        if ended is not None and current is not None and current is not ended:
+            return
+        # _advertised is deliberately kept: it is the listed row's name, not
+        # session state. Dropping it here (a failed or ended connection) made the
+        # next Connect fall back to the bare MAC, which has no sensor slot, so the
+        # session streamed every sensor's data into one row named after the MAC.
         self._sessions.pop(address, None)
         self._names.pop(address, None)
-        self._advertised.pop(address, None)
         self._statuses.pop(address, None)
         self._update_button_states()
 
     def _disconnect_clicked(self) -> None:
         """Disconnect the BLE session for the selected device, if it is connected."""
         row = self._table.currentRow()
-        if row < 0:
-            return
-        address = self._addresses[row]
+        if row >= 0:
+            self.disconnect_device(self._addresses[row])
+
+    def disconnect_device(self, address: str) -> None:
+        """Disconnect the session for *address*, if there is one (also the tab's close button)."""
         if address not in self._sessions:
             return
         self._status.setText(f"Disconnecting from {address}…")

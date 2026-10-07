@@ -6,7 +6,6 @@ once, the real MainWindow. No board, no QThread timing — deterministic.
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -81,21 +80,16 @@ def test_app_csv_mode_hides_the_food_graph_and_runs_no_model():
     try:
         csv_person = _csv_profile(_DEXCOM_CSVS[0])
 
-        w._model_only = True
-        w._active_person = csv_person
-        assert w._engine_slots() == {0: csv_person}
+        w.state.model_only = True
+        w.state.active_person = csv_person
+        assert w.state.engine_slots() == {0: csv_person}
         assert ModelStepper(csv_person).mode == "csv"
-        w._apply_csv_mode_view()
-        assert w._graph.fe_canvas.isHidden()
+        w.sensors.apply_csv_mode_view()
+        assert w.sensors.current_page().graph.fe_canvas.isHidden()
 
         # ...and it flips back for a normal model person.
-        w._active_person = PersonProfile(name="m", model_id=ModelId.CAMBRIDGE)
-        w._apply_csv_mode_view()
-        assert not w._graph.fe_canvas.isHidden()
+        w.state.active_person = PersonProfile(name="m", model_id=ModelId.CAMBRIDGE)
+        w.sensors.apply_csv_mode_view()
+        assert not w.sensors.current_page().graph.fe_canvas.isHidden()
     finally:
         w.close()
-        subprocess.run(
-            ["git", "checkout", "--", "data/profiles.json", "data/settings.json"],
-            cwd=str(_ROOT),
-            check=False,
-        )

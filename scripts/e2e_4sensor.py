@@ -251,7 +251,7 @@ class FourCtx(Ctx):
         if sess is None:
             return
         self.sessions.pop(sess._address, None)
-        bt = self.w._bluetooth_window
+        bt = self.w.windows.bluetooth
         if bt is not None:
             bt._sessions.pop(sess._address, None)
         sess.stop()
@@ -719,7 +719,8 @@ def f8_alerts(ctx: FourCtx):
         name = NAMES[ctx.CFG_SLOT]  # the cfg identity's own slot (~100-107 mg/dL)
 
         def _row():
-            return next((it for uid, it in ctx.w._user_items.items() if name in uid), None)
+            keys = ctx.w.tabs.tab_keys()
+            return next((ctx.w.tabs.header(uid) for uid in keys if name in uid), None)
 
         def _fresh_msg(n0: int, timeout: float, desc: str) -> None:
             c.wait_until(
@@ -732,9 +733,9 @@ def f8_alerts(ctx: FourCtx):
             )
 
         _fresh_msg(len(ctx.w._ble_log.get_messages()), 40, "a CGM measurement on the cfg identity")
-        c.assert_(_row() is not None, "the sensor has a tree row")
+        c.assert_(_row() is not None, "the sensor has a tab")
 
-        saved = dict(ctx.w._thresholds)
+        saved = dict(ctx.w.state.thresholds)
         try:
             # _category(): default thresholds tbr2=54 tbr1=70 tar1=180 tar2=250
             c.assert_(
@@ -747,7 +748,7 @@ def f8_alerts(ctx: FourCtx):
             )
 
             # Phase 1: raise the LOW line above the reading -> LOW badge.
-            ctx.w._thresholds = {**saved, "tbr1_below": 130.0}
+            ctx.w.state.thresholds = {**saved, "tbr1_below": 130.0}
             pump(200)
             _fresh_msg(len(ctx.w._ble_log.get_messages()), 30, "a fresh measurement to re-badge")
             pump(400)
@@ -759,7 +760,7 @@ def f8_alerts(ctx: FourCtx):
             )
 
             # Phase 2: real 70 line -> the reading is back in range -> no badge.
-            ctx.w._thresholds = dict(saved)
+            ctx.w.state.thresholds = dict(saved)
             pump(200)
             _fresh_msg(
                 len(ctx.w._ble_log.get_messages()), 30, "a fresh measurement to clear the badge"
@@ -772,7 +773,7 @@ def f8_alerts(ctx: FourCtx):
                 _row().text(0),
             )
         finally:
-            ctx.w._thresholds = saved
+            ctx.w.state.thresholds = saved
 
 
 def f9_per_slot_isolation(ctx: FourCtx):
@@ -941,14 +942,14 @@ def f12_config_window_target_slot(ctx: FourCtx):
         ctx.wait_slot(1, lambda ln: ln["model"] == 1, 25, "slot 1 starts as UVA/Padova")
 
         # --- Person window → write a Deichmann person to slot 2 only ---
-        ctx.w._person_profiles.append(
+        ctx.w.state.person_profiles.append(
             PersonProfile("F12-Deichmann", ModelId.DEICHMANN, deichmann.default_params())
         )
         ctx.w._on_profiles_changed()
-        ctx.w._open_person_config()
-        pcw = ctx.w._person_config_window
+        ctx.w.windows.open("person")
+        pcw = ctx.w.windows.get("person")
         pcw._reload_list()
-        pcw._list.setCurrentRow(len(ctx.w._person_profiles) - 1)
+        pcw._list.setCurrentRow(len(ctx.w.state.person_profiles) - 1)
         _select_target(pcw._target_bar, addr, 2)
         c.step("Person window: Target slot 2, Send to Board (Deichmann)")
         pcw._send_to_board()
@@ -958,7 +959,7 @@ def f12_config_window_target_slot(ctx: FourCtx):
 
         # --- Person window → Read from Board, slot 1, expect UVA/Padova ---
         # _on_config_read writes the decoded model onto the selected profile.
-        prof = ctx.w._person_profiles[-1]
+        prof = ctx.w.state.person_profiles[-1]
         prof.model_id = ModelId.CAMBRIDGE  # so a stale value can't pass the check
         _select_target(pcw._target_bar, addr, 1)
         c.step("Person window: Target slot 1, Read from Board")
@@ -976,14 +977,14 @@ def f12_config_window_target_slot(ctx: FourCtx):
         )
 
         # --- Sensor window → write a Breton sensor to slot 0 only ---
-        ctx.w._sensor_profiles.append(
+        ctx.w.state.sensor_profiles.append(
             SensorProfile("F12-Breton", SensorId.BRETON, sensor_defaults.breton_default_params())
         )
         ctx.w._on_profiles_changed()
-        ctx.w._open_sensor_config()
-        scw = ctx.w._sensor_config_window
+        ctx.w.windows.open("sensor")
+        scw = ctx.w.windows.get("sensor")
         scw._reload_list()
-        scw._list.setCurrentRow(len(ctx.w._sensor_profiles) - 1)
+        scw._list.setCurrentRow(len(ctx.w.state.sensor_profiles) - 1)
         _select_target(scw._target_bar, addr, 0)
         c.step("Sensor window: Target slot 0, Send to Board (Breton)")
         scw._send_to_board()
@@ -995,40 +996,31 @@ def f13_instant_dialog_target_slot(ctx: FourCtx):
     with Case(ctx, "F13-01", "instant_dialog_target_slot", "F13") as c:
         if not ctx.serial_live():
             raise _Skip("no serial console")
-        from PyQt6.QtWidgets import QDialog
-
-        from gui.instant_event_dialog import FoodInstantDialog
-
         sess = ctx.cfg_session()
         _ensure_layout(ctx, c)
         ctx.set_speed_settle(sess, 60)
         ctx.wait_slot(1, lambda ln: ln["dt"] > 0.5, 15, "slot 1 ticking fast")
 
         c.assert_(
-            ctx.w._multi_slot_count() == 4, "app sees a multi-sensor board (sensor_select exposed)"
+            (4 if ctx.w._board.multi_slot() else 1) == 4,
+            "app sees a multi-sensor board (sensor_select exposed)",
         )
 
-        # Drive "Insert Food Now" like a user: dialog picks slot 1, 55 g / 40 min.
-        def fake_exec(self):
-            self._carbs_spin.setValue(55.0)
-            self._duration_spin.setValue(40)
-            self._slot_combo.setCurrentIndex(1)
-            return QDialog.DialogCode.Accepted
-
-        orig = FoodInstantDialog.exec
-        FoodInstantDialog.exec = fake_exec
-        try:
-            ctx.w._open_insert_food()
-        finally:
-            FoodInstantDialog.exec = orig
+        # Drive slot 1's own Commands panel like a user: 55 g / 40 min. The panel is
+        # blocked until a run is in progress, so Start one first.
+        if ctx.w._run.state != "running":
+            ctx.w._run.start()
+            # Start writes the app's profiles to the board first; the panel stays
+            # blocked until that push is done and the run has begun.
+            c.wait_until(lambda: ctx.w._run.state == "running", 120, "Start's config push done")
+        page = ctx.w.sensors.page_of_user(ctx.w.directory.slot_user_id(1))
+        page.commands.send_food(55.0, 40)
 
         hit = ctx.wait_slot(
-            1, lambda ln: ln["carbs"] > 0.05, 25, "slot 1 carbs > 0 after the dialog"
+            1, lambda ln: ln["carbs"] > 0.05, 25, "slot 1 carbs > 0 after the panel send"
         )
         c.measure("slot1_carbs", round(hit["carbs"], 3))
-        c.assert_(
-            ctx.slot_line(0)["carbs"] < 1e-6, "slot 0 carbs stayed 0 (dialog targeted slot 1)"
-        )
+        c.assert_(ctx.slot_line(0)["carbs"] < 1e-6, "slot 0 carbs stayed 0 (panel targeted slot 1)")
         c.assert_(ctx.slot_line(2)["carbs"] < 1e-6, "slot 2 carbs stayed 0")
         c.assert_(ctx.slot_line(3)["carbs"] < 1e-6, "slot 3 carbs stayed 0 (not a 4x broadcast)")
 
@@ -1045,7 +1037,7 @@ def f14_identity_shows_patient(ctx: FourCtx):
 
         # unassigned -> the raw advertised name everywhere
         bl.save(bl.BoardLayout())
-        ctx.w._board_layout = bl.load()
+        ctx.w.state.board_layout = bl.load()
         c.assert_(
             bl.device_label(adv) == adv, "unassigned slot -> raw sensor name", bl.device_label(adv)
         )
@@ -1062,7 +1054,7 @@ def f14_identity_shows_patient(ctx: FourCtx):
         layout = bl.BoardLayout()
         layout.slots[2].person = "F14-Patient"
         bl.save(layout)
-        ctx.w._board_layout = bl.load()
+        ctx.w.state.board_layout = bl.load()
         c.assert_(
             bl.device_label(adv) == "F14-Patient — Sensor 3",
             "assigned slot -> 'patient — Sensor N' label",
@@ -1109,11 +1101,11 @@ def f14_identity_shows_patient(ctx: FourCtx):
             "a CGM measurement tagged with the patient name",
         )
         pump(300)
-        c.measure("tree_rows", list(ctx.w._user_items))
+        c.measure("tab_keys", ctx.w.tabs.tab_keys())
         c.assert_(
-            any("F14-Patient" in uid for uid in ctx.w._user_items),
-            "the tree has a row under the patient name",
-            str(list(ctx.w._user_items)),
+            any("F14-Patient" in uid for uid in ctx.w.tabs.tab_keys()),
+            "a tab exists under the patient name",
+            str(ctx.w.tabs.tab_keys()),
         )
         ctx.drop_session(2)  # display test — don't hold the link for later cases
 
@@ -1191,7 +1183,7 @@ def f17_app_start_wakes_idle_board(ctx: FourCtx):
             )
 
         # 1. drive the board idle through the app, then confirm "connected, no data"
-        w._on_stop_clicked()  # broadcasts RUN_STATE_STOPPED to every session
+        w._run.stop()  # broadcasts RUN_STATE_STOPPED to every session
         QTest.qWait(4000)
         base = len(w._ble_log.get_messages())
         QTest.qWait(9000)
@@ -1206,18 +1198,18 @@ def f17_app_start_wakes_idle_board(ctx: FourCtx):
 
         # 2. press the app's Start — the real UI action — and expect data to flow
         base = len(w._ble_log.get_messages())
-        w._on_start_pause_clicked()  # stopped -> _start_run -> broadcast RUNNING
-        c.wait_until(lambda: glucose_since(base) >= 2, 45, "glucose resumes after the app's Start")
+        w._run.toggle()  # stopped -> config push -> broadcast RUNNING
+        c.wait_until(lambda: glucose_since(base) >= 2, 120, "glucose resumes after the app's Start")
         pump(400)
-        c.measure("tree_rows", list(w._user_items))
+        c.measure("tab_keys", w.tabs.tab_keys())
         c.assert_(
-            any(tag in uid for uid in w._user_items),
-            "a sensor row appears in the app tree once glucose flows",
-            str(list(w._user_items)),
+            any(tag in uid for uid in w.tabs.tab_keys()),
+            "a sensor tab appears once glucose flows",
+            str(w.tabs.tab_keys()),
         )
 
         # leave the board RUNNING (preflight's assumption) and the app stopped
-        w._on_stop_clicked()
+        w._run.stop()
         sess.queue_write("run_state", protocol.encode_run_state(protocol.RUN_STATE_RUNNING))
         pump(1500)
 
