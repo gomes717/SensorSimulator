@@ -86,6 +86,15 @@ CGM_TEST_PASSKEY = "123456"
 # payload) write) so reads stay ordered behind writes queued just before them.
 _READ_OP = object()
 
+# Windows' "the object was closed" (RO_E_CLOSED, shown as [WinError -2147483629]): a GATT object
+# this connection obtained is already disposed. It happens when a sensor is reconnected right after
+# it was closed — the new connection is handed the old, now-closed services from Windows' cache.
+_CLOSED_OBJECT = "-2147483629"
+
+
+class _StaleServices(ConnectionError):
+    """The connection came up with disposed GATT objects: discover again without the cache."""
+
 
 def _sfloat_to_float(raw: int) -> float:
     """Decode an IEEE-11073 16-bit SFLOAT, the format CGMS uses for glucose concentration."""
@@ -315,7 +324,11 @@ class BleSession(QThread):
     def run(self) -> None:
         """Connect, subscribe to notifications, and idle until interruption is requested."""
         try:
-            asyncio.run(self._session())
+            try:
+                asyncio.run(self._session())
+            except _StaleServices:
+                time.sleep(1.0)  # let Windows finish tearing the old connection down
+                asyncio.run(self._session(fresh_services=True))
         except asyncio.CancelledError:
             # The WinRT backend cancels an in-flight GATT operation when the
             # link drops mid service discovery (the congested 3rd/4th link
@@ -331,8 +344,11 @@ class BleSession(QThread):
         finally:
             self._link_up = False
 
-    async def _session(self) -> None:
-        """Pair (Windows only, best-effort), open the connection, subscribe, then wait."""
+    async def _session(self, fresh_services: bool = False) -> None:
+        """Pair (Windows only, best-effort), open the connection, subscribe, then wait.
+
+        *fresh_services* discovers the board's services again instead of using Windows' cached
+        copy (the retry after a connection came up with closed objects)."""
         self._loop = asyncio.get_running_loop()
         pairing_error = ""
         if sys.platform == "win32" and self._require_pairing:
@@ -358,7 +374,14 @@ class BleSession(QThread):
             self._link_up = False
             link_lost.set()
 
-        async with BleakClient(self._address, disconnected_callback=on_link_lost) as client:
+        # Anything a failed first attempt collected belongs to a connection that is gone.
+        self._instance_by_handle.clear()
+        self._subscribed_uuids.clear()
+        self._config_characteristics.clear()
+        options = {"winrt": {"use_cached_services": False}} if fresh_services else {}
+        async with BleakClient(
+            self._address, disconnected_callback=on_link_lost, **options
+        ) as client:
             if not client.is_connected:
                 raise ConnectionError("Device did not accept the connection")
             self._client = client
@@ -452,6 +475,10 @@ class BleSession(QThread):
                         self._subscribed_uuids.add(ch.uuid.lower())
                     except Exception as exc:  # pylint: disable=broad-except
                         last_error = str(exc)
+            if last_error and _CLOSED_OBJECT in last_error and len(subscribed) < len(want_chars):
+                if not fresh_services:
+                    raise _StaleServices("the cached services were already closed")
+                last_error = "Windows keeps handing out closed Bluetooth objects — reconnect"
             subscribed_count = len(subscribed)
             measurement_char = next(
                 (c for c in subscribed if c.uuid.lower() == CGM_MEASUREMENT_UUID), None

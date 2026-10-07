@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.avatar_picker import choose_avatar
-from gui.widgets import NoWheelDoubleSpinBox, wrapped_label
+from gui.widgets import NoWheelDoubleSpinBox, OptionalDoubleSpinBox, wrapped_label
 from models import user_edit
 from models.types import User
 
@@ -59,7 +59,7 @@ class ProfilePage(QWidget):
         self.name_edit.textEdited.connect(self._name_edited)
         form.addRow("Name:", self.name_edit)
 
-        self.height_spin = NoWheelDoubleSpinBox()
+        self.height_spin = OptionalDoubleSpinBox()
         self.height_spin.setRange(0.0, 250.0)
         self.height_spin.setDecimals(0)
         self.height_spin.setSuffix(" cm")

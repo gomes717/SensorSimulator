@@ -379,6 +379,33 @@ def test_a_push_the_board_rejects_does_not_start_the_run(win):
     assert "not started" in win.statusBar().currentMessage()
 
 
+def test_a_push_whose_link_closed_is_finished_through_another_sensor(win):
+    """Windows says "the object was closed" when a link drops just as the push begins; the same
+    board is reachable through every other connection, so Start must not give up."""
+    _assign(win, 0, _person("a"))
+    _assign(win, 1, _person("b"))
+    s0, s1 = _connect(win, _Session(0, "S1"), _Session(1, "S2"))
+    win._run.start()
+    assert len(s0.pushes) == 1 and s1.pushes == []
+    s0.is_live = False
+    s0.finish_push(ok=False, message="[WinError -2147483629] O objeto foi fechado.")
+    assert len(s1.pushes) == 1  # the same entries, through the sensor that is still up
+    assert s1.pushes[0][0] == s0.pushes[0][0]
+    assert win._run.state == run_controller.STARTING  # waiting for the second push
+    s1.finish_push()
+    assert win._run.state == run_controller.RUNNING
+
+
+def test_a_failed_push_with_no_other_live_sensor_still_reports_the_failure(win):
+    _assign(win, 0, _person("a"))
+    s0, s1 = _connect(win, _Session(0, "S1"), _Session(1, "S2"))
+    s1.is_live = False
+    win._run.start()
+    s0.finish_push(ok=False, message="closed")
+    assert win._run.state == run_controller.STOPPED
+    assert "not started" in win.statusBar().currentMessage()
+
+
 def test_the_expected_model_is_built_only_after_the_board_has_the_config(win):
     _assign(win, 1, _person("a"))
     _connect(win, _Session(1, "S2"))

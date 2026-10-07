@@ -9,7 +9,8 @@ be under the cursor, with nothing to show it happened.
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QFocusEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -56,6 +57,19 @@ class NoWheelSpinBox(_NoWheelMixin, QSpinBox):
 
 class NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
     """A QDoubleSpinBox whose value the mouse wheel cannot change."""
+
+
+class OptionalDoubleSpinBox(NoWheelDoubleSpinBox):
+    """A spin box whose minimum shows a word ("not set") instead of a number.
+
+    A click puts the cursor *inside* that word, and the digits typed there are rejected — you
+    had to step the value up once before you could type. Selecting the text when the box gets
+    focus (after the click has placed its cursor) makes typing replace it.
+    """
+
+    def focusInEvent(self, event: QFocusEvent | None) -> None:  # Qt naming
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
 
 
 def fit_to_screen(window: QWidget, width: int, height: int, share: float = 0.9) -> None:

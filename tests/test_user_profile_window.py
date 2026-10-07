@@ -13,8 +13,9 @@ import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QImage
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from gui.user_profile_window import ProfileDeps, UserProfileWindow
@@ -183,6 +184,22 @@ def test_height_zero_is_not_set():
     assert env.win.user.height_cm == 171
     env.win.profile_page.height_spin.setValue(0)
     assert env.win.user.height_cm is None
+
+
+def test_the_height_can_be_typed_straight_after_clicking_into_not_set():
+    """A click into "not set" put the cursor inside the word and the digits were rejected: the
+    value had to be stepped up once before typing worked."""
+    env = _Env()
+    env.win.show()
+    spin = env.win.profile_page.height_spin
+    assert spin.text() == "not set"
+    env.win.profile_page.name_edit.setFocus()  # the user was in another field
+    QTest.qWait(30)
+    QTest.mouseClick(spin.lineEdit(), Qt.MouseButton.LeftButton, pos=QPoint(20, 8))
+    QTest.qWait(30)  # the select-all runs after the click has placed its cursor
+    QTest.keyClicks(spin, "172")
+    assert env.win.user.height_cm == 172
+    env.win.close()
 
 
 # -- the Model page ---------------------------------------------------------------------

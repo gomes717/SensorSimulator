@@ -85,19 +85,27 @@ class StartPush(QObject):
         entries[0]["writes"].insert(0, ("speed", speed))
         names = ", ".join(str(slot + 1) for slot in plan)
         self._show_status(f"Sending the configuration to sensor(s) {names}…")
-        self._push(live[0], entries, names, on_done)
+        self._push(live, entries, names, on_done)
 
-    def _push(self, session, entries: list[dict], names: str, on_done) -> None:
+    def _push(self, sessions: list, entries: list[dict], names: str, on_done) -> None:
+        """Push through ``sessions[0]``; if that link turns out to be dead (Windows reports "the
+        object was closed" when it dropped just as the push began), the push is finished with
+        the next live session — every connection reaches the same board, and the writes are
+        idempotent. A push that merely *timed out* is not retried: it may still be writing."""
+        session, spare = sessions[0], sessions[1:]
         finished = {"done": False}
 
-        def finish(ok: bool, message: str) -> None:
-            if finished["done"]:
-                return
+        def detach() -> None:
             finished["done"] = True
             try:
                 session.board_layout_finished.disconnect(on_finished)
             except TypeError:
                 pass
+
+        def finish(ok: bool, message: str) -> None:
+            if finished["done"]:
+                return
+            detach()
             if ok:
                 self._show_status(f"✓ Configuration sent to sensor(s) {names}.")
             else:
@@ -107,6 +115,13 @@ class StartPush(QObject):
             on_done(ok)
 
         def on_finished(_address: str, ok: bool, message: str) -> None:
+            if not ok:
+                still_live = [s for s in spare if s.is_live]
+                if still_live and not finished["done"]:
+                    detach()
+                    self._show_status("A sensor's link dropped — sending through another…")
+                    self._push(still_live, entries, names, on_done)
+                    return
             finish(ok, message)
 
         session.board_layout_finished.connect(on_finished)
