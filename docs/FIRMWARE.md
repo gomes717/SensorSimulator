@@ -413,6 +413,11 @@ its Food Log). A higher
 speed multiplier advances `sim_clock_min` faster exactly as in model mode, so it
 naturally steps multiple rows per tick. PISA attenuation still applies on top.
 
+`csv_store_readback()` serves the same tracks back: `CSV_OP_READ` makes `comm_thread` read one
+chunk of a committed track (with its manifest header) into a RAM buffer that the read-only
+`csv_read` characteristic (`5b2c0017`) returns — flash is never touched from a GATT callback
+(`PROTOCOL_SPEC.md`, *CSV readback*).
+
 `csv_store.c` owns the partition: a chunked upload
 (`csv_store_begin` → `csv_store_write` × N → `csv_store_commit`, driven from
 `comm_thread`'s config queue, CRC-32 checked on commit) writes two independent

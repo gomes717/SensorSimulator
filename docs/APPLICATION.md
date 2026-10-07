@@ -231,7 +231,7 @@ each one can be tested on its own (`tests/test_run_controller.py`,
 | `config_controller.py` — `ConfigController` | The typed signal seam between `MainWindow` and the Configuration window |
 | `glucose_graph.py` — `GlucoseGraph` | The two matplotlib canvases of one page and every draw decision (range bands, trace coloured exactly at the limits, optional sample dots, PISA shading, rolling window) |
 | `range_stats.py` — `RangeStatsPanel` | The TIR/TBR/TAR grid under a page's graphs |
-| `avatar.py` | Generated initials disc used on tabs (profile avatars are not implemented yet) |
+| `avatar.py`, `avatar_picker.py`, `user_picture.py` | The generated initials disc (the fallback), the gallery of bundled avatars (`data/profile/`) a user's picture is chosen from, and the stored 256 px picture shown on the tab and in the Users list |
 | `theme.py`, `widgets.py` | Light/dark/system palette; shared spin boxes and label helpers |
 
 ### 3.3 Secondary windows

@@ -61,9 +61,10 @@ might not exist on another machine.
   uploaded separately from Start — now by **Send to…** with the user.
 - The board's config image moved to v6; a v5 image is migrated (slots kept, names empty),
   not wiped, because the names were appended after `slots[]`.
-- CSV cannot be read back from the board yet. A board in CSV mode reads as a CSV user
-  whose data is not available, and comparison ignores the track; when the firmware gains a
-  CSV read operation, the reader fills it in and the comparison includes it.
+- The board can send its CSV recording back (added 2026-10-07: `CSV_OP_READ` and the `csv_read`
+  characteristic). A board in CSV mode reads as a CSV user holding its recording, and the
+  comparison includes it — samples, interval and meals. A board that holds no recording reads as
+  a CSV user with no window; one that could not send it (older firmware) is not compared on it.
 - Sending a user to a sensor that already has another user overwrites it, name included,
   without a warning.
 - `scripts/scenario_dispatch.py`, `scenarios/*.json` and the e2e harnesses address people

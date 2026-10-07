@@ -498,7 +498,8 @@ instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.
 
 Status (2026-10-07): **done** — the model layer, the firmware's name field, the Users screen with
 read-from-board, the profile screen (Profile, CSV, Food, Exercise and Model pages, Preview, Save,
-Send to…) and the removal of the Person / Sensor / Food / Exercise windows, all hardware-tested.
+Send to…), the CSV readback and the removal of the Person / Sensor / Food / Exercise windows, all
+hardware-tested.
 [`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:
 [ADR 0006](adr/0006-users-replace-person-and-sensor.md).
 
@@ -549,8 +550,10 @@ source, person config, sensor config, food and exercise lists), turned into a *b
 user* and looked up **by name**: unknown → a new unsaved "Unknown" user; same name and
 `compare()` empty → open the saved user; same name but different → ask *Overwrite* or
 *Create `Name#2`* (which also writes the new name to the board, so the two agree).
-CSV is not read back yet: a board in CSV mode yields a CSV user whose track is not
-available, and `compare()` ignores the track until the firmware can send it.
+A board in CSV mode is also asked for its recording (`CSV_OP_READ` + the `csv_read`
+characteristic, `PROTOCOL_SPEC.md`), which becomes the user's window, so `compare()` includes it —
+sample for sample, interval and meals. (A board that holds no recording reads as a CSV user with no
+window, and one that could not send it, e.g. older firmware, is not compared on it.)
 
 **On the board.** The name is the new **User name** characteristic (`5b2c0016`,
 [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)): per slot via Sensor select, persisted in
@@ -563,5 +566,6 @@ built from it — ADR 0005 holds with "profile" meaning "user"). The engine and 
 run on `PersonProfile` / `SensorProfile`, but those are now derived from a user on demand
 (`models/user_sim.py`) rather than saved: a CSV user's window travels inside the profile
 (`PersonProfile.csv_track`) and is replayed from there. The Person / Sensor / Food / Exercise
-windows and the Configuration window's Person/Sensor group are gone. Not done: the tab header's
-avatar still uses the generated initials disc.
+windows and the Configuration window's Person/Sensor group are gone. The user's picture is chosen
+from the avatars in `data/profile/` (`gui/avatar_picker.py`) and shows on the sensor's tab
+(`SensorTabs` takes a `picture_for` provider; the generated initials disc is the fallback).

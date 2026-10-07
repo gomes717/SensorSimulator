@@ -87,6 +87,7 @@ Custom 128-bit UUIDs (`src/ble_uuids.py`), all under one primary service:
 | Comm profile | `5b2c0014-...` | **read + write** | 1 B |
 | Sensor select | `5b2c0015-...` | **read + write** | 1 B |
 | User name | `5b2c0016-...` | **read + write** | 0–30 B (UTF-8) |
+| CSV read | `5b2c0017-...` | read | 22 B header + ≤ 200 B of a track |
 
 All multi-byte fields little-endian. Requires ATT MTU >= 140 B
 (`CONFIG_BT_L2CAP_TX_MTU=247` on the firmware side). Every read/write payload
@@ -491,6 +492,33 @@ App side: `api/protocol.py`'s `encode_user_name` / `decode_user_name` (`MAX_USER
 isolation, the 30-byte limit (31 refused), a UTF-8 name, persistence across a J-Link reset,
 and the sim clock not resetting on a name write.
 
+### CSV readback — `CSV_OP_READ` + `5b2c0017-0d6d-4a3a-8c1e-3f9b6e7a1a00`, read
+
+Added 2026-10-07 so a board that replays a recording can be turned back into a user (the Users
+window's **+ Read from…**). The tracks live in flash and the GATT read path never touches flash, so a
+read is two steps, like every other readback staged by the comm thread:
+
+1. Write **READ** to CSV control: `u8 0x06; u8 track; u32 offset; u16 len` (little-endian;
+   `len` ≤ 200). The comm thread reads that chunk of the **selected** slot's committed track
+   (`0` glucose, `1` food log) into a RAM buffer and notifies CSV control — status `OK` with the
+   chunk length, or `ERR`.
+2. Read the **CSV read** characteristic: a 22-byte header, then the chunk —
+   `u8 track; u8 present; u16 interval_s; u32 row_count; u32 base_epoch_s; u32 byte_len;
+   u32 offset; u16 len; u8 data[len]`. `present = 0` (and `len = 0`) means nothing is committed
+   for that slot/track — not an error; an offset past `byte_len` gives `len = 0`.
+
+The app repeats until `offset` reaches `byte_len`: a 24 h glucose window (288 × int16 = 576 B) is
+three chunks, the food log one. The blobs have the layout the upload sends (`int16` mg/dL per
+row; `{u32 offset_s; f32 carbs_g}` per meal), so `api/protocol.py`'s `parse_glucose_blob` /
+`parse_foodlog_blob` invert `build_glucose_track` / `build_foodlog_track`. The characteristic is
+registered last (after User name) so earlier handles keep their numbers; like User name it is
+hidden by a stale Windows GATT cache until a connection refreshes it. App side:
+`BleSession.start_csv_download(slot)` (selects the slot itself, then both tracks),
+`models/user_csv.track_from_download`, and `gui/user_reader.py`, which downloads only when the
+board reports the CSV source. **Verified on hardware 2026-10-07 (`scripts/hw_csv_readback.py`,
+13/13):** a sent real 24 h window and its five meals came back sample for sample, with the start
+time, and the read user matched the sent one.
+
 ### CGMS Only mode — `5b2c000e-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
 Added 2026-08-18. A live session mode, not part of `struct sim_config` and
@@ -574,6 +602,7 @@ notification is `{ uint8 status; uint8 _reserved; uint32 received_bytes }`
 | `0x03` ABORT | `u8 op` | Discards the in-progress upload. |
 | `0x04` CLEAR | `u8 op; u8 track` | Wipes that track's manifest entry. |
 | `0x05` STATUS | `u8 op; u8 track` | Notifies current `received_bytes`. |
+| `0x06` READ | `u8 op; u8 track; u32 offset; u16 len` | Stages a chunk of the selected slot's committed track for the **CSV read** characteristic, then notifies `OK` with the chunk length (`ERR` on a bad argument or a flash error). See *CSV readback*. |
 
 `track`: `0` = glucose, `1` = food log.
 

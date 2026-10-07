@@ -77,7 +77,7 @@ Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…)
 ## Firmware / protocol changes
 
 1. **User name characteristic** (new, read + write, per slot via Sensor select, persisted). `struct sim_config` gains `char user_name[slot][32]` **appended after `slots[]`** (30 bytes + NUL; the app and the board both enforce 30 UTF-8 bytes) → bump `SIM_CONFIG_VERSION`; 4 slots grow the struct from ~2.85 KB to ~2.98 KB, still inside the 4 KB `sim_storage_partition`. Empty name = "no user". App side: `encode_user_name` / `decode_user_name` in `api/protocol.py`, UUID in `ble_uuids.py`, `PROTOCOL_SPEC.md` row. **The advertised BLE name stays "Nordic Glucose Sensor N"** — the app maps identity → slot from that name and the pairing/identity work (see memory: identity-1 storm, no-auth tradeoff) must not be disturbed.
-2. **CSV readback — later**, not in this build. The plan only leaves the seam: the reader treats "board is in CSV mode" as a user in CSV mode whose data is *not available from the board yet*; matching on a CSV user compares everything except the track. When the firmware gains a read op (e.g. `CSV_OP_READ` + notify chunks mirroring the upload, CRC-checked), the reader fills the track and the match includes it.
+2. **CSV readback** *(done, 2026-10-07; hardware 13/13)*. A `CSV_OP_READ` control opcode makes the comm thread stage one chunk of a committed track in RAM, and a read-only `csv_read` characteristic (`5b2c0017`) returns it with the track's header; the app repeats until it has the whole track (`BleSession.start_csv_download`, `models/user_csv.track_from_download`). `UserReader` downloads only when the board reports the CSV source, and `compare()` includes the window.
 3. Nothing is added for picture or height — the board has no use for them.
 
 ## Decisions this plan relies on (and why)
@@ -120,7 +120,7 @@ Delete the "Patient / sensor" group (Person…, Food…, Exercise…, Sensor…)
 
 ## Follow-ups
 
-- **CSV readback** from the board (a user read from a board in CSV mode has no window).
-- **The user's picture on the tab** (the single `avatar_icon` call site still draws the initials disc).
+_(CSV readback and the user's picture on the tab were follow-ups and are now done — 2026-10-07.)_
+
 - **`scripts/ui_smoke.py`** and **`scripts/e2e_4sensor.py`** still assume the old windows and 4 slots.
 - **Windows' stale GATT cache** after a firmware update hides a new characteristic until a connection refreshes it; the app explains it, a forced uncached reconnect is only an idea (`docs/TODO.md`).
