@@ -34,9 +34,10 @@ from PyQt6.QtWidgets import (
 from gui import user_picture
 from gui.user_csv_page import CsvPage
 from gui.user_model_page import ModelPage
+from gui.user_preview_window import PreviewWindow
 from gui.user_profile_page import ProfilePage, choose_picture_file
 from gui.user_schedule_pages import EXERCISE, FOOD, SchedulePage
-from models import user_edit, user_store
+from models import app_settings, user_edit, user_store
 from models.types import User
 
 PAGE_ORDER = ("profile", "csv", "food", "exercise", "model")
@@ -90,8 +91,7 @@ class UserProfileWindow(QWidget):
         self._deps = deps
         self._ask_unsaved = ask_unsaved
         self._user = copy.deepcopy(user)
-        self._saved: User | None = None if is_draft else copy.deepcopy(user)
-        self._is_draft = is_draft
+        self._saved: User | None = None if is_draft else copy.deepcopy(user)  # None = a draft
         self._picture_source: Path | None = None
         self._labels: dict[str, str] = {}
         self.pages: dict[str, QWidget] = {}
@@ -120,6 +120,10 @@ class UserProfileWindow(QWidget):
         right.addWidget(self.error)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
+        self.preview_button = QPushButton("Preview")
+        self.preview_button.setToolTip("A 24 h graph of this user, with the edits on screen")
+        self.preview_button.clicked.connect(self.preview)
+        bottom.addWidget(self.preview_button)
         save_button = QPushButton("Save")
         save_button.clicked.connect(self.save)
         bottom.addWidget(save_button)
@@ -149,7 +153,7 @@ class UserProfileWindow(QWidget):
     @property
     def is_dirty(self) -> bool:
         """Whether closing now would lose something: a draft, a chosen picture, or an edit."""
-        return self._is_draft or self._picture_source is not None or self._user != self._saved
+        return self._saved is None or self._picture_source is not None or self._user != self._saved
 
     # ------------------------------------------------------------------
     # Pages and the menu
@@ -236,6 +240,17 @@ class UserProfileWindow(QWidget):
         self.setWindowTitle(f"User — {self._user.name}{marker}")
 
     # ------------------------------------------------------------------
+    # Preview
+    # ------------------------------------------------------------------
+
+    def preview(self) -> PreviewWindow:
+        """Open a 24 h preview of the user as it is on screen (saved or not)."""
+        window = PreviewWindow(self._user, app_settings.load(), parent=self)
+        window.show()
+        window.raise_()
+        return window
+
+    # ------------------------------------------------------------------
     # Save and close
     # ------------------------------------------------------------------
 
@@ -265,7 +280,6 @@ class UserProfileWindow(QWidget):
             self._deps.users.append(stored)
         self._deps.save()
         self._saved = copy.deepcopy(self._user)
-        self._is_draft = False
         self._picture_source = None
         self.error.setText("")
         self.profile_page.refresh()
