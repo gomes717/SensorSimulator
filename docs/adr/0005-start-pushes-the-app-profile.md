@@ -48,7 +48,8 @@ what it is doing.**
 
 - Editing a patient's parameters or schedules and pressing Start is enough; no
   separate Send to Board is needed for the run to use them. Send to Board remains for
-  assigning a patient to a slot and for CSV.
+  assigning a patient to a slot and for CSV. *(Since [0006](0006-users-replace-person-and-sensor.md)
+  the patient is a user and "Send to Board" is the profile screen's **Send to…**.)*
 - Start takes longer: each write is paced (~80 ms) and applied and saved to flash by
   the board, so the delay grows with the number of sensors and scheduled events.
   (Not yet timed on hardware.)

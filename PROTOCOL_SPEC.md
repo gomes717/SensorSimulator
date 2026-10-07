@@ -34,11 +34,10 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `gui/main_window.py` | Composition + app-level actions (speed, Model-Only / CGMS-Only, profile changes); the toolbar's Start/Pause/Stop (`gui/run_controller.py`) and the per-sensor tabs and pages (`gui/sensor_tabs.py`, `gui/sensor_page.py`) — see `docs/APPLICATION.md` §3 |
 | `gui/bluetooth_window.py` | Device list, multi-device connect/disconnect, `sessions()`/`display_name()` accessors used by config windows |
 | `gui/debug_window.py`, `gui/message_detail_window.py` | Raw message inspection |
-| `gui/device_target.py` | `DeviceTargetBar` — shared "target device" combo used by all 4 config windows |
-| `gui/person_config_window.py` | Manage `PersonProfile`s: model + params, Save/Send/Read |
-| `gui/sensor_config_window.py` | Manage `SensorProfile`s: noise model + params, Save/Send/Read |
-| `gui/food_config_window.py` | Recurring-daily meal schedule for the active person, Save/Send/Read |
-| `gui/exercise_config_window.py` | Recurring-daily exercise schedule for the active person, Save/Send/Read |
+| `gui/device_target.py` | `restart_board()` and `await_send_confirmation()` — nudge a board running again after a push, and confirm a write landed |
+| `gui/users_window.py`, `gui/user_reader.py` | The Users list and **+ Read from…**: one slot read (name, source, person + sensor config, food + exercise lists) into a user |
+| `gui/user_profile_window.py` (+ `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py`, `user_csv_page.py`) | The profile screen: Profile / CSV / Food / Exercise / Model pages, Preview, Save, Send to… |
+| `gui/user_sender.py`, `models/user_send.py` | **Send to…**: the ordered writes that put a user on a slot (name first, then model + sensor + schedules, or the CSV upload and then the CSV source) and the push |
 | `gui/commands_panel.py`, `gui/instant_events.py` | The Food / Exercise / PISA Commands panel on each sensor's tab, and the fan-out of its one-shot events into an already-running simulation without resetting it (§2's instant characteristics) |
 | `models/types.py` | `ModelId`, `SensorId`, `PersonProfile`, `SensorProfile`, `FoodEvent`, `ExerciseEvent` |
 | `models/{cambridge,uva_padova,royparker,deichmann}.py` | Pure-Python ports of `cgmsim/src/cgmsim_*.c`, numerically identical |
@@ -241,8 +240,7 @@ counter; only its **arrival time** matters, the value itself is diagnostic
 only.
 
 One consumer on the app side: **"Did my write actually land?" feedback**
-(`gui/device_target.py`'s `await_send_confirmation`, used by all four config
-windows' Send to Board buttons): shows "Sending to board…" then "✓ Applied
+(`gui/device_target.py`'s `await_send_confirmation`): shows "Sending to board…" then "✓ Applied
 on board" on the next reset_sync arrival, or a timeout warning if none
 comes. Not perfectly attributed when several writes are in flight at once
 (e.g. Food's clear-then-N-events sequence each fire their own reset_sync),
@@ -600,8 +598,9 @@ wall-clock. The board is autonomous: after reboot it reloads the manifest and
 resumes CSV playback if `data_source` was `1`.
 
 App side: `api/protocol.py`'s `encode_csv_*` / `build_*_track` helpers,
-`services/ble_session.py`'s `start_csv_upload()`, the CSV Analysis window's
-"Assign window to person…" button, and Configuration → "Send CSV to Board".
+`services/ble_session.py`'s `start_csv_upload()` and the layout push, the CSV Analysis window
+(the picker behind the profile screen's CSV page), and **Send to…**, which uploads the user's
+window and only then switches the slot to the CSV source.
 The matching Food Log is paired automatically by file ID
 (`Dexcom_001.csv` ↔ `Food_Log_001.csv`, `food_log_csv.matching_food_log_path()`)
 — no separate file chooser. `models/engine.py` replays the same window locally
@@ -618,12 +617,10 @@ on error. `char_key` is one of `"person"`, `"sensor"`, `"mode"`,
 `"food_list"`, `"exercise_list"`, `"data_source"`, `"speed"`,
 `"comm_profile"`, `"sensor_select"` (see `CONFIG_CHAR_KEY_BY_UUID` in
 `services/ble_session.py`); the per-sensor ones return whichever slot
-`"sensor_select"` currently points at. Each config window has a "Read from Board" button next to
-"Send to Board" that calls this and, on `config_read`, decodes via the
-matching `protocol.decode_*` function and overwrites the selected
-profile/active person's data with the board's answer (round-trip verified in
-this repo — see `api/protocol.py`'s `decode_*` functions, exact inverses of the
-`encode_*` ones).
+`"sensor_select"` currently points at. The Users window's **+ Read from…** (`gui/user_reader.py`)
+uses it: the cursor write then six reads, decoded with the matching `protocol.decode_*` functions
+into a user (round-trip verified on hardware — `api/protocol.py`'s `decode_*` functions are exact
+inverses of the `encode_*` ones).
 
 ## 4. Insulin / basal
 
@@ -784,9 +781,9 @@ pairing, and *attempting* it wedges the Windows BLE stack into a
 connect/disconnect storm).
 
 **App — board layout (Phase 2, done 2026-09; the window was later removed).**
-The slot → Person + Sensor record is persisted to `data/board_layout.json`
-(`models/board_layout.py`) and is now written by the individual "Send to Board"
-actions rather than a dedicated Board Layout window.
+The slot → user record (the user's name) is persisted to `data/board_layout.json`
+(`models/board_layout.py`) and is written when **Send to…** lands a user on a sensor, rather
+than by a dedicated Board Layout window.
 `BleSession.send_board_layout(slots)` remains as the programmatic whole-board
 push (used by `scripts/e2e_4sensor.py`): over one connection to any
 identity, for each slot it writes the **Sensor select** cursor, then that

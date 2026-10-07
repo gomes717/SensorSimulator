@@ -74,7 +74,8 @@ on whether a board is even connected.
   firmware's C structs expect (`__packed`, no compiler padding). Each
   `encode_*` has a matching firmware-side parse and, where the
   characteristic is readable, a `decode_*` that's an exact inverse — this
-  is verified by the "Read from Board" round-trip in every config window.
+  is verified by the Users window's "+ Read from…" round-trip (and on hardware by
+  `scripts/hw_user_read.py`).
 
 Neither file imports Qt or does any I/O — they're pure data transformation,
 which is why `models/` (the physiological math) can safely import from
@@ -240,17 +241,18 @@ by `ChildWindows` and kept, so re-opening raises the same instance.
 
 | Window | Role |
 |---|---|
-| `configuration_window.py` — `ConfigurationWindow` | Person/Sensor editors' launch buttons, the Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Model-Only and CGMS-Only toggles, the **Appearance** group (UI theme and the rolling graph time window — formerly the separate View window) and the editable glucose range thresholds |
-| `person_config_window.py` / `sensor_config_window.py` | Manage saved `PersonProfile` / `SensorProfile`s; Save, **Send to Board** (which also sends the patient's data source, incl. a CSV upload), **Read from Board**. A send reports which slot got which patient so the slot record stays true |
-| `data_source_group.py` | The per-patient model-vs-CSV chooser inside Person Configuration (the 24 h region is picked in CSV Analysis) |
-| `food_config_window.py` / `exercise_config_window.py` | Recurring-daily meal / exercise schedules for the patient on the **target device's** slot (the one recorded for that slot, else the active patient); locked only when *that sensor* replays a CSV (the board's answer first, the saved profile as a fallback) — not because the globally active patient does. Picking another device switches the patient |
-| `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom export, slide a 24 h window, read range metrics for the whole recording and the selection; assigns the window to a person |
+| `configuration_window.py` — `ConfigurationWindow` | The Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Model-Only and CGMS-Only toggles, the **Appearance** group (UI theme and the rolling graph time window — formerly the separate View window) and the editable glucose range thresholds. People are not edited here any more: see the Users window |
+| `users_window.py` — `UsersWindow` | The **Users** button's window: the list, **+ Read from…** (a sensor's slot turned into a user — unknown name → unsaved draft, same name and content → open it, same name different content → Overwrite / Create `Name#2`, which also renames the board's user), **+ New**, Open, Delete. `user_reader.py` does the read; `models/user_board.py` decides the outcome |
+| `user_profile_window.py` — `UserProfileWindow` | One window per user (`user_profiles.py`): picture, name and a menu (Profile, CSV, Food, Exercise, Model) on the left, the page on the right, **Preview** / **Save** / **Send to…** at the bottom. Edits a *copy* and writes it to the list only on Save (closing asks Save / Discard / Cancel); the mode (model or CSV) enables the pages it uses. Pages: `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py` (Food and Exercise, one class), `user_csv_page.py` |
+| `user_preview_window.py` | The 24 h preview of the user on screen — the noise-free stepper over its meals, exercise and model, or the recorded CSV window |
+| `user_sender.py` — `UserSender` | **Send to…**: one push through the chosen sensor's session, refused up front for a user the board cannot take, a dead link or a sensor that does not list `user_name` |
+| `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom export, slide a 24 h window, read range metrics for the whole recording and the selection; also the picker behind the profile screen's CSV page ("Use this 24 h window") |
 | `bluetooth_window.py` — `BluetoothWindow` | Device list, scan, multi-device connect / disconnect; owns the `sessions()` dict; emits `session_connected` (opens that sensor's tab) and offers `disconnect_device()` (the tab's close button) |
-| `device_target.py` — `DeviceTargetBar` | "Target device / Slot" picker shared by the config windows, plus `restart_board()` / `await_send_confirmation()` |
+| `device_target.py` | `restart_board()` / `await_send_confirmation()` |
 | `debug_window.py` / `message_detail_window.py` | Live list of every BLE message; field dump of one |
 
 There is no Board Layout window and no Faults window any more: the slot →
-patient record is written by the individual "Send to Board" actions, and PISA
+user record is written when **Send to…** lands a user on a sensor, and PISA
 is one of the Commands panel's three commands. `BleSession.send_board_layout()`
 remains as a programmatic whole-board push used by `scripts/e2e_4sensor.py`.
 
@@ -378,12 +380,10 @@ queue; when the board rejects one (an Insert Food, a config write) the status ba
 says "⚠ The board refused '<characteristic>' (<error>)" instead of leaving the
 Commands panel's "sent" as the last word.
 
-**Choosing is not sending.** Clicking a patient or sensor in a configuration
-window only changes which one is being edited: with a board connected it does not
-reset the graphs, and neither does Save (nothing changed on the board). What
-resets a run is what changes it — Start, a Send to Board, a speed change, toggling
-Model Only (which runs the chosen patient locally, so there a change does restart).
-The Food and Exercise editors follow the patient chosen in Person Configuration.
+**Opening is not sending.** Opening a user, or saving it, only changes what is being edited: with a
+board connected it does not reset the graphs (nothing changed on the board). What resets a run is
+what changes it — Start, a Send to…, a speed change, toggling Model Only (which runs the user last
+opened locally, so there a change does restart).
 
 ### 3.7 BLE link health, as the app sees it
 
@@ -410,14 +410,14 @@ The Food and Exercise editors follow the patient chosen in Person Configuration.
 
 ## 4. Data flow examples
 
-**User edits and sends a Person config:**
-`person_config_window.py` (edits `PersonProfile` in memory) → Save
-(`profile_store.save()`, writes `data/profiles.json`) → Send to Board
-(`api.protocol.encode_person_config()` → `services.ble_session.BleSession.queue_write()`
-→ GATT write → firmware) → `await_send_confirmation()` waits for the
-board's `reset_sync` notification to show "✓ Applied on board" →
-`MainWindow.record_slot_assignment()` records which patient now sits on which
-slot, persists it, relabels the tabs / Bluetooth list, restarts the local
+**User edits and sends a user:**
+`user_profile_window.py` (edits a copy of the `User`) → Save (`user_store.save()`, `data/users.json`
+plus the user's folder) → Send to… (choose a sensor; Save and send / Send without saving if there
+are unsaved edits) → `user_sender.UserSender` → `models.user_send.slot_entry()` (the ordered writes) →
+`BleSession.send_board_layout()` (cursor, name, model + sensor + both schedules cleared and
+rewritten — or the CSV upload and then the CSV source) → the board applies and saves each write →
+`board_layout_finished` → `MainWindow._on_user_sent()` → `record_slot_assignment()` records which
+user now sits on which slot, persists it, relabels the tabs / Bluetooth list, restarts the local
 engines, and re-asks the board what that slot runs.
 
 **A sensor connects:**

@@ -277,7 +277,7 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 | S8-06 | bad CRC in BEGIN header | COMMIT notify `status=ERR`; serial `commit CRC mismatch`; previous manifest untouched |
 | S8-07 | `total_bytes` > region size | BEGIN notify `status=ERR` (`-EFBIG`) |
 | S8-08 | disconnect mid-upload, reconnect, ABORT, re-upload | clean recovery; no partial track committed |
-| S8-09 | app path: CSV Analysis "Assign window to person…" → Configuration "Send CSV to Board" | `csv_upload_finished(ok=True)`; board switches to CSV; expected line == received line |
+| S8-09 | app path: CSV page → Choose CSV file… (CSV Analysis picker) → Send to… | `csv_upload_finished(ok=True)`; board switches to CSV; expected line == received line |
 
 ### S9 — CGMS Only mode (`5b2c000e`)
 
@@ -529,6 +529,8 @@ refreshed. The scripts discover with `use_cached_services=False` (`hw_common.con
 | Script | Checks | Last run |
 |---|---|---|
 | `hw_user_name.py` | The per-slot **User name** (`5b2c0016`): reads back on its slot; other slots untouched; 30 B accepted, 31 B refused; UTF-8; persists across a J-Link reset; an empty write clears; **a name write does not reset the sim clock**. Leaves slots 1–2 unnamed. | 12/12, 2026-10-06 |
+| `hw_user_send.py` | **Send to…** through the real `BleSession` + `UserSender`: a model user (UVA/Padova, Breton, a meal, an exercise bout, non-float32-exact values) reads back as a **Match** and the console shows the model running; a CSV user (a real 24 h Dexcom window + Food Log) is reported by the board as CSV under its name and the console glucose is the recorded window sample for sample (the source is switched on only after the upload); the slot is restored. | 9/9, 2026-10-07 |
+| `hw_user_start.py` | **Start's push** through the real `StartPush` + `BleSession`: the planned user is put on the slot, name included, and reads back as a **Match**; the slot is restored. | 6/6, 2026-10-07 |
 | `hw_csv_loop.py` | **CSV playback loops** when its window ends: a 1 h, a synthetic 24 h and a real 24 h `Dexcom_001` window (+ Food Log) each play past the end at x60 / x1000; every console sample must equal `floor(t·60/interval) mod rows`, and the meals must fire again in the next window. Uses the last slot; restores it (model source, no CSV) and the speed (x60) afterwards. ~13 min. | A, B pass 2026-10-06 (see FIRMWARE.md) |
 | `hw_user_read.py` | The Users screen's **read-from-board** path through the *real* `BleSession` + `UserReader`: on the last slot it writes a known user (UVA/Padova, Breton, a meal, an exercise bout, values that are not float32-exact), reads it back and checks the three outcomes — same content → **Matches** (float32-aware on real wire data), a changed parameter → **Differs** `['model parameters']`, another name → **Unknown** — then renames the board's user (what *Create* does) and restores what the slot held. | 9/9, 2026-10-06 |
 

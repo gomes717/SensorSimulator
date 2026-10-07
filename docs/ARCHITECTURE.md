@@ -120,8 +120,7 @@ silently go nowhere; the broadcast reports how many sensors it reached.
 
 ### 4.2 Send configuration flow
 
-Every config window's "Send to Board" button (Person, Sensor, Food,
-Exercise) drives this — the write always triggers a full reset on the
+The profile screen's **Send to…** (and Start's push) drive this — the write always triggers a full reset on the
 board side (`apply_config_locked()`), which is how the app knows the write
 landed. On a multi-sensor board the write targets whichever slot the
 **Sensor select** cursor points at (default slot 0):
@@ -129,12 +128,12 @@ landed. On a multi-sensor board the write targets whichever slot the
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (gui/*_config_window.py)
+    participant App as App (gui/user_profile_window.py, user_sender.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
     participant Model as Firmware (model_thread)
 
-    U->>App: Edit Person/Sensor/Food/Exercise, click "Send to Board"
+    U->>App: Edit the user, click "Send to…" and choose a sensor
     opt targeting a specific slot (N > 1)
         App->>BLE: queue_write("sensor_select", slot)
         BLE->>FW: GATT write — comm_thread sets working_sel
@@ -157,18 +156,18 @@ sequenceDiagram
 
 ### 4.3 Read configuration flow
 
-Every config window's "Read from Board" button drives this — a plain
+The Users window's "+ Read from…" (`gui/user_reader.py`) drives this — a plain
 GATT read/response, no notify, no reset (see [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md)
 §3):
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant App as App (gui/*_config_window.py)
+    participant App as App (gui/user_reader.py)
     participant BLE as services/ble_session.py
     participant FW as Firmware (comm_thread)
 
-    U->>App: Click "Read from Board"
+    U->>App: Users → "+ Read from…"
     App->>BLE: request_read(char_key)
     BLE->>FW: GATT read (config characteristic)
     FW-->>BLE: raw bytes (in-RAM sim_config)
@@ -224,14 +223,14 @@ resets either.
 
 ### 4.5 Slot assignment and the whole-board push (multi-sensor)
 
-There is no Board Layout window any more. A patient reaches a slot through the
-ordinary **Send to Board** of Person Configuration (which also sends the
-patient's data source, uploading a CSV when the patient replays one), targeted
-at a slot with the **Sensor select** cursor. Each send reports which slot got
-which patient, and `MainWindow.record_slot_assignment()` keeps the slot → patient
-record (`data/board_layout.json`, `models/board_layout.py`) true: it relabels
-tabs and the Bluetooth list, rebuilds the engine pool, and re-asks the board what
-the slot now runs (§11.2).
+There is no Board Layout window any more. A user reaches a slot through the profile screen's
+**Send to…**: pick a connected sensor (the chooser says what each one runs now), and the user is
+pushed to that slot — the name first, then the model and sensor noise with both schedules cleared
+and rewritten, or the CSV upload followed by the switch to the CSV source — with the **Sensor
+select** cursor pointing at the slot. Landing calls `MainWindow.record_slot_assignment()`, which
+keeps the slot → user record (`data/board_layout.json`, `models/board_layout.py`) true: it relabels
+tabs and the Bluetooth list, rebuilds the engine pool, and re-asks the board what the slot now runs
+(§11.2). A renamed user moves its slot along; a deleted one leaves it.
 
 `BleSession.send_board_layout()` remains as the programmatic push — one
 coroutine over **one** connection (any identity reaches the shared config
@@ -393,15 +392,12 @@ for all — per-slot run state is `FEATURE_IDEAS.md` #19).
 `BleSession` per identity → one **tab** per identity, appearing as soon as the
 session connects. Each session shows only its own slot's CGM Measurement +
 Food/Exercise Status (demux by the advertised-name digit); each tab has its own
-page with its own graphs and Commands panel (§11). A patient reaches a slot
-through Person Configuration's Send to Board (§4.5). Once a slot is assigned,
-the Bluetooth list, the tab and the config windows' "Target device" combo show
-that **patient's name** instead of "Nordic Glucose Sensor N"
-(`models/board_layout.device_label` / `session_name`; the advertised name still
-drives the demux + pairing). The config windows also have a **"Slot"** picker
-(`DeviceTargetBar`) so one slot can be reconfigured without re-pushing the
-whole layout; one-shot events need no picker — they come from the tab of the
-sensor they are for.
+page with its own graphs and Commands panel (§11). A user reaches a slot
+through the profile screen's Send to… (§4.5). Once a slot is assigned,
+the Bluetooth list and the tab show that **user's name** instead of
+"Nordic Glucose Sensor N" (`models/board_layout.device_label` / `session_name`; the advertised
+name still drives the demux + pairing). One-shot events need no picker — they come from the tab
+of the sensor they are for.
 
 **Pairing.** Windows aborts LE Secure Connections against the board's
 non-default identities (confirmed on hardware — see
@@ -464,7 +460,8 @@ defer their redraw. ([ADR 0001](adr/0001-independent-sensor-pages.md))
 ### 11.2 The board is the source of truth for per-sensor state
 
 What the app last sent is a guess. `BoardMode` reads each slot's Data Source and
-Person Config back from the board (when a sensor connects, one slot at a time), attributes the answer to the session that
+Person Config back from the board (when a sensor connects, one slot at a time — the same cursor
+the Users window's read shares, which is why `BoardMode.busy` makes it wait), attributes the answer to the session that
 sent it, and every display decision — graph title, CSV view, whether the Commands
 panel shows — follows it, saying "waiting for
 the board to confirm…" instead of guessing. Writes that go nowhere say so
@@ -499,9 +496,9 @@ instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.
 
 ## 12. Users: one profile per simulated person (in progress)
 
-Status (2026-10-07): the model layer, the firmware's name field, the Users screen with
-read-from-board (hardware-tested) and the profile screen's shell with its Profile and Model
-pages and Save are done; the Food / Exercise / CSV pages, Preview and Send to are not built yet. Plan and slice list:
+Status (2026-10-07): **done** — the model layer, the firmware's name field, the Users screen with
+read-from-board, the profile screen (Profile, CSV, Food, Exercise and Model pages, Preview, Save,
+Send to…) and the removal of the Person / Sensor / Food / Exercise windows, all hardware-tested.
 [`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:
 [ADR 0006](adr/0006-users-replace-person-and-sensor.md).
 
@@ -560,8 +557,11 @@ available, and `compare()` ignores the track until the firmware can send it.
 `sim_config` v6, and — unlike every other config write — it does **not** reset the
 simulation. The advertised BLE name stays "Nordic Glucose Sensor N".
 
-**What this changes elsewhere (as the slices land).** `AppState.board_plan` becomes
-slot → user (Start still writes exactly that list and the expected-line engines are
-built from it — ADR 0005 holds with "profile" meaning "user"); the Person / Sensor /
-Food / Exercise windows and the Configuration window's Person/Sensor group go away; the
-tab header's avatar call site takes the user's picture.
+**What changed elsewhere.** `AppState` holds the users and `board_plan` is slot → user (Start still
+writes exactly that list, now with each user's name first, and the expected-line engines are
+built from it — ADR 0005 holds with "profile" meaning "user"). The engine and the board push still
+run on `PersonProfile` / `SensorProfile`, but those are now derived from a user on demand
+(`models/user_sim.py`) rather than saved: a CSV user's window travels inside the profile
+(`PersonProfile.csv_track`) and is replayed from there. The Person / Sensor / Food / Exercise
+windows and the Configuration window's Person/Sensor group are gone. Not done: the tab header's
+avatar still uses the generated initials disc.

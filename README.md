@@ -40,8 +40,12 @@ readings against the same model run locally as a cross-check.
   to the board or run it locally with no hardware ("Model Only" mode)
 - **Three fully independent sensors on one board** (`CONFIG_APP_SENSOR_COUNT=3`)
   — each its own BLE identity, model-or-CSV, noise,
-  and schedule, assigned with the normal Person "Send to Board"; one shared sim
+  and schedule, put on a sensor with the user screen's **Send to…**; one shared sim
   clock + speed
+- **Users:** one profile per simulated person (picture, name, weight, glucose model +
+  sensor noise, meals, exercise — or a recorded CSV window), edited on a profile screen with a
+  24 h **Preview**, and **read back from a sensor** (*Users → + Read from…*) so a board that is
+  already configured becomes a user in the app
 - **One tab per sensor**, browser-style: each tab has its own graphs, history,
   stats and commands. A "+" after the last tab (like a browser) connects another sensor. Nothing connected → a centered "Connect Bluetooth" start
   screen; a dropped sensor's tab greys out and revives on reconnect; the tab's

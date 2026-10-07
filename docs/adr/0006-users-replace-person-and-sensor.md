@@ -1,7 +1,7 @@
 # 0006 — A User replaces Person + Sensor, and can be read from the board
 
-Status: accepted (2026-10-06) · in progress (slices 1–3 of
-[`.scratch/users-screen/spec.md`](../../.scratch/users-screen/spec.md) done) · Extends
+Status: accepted (2026-10-06) · implemented (2026-10-07, all ten slices of
+[`.scratch/users-screen/spec.md`](../../.scratch/users-screen/spec.md)) · Extends
 [0002](0002-board-is-the-authority.md) and [0005](0005-start-pushes-the-app-profile.md)
 
 ## Context
@@ -36,7 +36,18 @@ might not exist on another machine.
   identity → slot from it and the pairing work depends on it.
 - **Three sensors.** The board runs 3 (`CONFIG_APP_SENSOR_COUNT=3`); the app models 3 slots
   (`board_layout.MAX_SLOTS`). The storage layout still reserves a fourth.
-- **The old profile and layout files are migrated once and left as a backup.**
+- **The old profile and layout files are migrated once and left as a backup.** The migration
+  reads each slot's old sensor from the legacy layout file, so a migrated user keeps the sensor
+  its slot used.
+- **The engine and the board push still run on `PersonProfile` / `SensorProfile`,** but those are
+  derived from a user on demand (`models/user_sim.py`), never saved: a user is the only thing
+  edited. A CSV user's window travels inside the profile and is replayed from there.
+- **A slot records the user's name** (`data/board_layout.json`); renaming a user moves its slot
+  along and deleting one leaves it. Names are unique, which Save and Send enforce.
+- **Send writes in a fixed order:** the name first (it does not reset the simulation), then the
+  model and sensor noise with both schedules cleared and rewritten — or, for a CSV user, the
+  recording is uploaded and **only then** is the slot switched to the CSV source (switching first
+  left the slot playing its old model with the CSV source already on; found on hardware).
 
 ## Consequences
 
@@ -44,8 +55,10 @@ might not exist on another machine.
   it is the same "ask the board" principle, now producing a saved user.
 - Keeps [0005](0005-start-pushes-the-app-profile.md): Start still writes the app's
   profile for each live slot and the expected line is built from the same list; "profile"
-  now means the user. Start additionally writes the name. CSV is still uploaded
-  separately from Start — now by **Send to…** with the user.
+  now means the user. Start additionally writes each user's name first — skipped, never failed,
+  when the board does not list `user_name` (Windows can show a stale cached services list right
+  after a firmware update) or the name is longer than 30 bytes (an older profile's). CSV is still
+  uploaded separately from Start — now by **Send to…** with the user.
 - The board's config image moved to v6; a v5 image is migrated (slots kept, names empty),
   not wiped, because the names were appended after `slots[]`.
 - CSV cannot be read back from the board yet. A board in CSV mode reads as a CSV user

@@ -24,8 +24,8 @@ right one for what they're testing:
 
 Cambridge and UVA/Padova have no exercise term at all (food only); Roy/Parker
 and Deichmann are the two exercise-capable models — this is why the app's
-`exercise_config_window.py` and the Exercise Instant dialog quietly have no
-effect if the active person is running Cambridge or UVA/Padova (see
+the Exercise page's schedule and the Exercise Instant dialog quietly have no
+effect if the user is running Cambridge or UVA/Padova (see
 `models/engine.py`'s per-model adapter table).
 
 ## 2. Common contract
@@ -65,10 +65,10 @@ exactly this order, as `float32` (`api/protocol.py`'s `_MODEL_PARAM_NAMES`/
 `_SENSOR_PARAM_NAMES`, matching each model's C `Params` struct field order
 byte-for-byte — see `model_thread.c`'s `BUILD_ASSERT`s and
 [`PROTOCOL_SPEC.md`](../PROTOCOL_SPEC.md) §2). Nothing is hardcoded
-differently on the two sides: a `PersonProfile` saved in the app's
-`data/profiles.json`, sent to the board, and read back should decode to the
-identical parameter dict it started as — this round-trip is exercised by
-every config window's Read from Board button.
+differently on the two sides: a user saved in the app's `data/users.json`, sent to
+the board, and read back should decode to the identical parameter dict it started as
+(after rounding to float32, the wire format) — this round-trip is exercised by the Users
+window's "+ Read from…" and checked on hardware by `scripts/hw_user_send.py`.
 
 ## 4. Numerical method: explicit Euler
 
