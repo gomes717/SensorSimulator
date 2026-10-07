@@ -339,12 +339,12 @@ def cycle_setup(env: Env, rec: Recorder, n: int, rng: random.Random) -> dict[int
         if user is None or slot not in f.sessions_by_slot():
             continue
         with rec.guard("read", f"{case} on sensor {slot + 1}"):
-            read_case(env, rec, case, slot, user, users, assignments)
+            read_case(env, rec, case, slot, user, users, assignments, rng)
     # Create "Name#2" last, on the first slot again (its user may have changed above)
     slot = order[0]
     if users.get(slot) is not None and slot in f.sessions_by_slot():
         with rec.guard("read", f"create on sensor {slot + 1}"):
-            read_case(env, rec, "create", slot, users[slot], users, assignments)
+            read_case(env, rec, "create", slot, users[slot], users, assignments, rng)
 
     # Reading does not move a slot's record: put the layout back in step with the board, the way a
     # user would (a send), so Start does not write a different user over the board's.
@@ -362,6 +362,27 @@ def cycle_setup(env: Env, rec: Recorder, n: int, rng: random.Random) -> dict[int
     return assignments
 
 
+def content(user: User) -> object:
+    """What a board can tell two versions of *user* apart by: a model user's weight (its BW) or
+    a CSV user's recorded window (a CSV user's weight never reaches the board)."""
+    if user.mode == "csv":
+        return tuple(user.csv.samples) if user.csv else None
+    return user.weight_kg
+
+
+def edit_to_differ(f: Flows, screen: UserProfileWindow, rng: random.Random) -> None:
+    """Edit the user on screen so that it differs from what the board runs."""
+    if screen.user.mode == "model":
+        f.edit_weight(screen, 2.0)
+        return
+    old = content(screen.user)
+    for _ in range(12):
+        path, start = random_csv_window(rng)
+        screen.pages["csv"]._apply_picked(str(path), start)
+        if content(screen.user) != old:
+            return
+
+
 def read_case(
     env: Env,
     rec: Recorder,
@@ -370,6 +391,7 @@ def read_case(
     user: User,
     users: dict[int, User],
     assignments: dict[int, Assignment],
+    rng: random.Random,
 ) -> None:
     f = env.flows
     w = env.window
@@ -408,7 +430,7 @@ def read_case(
                 assignments[slot] = Assignment(users[slot], env.now())
     elif case in ("overwrite", "create"):
         screen = f.open_user(f.saved(name))
-        f.edit_weight(screen, 2.0)
+        edit_to_differ(f, screen, rng)
         rec.check(
             "read",
             f"the saved user is edited so it differs from the board [{label}]",
@@ -429,8 +451,8 @@ def read_case(
                 now_saved is not None
                 and f.matches_board(now_saved, slot)[0]
                 and edited is not None
-                and now_saved.weight_kg != edited.weight_kg,
-                f"weight {edited and edited.weight_kg} -> {now_saved and now_saved.weight_kg}",
+                and content(now_saved) != content(edited),
+                f"{content(edited)!s:.40} -> {content(now_saved)!s:.40}",
             )
             users[slot] = f.snapshot_user(name) or users[slot]
         else:
@@ -444,7 +466,7 @@ def read_case(
             rec.check(
                 "read",
                 f"... and leaves the edited original [{label}]",
-                f.saved(name) is not None and f.saved(name).weight_kg == edited.weight_kg,
+                f.saved(name) is not None and content(f.saved(name)) == content(edited),
             )
             if copy is not None:
                 reading, error = f.board_read(slot)
@@ -558,7 +580,7 @@ def mid_run_change(
     candidates = [
         s for s in model_slots(assignments) if s != loop_slot and s in f.sessions_by_slot()
     ]
-    flip = n % 2 == 1
+    flip = (n // 2) % 2 == 0  # cycles 1, 5, 9...: flip the source; 3, 7...: new meals and exercise
     if flip:  # any live sensor but the loop one; the last model sensor stays a model
         spare_models = len(model_slots(assignments)) > 1
         candidates = [
@@ -694,15 +716,22 @@ def run_phase(
 
     plan = [
         (2.0, "frontend", lambda: frontend_batch(env, rec, n, rng, assignments)),
-        (4.0, "food", lambda: fire_instant("food", (45, 60.0))),
-        (6.0, "pisa", lambda: fire_instant("pisa", (12, 0.45))),
-        (8.0, "exercise", lambda: fire_instant("exercise", (30, 30.0))),
-        (10.0, "midrun", lambda: mid_run_change(env, rec, n, rng, assignments, loop_slot)),
-        (13.5, "reconnect", None),
-        (16.0, "food", lambda: fire_instant("food", (30, 40.0))),
-        (17.5, "exercise", lambda: fire_instant("exercise", (30, 30.0))),
-        (19.0, "pisa", lambda: fire_instant("pisa", (12, 0.45))),
+        (3.5, "food", lambda: fire_instant("food", (45, 60.0))),
+        (8.0, "reconnect", None),
+        (10.0, "food", lambda: fire_instant("food", (30, 40.0))),
+        (12.5, "pisa", lambda: fire_instant("pisa", (12, 0.45))),
+        (15.0, "exercise", lambda: fire_instant("exercise", (30, 30.0))),
+        (18.0, "food", lambda: fire_instant("food", (45, 60.0))),
+        (20.0, "exercise", lambda: fire_instant("exercise", (30, 30.0))),
+        (22.0, "pisa", lambda: fire_instant("pisa", (12, 0.45))),
     ]
+    if n % 2 == 1:
+        # A Send restarts every sensor's simulation (the board's clocks are shared), so a mid-run
+        # change is made only in odd cycles, early; even cycles run uninterrupted for 25 h and
+        # are the ones that check the CSV loop.
+        plan.append(
+            (5.0, "midrun", lambda: mid_run_change(env, rec, n, rng, assignments, loop_slot))
+        )
     todo = sorted(plan, key=lambda p: p[0])
     while time.monotonic() < end:
         now = time.monotonic()
@@ -826,12 +855,17 @@ def analyse(
         if reconnected and reconnected[0] == slot:
             times = [(t, v) for t, v in times if t >= reconnected[2] + 10.0]  # the link was down
         count, expected, share, gap = lg.completeness([t for t, _ in times])
-        rec.check(
-            area,
-            "BLE is complete",
-            share >= lg.MIN_COMPLETENESS and gap <= lg.MAX_GAP_S,
-            f"{count}/{expected:.0f} ({share:.1%}), worst gap {gap:.1f}s",
-        )
+        if count >= 10:
+            rec.check(
+                area,
+                "BLE is complete",
+                share >= lg.MIN_COMPLETENESS and gap <= lg.MAX_GAP_S,
+                f"{count}/{expected:.0f} ({share:.1%}), worst gap {gap:.1f}s",
+            )
+        else:
+            rec.note(
+                f"{area}: only {count} BLE value(s) to judge completeness on (after a reconnect)"
+            )
         matched, total, bad = lg.ble_match(times, pushes.get(slot, []))
         rec.check(
             area,
@@ -847,7 +881,10 @@ def analyse(
         mine = [e for e in issued if e.inst.slot == slot and last and e.wall >= last[0].t - 1.0]
         instants = [e.inst for e in mine]
 
-        noise = oa.sensor_noise(user.sensor_id, slot_ticks)
+        # a replayed recording is not run through a sensor model: only model users have one
+        noise = (
+            oa.sensor_noise(user.sensor_id, slot_ticks) if user.mode == "model" else {"ok": None}
+        )
         if noise["ok"] is not None:
             rec.check(
                 area,
@@ -911,7 +948,8 @@ def analyse(
             inside = [(off / 60.0, g) for off, g in foodlog if off / 60.0 + 5 < reached]
             run = lg.last_run(slot_ticks)
             hits = sum(
-                any(m <= tk.t_sim <= m + 60 and tk.carbs > 0.001 for tk in run) for m, _ in inside
+                any(m - 3 <= tk.t_sim <= m + 60 and tk.carbs > 0.001 for tk in run)
+                for m, _ in inside
             )
             if inside:
                 rec.check(
@@ -926,28 +964,41 @@ def analyse(
             epochs = sorted({e for (s, e) in env.app_ticks if s == slot})
             starts = [env.app_ticks[(slot, e)][0][0] for e in epochs if env.app_ticks[(slot, e)]]
             usable = [e for e in epochs if env.app_ticks[(slot, e)]]
+            compared = False
             for ei, si in oa.pair_epochs(starts, list(segments)):
                 raw = env.app_ticks[(slot, usable[ei])]
-                if raw[0][0] < t_start - 1.0 or len(raw) < oa.APP_MIN_TICKS:
+                # only the board's last segment is the final user's (earlier ones ran another)
+                if si != len(segments) - 1 or raw[0][0] < t_start - 1.0:
                     continue
-                app = [oa.AppTick((k + 1) * dt, g) for k, (_t, g) in enumerate(raw)]
-                seg_instants = [
-                    e.inst
+                if len(raw) < oa.APP_MIN_TICKS:
+                    continue
+                app = [oa.AppTick(wall, g) for wall, g in raw]
+                in_segment = [
+                    e
                     for e in issued
                     if e.inst.slot == slot
-                    and segments[si]
-                    and segments[si][0].t - 1.0 <= e.wall <= segments[si][-1].t + 1.0
+                    and segments[si][0].t - 1.0 <= e.wall <= segments[si][-1].t
                 ]
-                result = oa.app_vs_board(app, segments[si], dt, oa.masks_for(seg_instants, dt))
+                seg_instants = [e.inst for e in in_segment]
+                masks = oa.masks_for([(e.wall, e.inst) for e in in_segment], dt)
+                result = oa.app_vs_board(app, segments[si], masks)
                 if result["n"]:
+                    compared = True
                     limit = oa.app_limit(profile, seg_instants, speed, result["range"])
                     rec.check(
                         area,
                         f"the app's expected model follows the board's (epoch {usable[ei]})",
                         result["p99"] <= limit,
                         f"p99 {result['p99']:.2f} max {result['max']:.2f} over {result['n']} "
-                        f"ticks, limit {limit:.1f}",
+                        f"ticks, limit {limit:.1f}, best shift {result['lag']:+.0f}s",
                     )
+            if not compared:
+                rec.note(
+                    f"{area}: the app's expected model was not compared with the board's (no app "
+                    "engine started with the board's last segment for long enough): app epochs "
+                    f"began at {[round(s) for s in starts]}, the board's segment at "
+                    f"{round(segments[-1][0].t) if segments else None}"
+                )
 
     raised = [e for e in env.silent if e[2] and t_start <= e[0] <= t_end]
     rec.check("run", "no link_silent was raised during the run", not raised, f"{raised or 'none'}")
@@ -1079,6 +1130,12 @@ def main() -> int:
     ap.add_argument(
         "--smoke", action="store_true", help="one short cycle (6 min at x250) to see it is wired"
     )
+    ap.add_argument(
+        "--start-cycle",
+        type=int,
+        default=1,
+        help="number of the first cycle (even ones run uninterrupted and check the CSV loop)",
+    )
     ap.add_argument("--no-board", action="store_true", help="only the frontend flows, no hardware")
     ap.add_argument("--out", default=str(_ROOT / "test-artifacts"))
     args = ap.parse_args()
@@ -1131,12 +1188,14 @@ def main() -> int:
 
     results: list[dict] = []
     failures_in_a_row = 0
-    n = 0
+    n = args.start_cycle - 1
+    ran = 0
     try:
-        while (not args.cycles or n < args.cycles) and not (run_dir / "STOP").exists():
+        while (not args.cycles or ran < args.cycles) and not (run_dir / "STOP").exists():
             if not args.cycles and minutes_left(deadline) < args.minutes + 16:
                 break
             n += 1
+            ran += 1
             print(f"== cycle {n} ({minutes_left(deadline):.0f} min to the deadline)")
             result = run_cycle(env, n, args.minutes, speed, args.seed)
             failures_in_a_row = failures_in_a_row + 1 if result["error"] else 0

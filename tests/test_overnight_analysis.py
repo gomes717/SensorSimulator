@@ -45,33 +45,34 @@ def test_an_app_epoch_pairs_only_with_a_segment_that_started_with_it():
 def test_identical_series_agree_exactly():
     board = [_tick(i, i, 100 + i) for i in range(200)]
     app = [oa.AppTick(float(i), 100.0 + i) for i in range(200)]
-    result = oa.app_vs_board(app, board, 1.0, [])
+    result = oa.app_vs_board(app, board, [])
     assert result["n"] == 200 and result["max"] == 0.0
 
 
 def test_a_phase_offset_within_the_slack_is_not_an_error():
     board = [_tick(i, i, 100 + i) for i in range(200)]
     app = [oa.AppTick(float(i), 100.0 + i + 2) for i in range(190)]  # two ticks ahead
-    assert oa.app_vs_board(app, board, 1.0, [], slack=2)["max"] == 0.0
-    assert oa.app_vs_board(app, board, 1.0, [], slack=0)["max"] == 2.0
+    assert oa.app_vs_board(app, board, [], slack=2)["max"] == 0.0
+    shifted = oa.app_vs_board(app, board, [], slack=0)
+    assert shifted["max"] == 0.0 and shifted["lag"] == 2.0  # found by the shift search
 
 
 def test_a_real_difference_is_reported_and_masks_hide_it():
     board = [_tick(i, i, 100) for i in range(200)]
     app = [oa.AppTick(float(i), 100.0 + (40 if 50 <= i < 60 else 0)) for i in range(200)]
-    assert oa.app_vs_board(app, board, 1.0, [])["max"] == 40.0
-    assert oa.app_vs_board(app, board, 1.0, [(45, 65)])["max"] == 0.0
+    assert oa.app_vs_board(app, board, [])["max"] == 40.0
+    assert oa.app_vs_board(app, board, [(45, 65)])["max"] == 0.0
 
 
 def test_the_board_glucose_is_compared_after_pisa():
     board = [_tick(i, i, 100, pisa=0.5) for i in range(50)]
     app = [oa.AppTick(float(i), 50.0) for i in range(50)]
-    assert oa.app_vs_board(app, board, 1.0, [])["max"] == 0.0
+    assert oa.app_vs_board(app, board, [])["max"] == 0.0
 
 
 def test_nothing_to_compare_is_zero_ticks_not_a_pass():
-    assert oa.app_vs_board([], [_tick(0, 0, 1)], 1.0, [])["n"] == 0
-    assert oa.app_vs_board([oa.AppTick(0, 1)], [], 1.0, [])["n"] == 0
+    assert oa.app_vs_board([], [_tick(0, 0, 1)], [])["n"] == 0
+    assert oa.app_vs_board([oa.AppTick(0, 1)], [], [])["n"] == 0
 
 
 def test_the_limit_never_drops_below_the_floor_and_grows_with_the_tick():
@@ -137,5 +138,8 @@ def test_too_few_ticks_is_unknown_not_a_pass():
 
 
 def test_masks_cover_the_event_and_its_aftermath():
-    (lo, hi) = oa.masks_for([lg.Instant(0, "food", (30, 50.0), 100.0)], 1.0)[0]
+    (lo, hi) = oa.masks_for([(100.0, lg.Instant(0, "food", (30, 50.0), 500.0))], 1.0)[0]
     assert lo < 100.0 and hi >= 130.0
+    # at x60 a host second is a simulated minute: 30 + 90 simulated minutes is 120 host seconds
+    (_lo, hi60) = oa.masks_for([(100.0, lg.Instant(0, "food", (30, 50.0), 500.0))], 1.0)[0]
+    assert hi60 == 220.0

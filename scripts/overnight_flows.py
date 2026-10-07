@@ -545,7 +545,7 @@ class Flows:
         """Whether sensor *slot*'s tab header shows the user's picture; None without a tab."""
         key = self.tab_key(slot)
         header = None if key is None else self.w.tabs.header(key)
-        return None if header is None else header.shows_picture()
+        return None if header is None else header.shows_picture
 
     def snapshot_user(self, name: str) -> User | None:
         user = self.saved(name)

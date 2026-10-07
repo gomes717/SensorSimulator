@@ -20,7 +20,9 @@ from models.types import PersonProfile, SensorId
 APP_VS_BOARD_P99_MIN = 3.5  # mg/dL floor of the limit (see app_limit)
 APP_SLACK_TICKS = 2  # the firmware applies a schedule ~2 ticks earlier than the host model
 APP_MIN_TICKS = 120  # an epoch shorter than this is too short to judge
-EPOCH_PAIR_WINDOW_S = 12.0  # the app's engine and the board's slot must start this close
+EPOCH_PAIR_WINDOW_S = 10.0  # the app's engine and the board's slot must start this close
+MAX_LAG_S = 8.0  # the two start a few seconds apart (BLE write latency); the best shift is used
+TICK_S = 1.0  # both engines tick once per host second
 CSV_LOOP_TOL = 3.0  # mg/dL against the CSV sample at (sim time mod the window)
 CSV_LOOP_MIN_SHARE = 0.99
 IDEAL_OFFSET_MAX = 2.6  # the Ideal sensor adds (slot - (N-1)/2) * 2 mg/dL (model_thread.c)
@@ -30,9 +32,9 @@ LINK_BLIND_TICKS = 3  # ticks around an instant event skipped when comparing the
 
 @dataclass(frozen=True)
 class AppTick:
-    """One tick of the app's expected model for a slot (t_sim counted from its engine start)."""
+    """One tick of the app's expected model for a slot, at host time *t*."""
 
-    t_sim: float
+    t: float
     glucose: float
 
 
@@ -62,25 +64,49 @@ def app_limit(
 def app_vs_board(
     app: list[AppTick],
     board: list[Tick],
-    dt: float,
     masked: list[tuple[float, float]],
     slack: int = APP_SLACK_TICKS,
 ) -> dict:
-    """The app's expected glucose against the board's true glucose x PISA, tick by tick.
+    """The app's expected glucose against the board's true glucose x PISA, tick by tick, at the
+    host-time shift (within +-MAX_LAG_S, reported as ``lag``) where they agree best: the app
+    engine and the board's slot do not start in the same second, and a model started *s* seconds
+    later is *s* simulated seconds behind.
 
-    Both start from sim time 0 and step by *dt*, so they are compared at the same sim time, each
-    app tick against the closest board value within +-*slack* ticks. Sim-time intervals in
-    *masked* (around instant events, which each side applies at its own tick) are left out."""
-    if not app or not board or dt <= 0:
+    The app feeds its model the board's live food / exercise status, so the two are compared at the
+    same *host time* (not each at its own sim time), each app tick against the closest board value
+    within +-*slack* ticks. Host-time intervals in *masked* (around instant events, which each side
+    applies at its own tick) are left out. Only meaningful for an app engine and a board slot that
+    started together (see :func:`pair_epochs`)."""
+    if not app or not board:
         return {"n": 0}
-    times = [tick.t_sim for tick in board]
+    times = [tick.t for tick in board]
     values = [tick.glucose * tick.pisa for tick in board]
+    span = max(values) - min(values)
+    best: dict = {"n": 0}
+    lag = -MAX_LAG_S
+    while lag <= MAX_LAG_S + 1e-9:
+        result = _compare(app, times, values, masked, slack, lag)
+        if result["n"] and (not best["n"] or result["p99"] < best["p99"]):
+            best = {**result, "lag": lag, "range": span}
+        lag += TICK_S
+    return best
+
+
+def _compare(
+    app: list[AppTick],
+    times: list[float],
+    values: list[float],
+    masked: list[tuple[float, float]],
+    slack: int,
+    lag: float,
+) -> dict:
     errors: list[float] = []
     for tick in app:
-        if any(lo <= tick.t_sim <= hi for lo, hi in masked):
+        at = tick.t + lag
+        if any(lo <= tick.t <= hi for lo, hi in masked):
             continue
-        low = bisect.bisect_left(times, tick.t_sim - slack * dt - 1e-6)
-        high = bisect.bisect_right(times, tick.t_sim + slack * dt + 1e-6)
+        low = bisect.bisect_left(times, at - slack * TICK_S - 1e-6)
+        high = bisect.bisect_right(times, at + slack * TICK_S + 1e-6)
         if low >= high:
             continue
         errors.append(min(abs(tick.glucose - values[j]) for j in range(low, high)))
@@ -92,7 +118,6 @@ def app_vs_board(
         "mean": statistics.fmean(errors),
         "p99": order[int(0.99 * (len(order) - 1))],
         "max": order[-1],
-        "range": max(t.glucose * t.pisa for t in board) - min(t.glucose * t.pisa for t in board),
     }
 
 
@@ -178,10 +203,12 @@ def sensor_noise(sensor_id: SensorId, ticks: list[Tick]) -> dict:
     return {"n": len(residual), "ok": std >= NOISY_MIN_STD, "max": worst, "std": std}
 
 
-def masks_for(instants: list[lg.Instant], dt: float) -> list[tuple[float, float]]:
-    """Sim-time intervals to leave out when comparing two models around instant events."""
+def masks_for(issued: list[tuple[float, lg.Instant]], dt: float) -> list[tuple[float, float]]:
+    """Host-time intervals to leave out when comparing two models around instant events: from just
+    before each event (host time, sim instant) to its end plus 90 simulated minutes of aftermath.
+    *dt* is the simulated minutes per host second."""
     out = []
-    for ev in instants:
+    for wall, ev in issued:
         length = ev.args[0] if ev.kind in ("food", "exercise", "pisa") else 0
-        out.append((ev.t_sim - LINK_BLIND_TICKS * dt, ev.t_sim + length + 90.0))
+        out.append((wall - LINK_BLIND_TICKS * TICK_S, wall + (length + 90.0) / dt))
     return out
