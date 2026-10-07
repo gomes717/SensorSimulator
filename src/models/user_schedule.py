@@ -10,7 +10,7 @@ meal at its start time, which a one-minute-resolution graph cannot show apart, s
 
 from __future__ import annotations
 
-from models.types import ExerciseEvent, FoodEvent
+from models.types import CsvTrack, ExerciseEvent, FoodEvent
 
 MINUTES_PER_DAY = 1440
 MAX_EVENTS = 32  # what the board's food and exercise lists each hold
@@ -36,3 +36,15 @@ def exercise_series(events: list[ExerciseEvent]) -> list[float]:
             minute = (event.time_of_day_min + offset) % MINUTES_PER_DAY
             level[minute] = max(level[minute], event.intensity_pct)
     return level
+
+
+def csv_series(track: CsvTrack) -> list[float]:
+    """The recorded glucose (mg/dL) at each minute of the day: each sample holds for its interval,
+    and past the end of the data the last value holds. An empty window gives zeros."""
+    if not track.samples:
+        return [0.0] * MINUTES_PER_DAY
+    last = len(track.samples) - 1
+    return [
+        float(track.samples[min(int(minute * 60 / track.interval_s), last)])
+        for minute in range(MINUTES_PER_DAY)
+    ]

@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui import user_picture
+from gui.user_csv_page import CsvPage
 from gui.user_model_page import ModelPage
 from gui.user_profile_page import ProfilePage, choose_picture_file
 from gui.user_schedule_pages import EXERCISE, FOOD, SchedulePage
@@ -130,6 +131,7 @@ class UserProfileWindow(QWidget):
         )
         self.model_page = ModelPage(self._user, self._changed)
         self.add_page("profile", "Profile", self.profile_page)
+        self.add_page("csv", "CSV", CsvPage(self._user, self._changed))
         self.add_page("food", "Food", SchedulePage(self._user, FOOD, self._changed))
         self.add_page("exercise", "Exercise", SchedulePage(self._user, EXERCISE, self._changed))
         self.add_page("model", "Model", self.model_page)

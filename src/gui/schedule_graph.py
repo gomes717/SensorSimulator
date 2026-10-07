@@ -22,11 +22,12 @@ _HOURS = [m / 60.0 for m in range(1441)]
 class ScheduleGraph(FigureCanvas):
     """A filled step curve over one day. ``values`` holds the 1440 per-minute values drawn."""
 
-    def __init__(self, title: str, ylabel: str, color: str) -> None:
+    def __init__(self, title: str, ylabel: str, color: str, *, filled: bool = True) -> None:
         palette = QApplication.palette()
         background = palette.color(QPalette.ColorRole.Window).name()
         foreground = palette.color(QPalette.ColorRole.WindowText).name()
         self._color = color
+        self._filled = filled
         figure = Figure(facecolor=background)
         super().__init__(figure)
         self.setMinimumHeight(_MIN_HEIGHT_PX)
@@ -50,11 +51,16 @@ class ScheduleGraph(FigureCanvas):
         self.values = list(values)
         if self._fill is not None:
             self._fill.remove()
+            self._fill = None
         # one extra point so the last minute has a width too
         steps = [*self.values, self.values[-1] if self.values else 0.0]
-        self._fill = self.ax.fill_between(
-            _HOURS[: len(steps)], steps, step="post", color=self._color, alpha=0.7
-        )
+        x = _HOURS[: len(steps)]
         top = max(self.values, default=0.0)
-        self.ax.set_ylim(0, top * 1.2 if top > 0 else 1.0)
+        if self._filled:
+            self._fill = self.ax.fill_between(x, steps, step="post", color=self._color, alpha=0.7)
+            self.ax.set_ylim(0, top * 1.2 if top > 0 else 1.0)
+        else:
+            (self._fill,) = self.ax.step(x, steps, where="post", color=self._color, lw=1.5)
+            low = min((v for v in self.values if v > 0), default=0.0)
+            self.ax.set_ylim(low * 0.9, top * 1.1 if top > 0 else 1.0)
         self.draw_idle()

@@ -75,18 +75,18 @@ def _png(path: Path, width=40, height=20) -> Path:
 def test_the_header_shows_the_name_and_the_menu_the_registered_pages_in_order():
     env = _Env()
     assert env.win.name_label.text() == "Ana"
-    assert list(env.menu()) == ["Profile", "Food", "Exercise", "Model"]
+    assert list(env.menu()) == ["Profile", "CSV", "Food", "Exercise", "Model"]
 
 
-def test_pages_registered_later_appear_in_menu_order():
+def test_a_page_registered_later_joins_the_menu_in_its_place():
     env = _Env()
-    env.win.add_page("csv", "CSV", QWidget())
+    env.win.add_page("extra_unknown", "Ignored", QWidget())  # not in PAGE_ORDER: not listed
     assert list(env.menu()) == ["Profile", "CSV", "Food", "Exercise", "Model"]
 
 
 def test_clicking_a_menu_entry_shows_its_page():
     env = _Env()
-    env.win.menu.setCurrentRow(3)  # Model
+    env.win.menu.setCurrentRow(4)  # Model
     assert env.win.stack.currentWidget() is env.win.pages["model"]
 
 
@@ -94,7 +94,7 @@ def test_clicking_a_menu_entry_shows_its_page():
 
 
 def _with_all_pages(env):
-    env.win.add_page("csv", "CSV", QWidget())
+    """Every page now exists; kept so the gating tests read the same."""
 
 
 def test_model_mode_enables_everything_but_csv():
@@ -126,7 +126,7 @@ def test_csv_mode_enables_only_profile_and_csv():
 
 def test_switching_to_csv_leaves_a_page_that_is_no_longer_enabled():
     env = _Env()
-    env.win.menu.setCurrentRow(3)  # Model
+    env.win.menu.setCurrentRow(4)  # Model
     env.win.profile_page.csv_radio.setChecked(True)
     assert env.win.stack.currentWidget() is env.win.pages["profile"]
 

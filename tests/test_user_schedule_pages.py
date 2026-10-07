@@ -165,12 +165,13 @@ def test_refresh_follows_changes_made_elsewhere():
 # -- inside the profile screen -------------------------------------------------------------
 
 
-def test_the_profile_screen_has_food_and_exercise_pages_in_menu_order():
+def test_the_profile_screen_has_every_page_in_menu_order():
     user = _user()
     win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u: None))
     items = [win.menu.item(i) for i in range(win.menu.count())]
     assert [item.text() for item in items if item is not None] == [
         "Profile",
+        "CSV",
         "Food",
         "Exercise",
         "Model",
