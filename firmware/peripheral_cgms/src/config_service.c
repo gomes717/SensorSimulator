@@ -59,6 +59,9 @@ static struct bt_uuid_128 comm_profile_uuid = BT_UUID_INIT_128(
 static struct bt_uuid_128 sensor_select_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0015, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 
+static struct bt_uuid_128 user_name_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0016, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+
 /* Config writes are rejected while CGMS-only mode is active — see
  * model_thread.h's model_thread_set_cgms_only() comment. Deliberately does
  * NOT gate write_run_state/write_cgms_only themselves: those are the only
@@ -200,6 +203,40 @@ static ssize_t write_data_source(struct bt_conn *conn, const struct bt_gatt_attr
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
 	if (comm_thread_enqueue_config(CFG_MSG_DATA_SOURCE, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── User name: read + write (UTF-8, <= 30 bytes, per selected slot) ─── */
+
+static ssize_t read_user_name(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			       void *buf, uint16_t len, uint16_t offset)
+{
+	char name[SIM_USER_NAME_MAX];
+
+	comm_thread_copy_selected_user_name(name);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, name,
+				 strnlen(name, SIM_USER_NAME_MAX - 1));
+}
+
+static ssize_t write_user_name(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			        const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len > SIM_USER_NAME_MAX - 2) { /* 30 bytes of name; the NUL is ours */
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_USER_NAME, buf, len) != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
 	}
 	return len;
@@ -702,6 +739,12 @@ BT_GATT_SERVICE_DEFINE(sim_config_svc,
 		BT_GATT_CHRC_WRITE,
 		BT_GATT_PERM_WRITE,
 		NULL, write_csv_data, NULL),
+
+	/* Last in the table on purpose: every earlier attribute keeps its handle. */
+	BT_GATT_CHARACTERISTIC(&user_name_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_user_name, write_user_name, NULL),
 );
 
 /* Finds the VALUE attribute (not the declaration attribute) for a

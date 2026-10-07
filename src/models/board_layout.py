@@ -14,7 +14,10 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-MAX_SLOTS = 4
+# The board runs three sensors (CONFIG_APP_SENSOR_COUNT=3, firmware/peripheral_cgms/prj.conf).
+# The firmware's storage still reserves a fourth slot (MAX_SIM_SENSORS) but a four-sensor
+# build is no longer supported, so the app models exactly the three that exist.
+MAX_SLOTS = 3
 
 # The multi-sensor firmware advertises identity i (0-based slot) as
 # "Nordic Glucose Sensor {i+1}" — see firmware main.c / e2e_4sensor.py NAMES.

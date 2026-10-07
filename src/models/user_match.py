@@ -16,7 +16,7 @@ from dataclasses import replace
 from api import protocol
 from models.types import ExerciseEvent, FoodEvent, User
 
-MAX_NAME_BYTES = 30  # what the board's name field holds (plus its NUL)
+MAX_NAME_BYTES = protocol.MAX_USER_NAME_BYTES  # what the board's name field holds
 _NUMBERED = re.compile(r"#\d+$")
 
 

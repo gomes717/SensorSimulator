@@ -209,8 +209,9 @@ def test_a_model_person_that_once_picked_a_csv_does_not_carry_it_over(tmp_path):
 def test_slot_user_ids_follow_the_old_layout_by_name():
     users = user_store.migrate([_model_person("Ana"), _model_person("Bo")], [], _layout())
     ana, bo = users
-    layout = _layout((None, None), ("Bo", None), ("Ana", None), ("Gone", None))
-    assert user_store.slot_user_ids(users, layout) == [None, bo.id, ana.id, None]
+    layout = _layout(("Bo", None), ("Gone", None), ("Ana", None))
+    assert user_store.slot_user_ids(users, layout) == [bo.id, None, ana.id]
+    assert user_store.slot_user_ids(users, _layout()) == [None, None, None]
 
 
 # -- first run of the new store ----------------------------------------------

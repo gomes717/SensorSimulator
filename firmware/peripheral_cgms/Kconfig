@@ -8,8 +8,8 @@ menu "Simulator options"
 
 config APP_SENSOR_COUNT
 	int "Simulated CGM sensors / BLE identities"
-	range 1 4
-	default 4
+	range 1 3
+	default 3
 	help
 	  One physical board simulates this many independent CGM sensors, each
 	  with its own BLE identity / advertising set / CGMS instance and its own

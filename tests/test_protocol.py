@@ -164,3 +164,32 @@ def test_build_csv_uploads_shapes_both_tracks():
 def test_build_csv_uploads_omits_foodlog_when_empty():
     ups = protocol.build_csv_uploads([100, 110], 300, [], "2020-01-01T00:00:00")
     assert len(ups) == 1 and ups[0]["track"] == protocol.CSV_TRACK_GLUCOSE
+
+
+# -- user name (5b2c0016): raw UTF-8, at most 30 bytes, empty = no user ----------
+
+
+@pytest.mark.parametrize("name", ["", "Ana", "Ana#2", "é" * 15, "n" * 30])
+def test_user_name_roundtrip(name):
+    assert protocol.decode_user_name(protocol.encode_user_name(name)) == name
+
+
+def test_user_name_is_the_bare_utf8_bytes():
+    assert protocol.encode_user_name("Ana") == b"Ana"
+    assert protocol.encode_user_name("é") == "é".encode()
+
+
+def test_user_name_longer_than_the_board_field_is_refused_not_cut():
+    with pytest.raises(ValueError):
+        protocol.encode_user_name("n" * 31)
+    with pytest.raises(ValueError):
+        protocol.encode_user_name("é" * 16)  # 32 bytes
+
+
+def test_user_name_decode_stops_at_the_first_nul():
+    assert protocol.decode_user_name(b"Ana\x00\x00garbage") == "Ana"
+
+
+def test_user_name_decode_tolerates_bad_bytes():
+    assert protocol.decode_user_name(b"\xff\xfeA") == "��A"
+    assert protocol.decode_user_name(b"") == ""

@@ -113,6 +113,13 @@ void comm_thread_copy_selected_slot(struct sensor_slot *out)
 	k_mutex_unlock(&working_cfg_lock);
 }
 
+void comm_thread_copy_selected_user_name(char out[SIM_USER_NAME_MAX])
+{
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	memcpy(out, working_cfg.user_name[working_sel], SIM_USER_NAME_MAX);
+	k_mutex_unlock(&working_cfg_lock);
+}
+
 uint8_t comm_thread_comm_profile(void)
 {
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
@@ -172,6 +179,21 @@ static void apply_sensor_select_msg(const uint8_t *data, uint16_t len)
 	working_sel = (data[0] < n) ? data[0] : 0;
 	k_mutex_unlock(&working_cfg_lock);
 	printk("comm_thread: sensor_select -> %u\n", working_sel);
+}
+
+/* The payload is the bare name (0..SIM_USER_NAME_MAX-2 bytes); anything longer is
+ * refused by the GATT write, so this only ever sees a name that fits. */
+static void apply_user_name_msg(const uint8_t *data, uint16_t len)
+{
+	if (len > SIM_USER_NAME_MAX - 1) {
+		return;
+	}
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	char *dst = working_cfg.user_name[working_sel];
+
+	memset(dst, 0, SIM_USER_NAME_MAX);
+	memcpy(dst, data, len);
+	k_mutex_unlock(&working_cfg_lock);
 }
 
 static void apply_data_source_msg(const uint8_t *data, uint16_t len)
@@ -333,6 +355,10 @@ static void apply_exercise_event_msg(const uint8_t *data, uint16_t len)
 	k_mutex_unlock(&working_cfg_lock);
 }
 
+/* ~3 KB, too big for the comm_thread stack. process_cfg_msg() only ever runs on the
+ * comm_thread, one message at a time. */
+static struct sim_config snapshot;
+
 static void process_cfg_msg(const struct cfg_msg *msg)
 {
 	printk("comm_thread: cfg write received, type=%d len=%u\n", msg->type, msg->len);
@@ -388,6 +414,16 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		return; /* cursor only — nothing to persist or re-apply */
 	}
 
+	if (msg->type == CFG_MSG_USER_NAME) {
+		/* Persisted, but deliberately NOT routed through
+		 * model_thread_apply_config(): a name is metadata, and applying would
+		 * reset sim_clock_min and the instant events like a model write does. */
+		apply_user_name_msg(msg->data, msg->len);
+		comm_thread_copy_config(&snapshot);
+		sim_config_save_to_flash(&snapshot);
+		return;
+	}
+
 	if (msg->type == CFG_MSG_CGMS_ONLY) {
 		if (msg->len >= 1) {
 			model_thread_set_cgms_only(msg->data[0] != 0);
@@ -430,10 +466,6 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		apply_exercise_event_msg(msg->data, msg->len);
 		break;
 	}
-
-	/* static: ~2.85 KB, too big for the comm_thread stack. process_cfg_msg()
-	 * only ever runs on the comm_thread, one message at a time. */
-	static struct sim_config snapshot;
 
 	comm_thread_copy_config(&snapshot);
 	sim_config_save_to_flash(&snapshot);

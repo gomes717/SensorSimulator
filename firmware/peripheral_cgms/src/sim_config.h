@@ -14,7 +14,15 @@
 #include <zephyr/devicetree.h>
 
 #define SIM_CONFIG_MAGIC   0x53494D31u /* "SIM1" */
-#define SIM_CONFIG_VERSION 5 /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot */
+#define SIM_CONFIG_VERSION 6 /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
+			      * v6 user_name[] appended after slots[] */
+/* The last layout that differs from the current one only by the tail appended
+ * since: sim_config_load_from_flash() still accepts it (the new tail is zeroed). */
+#define SIM_CONFIG_VERSION_V5 5
+
+/* Name of the user on a slot: UTF-8, at most 30 bytes plus a NUL that is always
+ * present. Empty = no user. See PROTOCOL_SPEC.md's "User name" section. */
+#define SIM_USER_NAME_MAX 32
 
 #define MAX_MODEL_PARAMS  34 /* >= UVA/Padova's 33 params */
 #define MAX_SENSOR_PARAMS 14 /* >= Facchinetti's 13 params */
@@ -26,6 +34,9 @@
  * simulation clock and speed multiplier are shared. Build-time count via
  * CONFIG_APP_SENSOR_COUNT (1..MAX_SIM_SENSORS); 1 == the old single-sensor
  * build. */
+/* Storage capacity, not the supported count: sim_config and the CSV partition keep room
+ * for a fourth slot so the flash layout never moved, but the supported build is 3
+ * (Kconfig range 1..3) — the fourth identity is no longer used. */
 #define MAX_SIM_SENSORS 4
 #ifdef CONFIG_APP_SENSOR_COUNT
 #define SIM_SENSOR_COUNT CONFIG_APP_SENSOR_COUNT
@@ -107,7 +118,11 @@ struct sim_config {
 	uint8_t comm_profile;  /* global; forced SIM_COMM_SIG_CGMS when sensor_count > 1 */
 	float speed_mult;      /* global: SIM_SPEED_MIN..SIM_SPEED_MAX */
 	struct sensor_slot slots[MAX_SIM_SENSORS];
-} __packed; /* ~2.85 KB — fits the 4 KB sim_storage_partition */
+	/* v6. Appended AFTER slots[] so a v5 image's bytes keep their offsets and can
+	 * still be loaded (names empty). Metadata only: writing a name saves it but
+	 * never goes through model_thread_apply_config() (no sim reset). */
+	char user_name[MAX_SIM_SENSORS][SIM_USER_NAME_MAX];
+} __packed; /* ~2.98 KB — fits the 4 KB sim_storage_partition */
 
 /* BLE wire-format structs — byte-identical to what SensorSimulator's
  * src/protocol.py packs/unpacks (little-endian target, __packed here). */

@@ -59,6 +59,26 @@ def test_csv_window_replays_verbatim(path: Path):
     assert got == samples[:n]  # the plotted line IS the recorded 24 h window
 
 
+def test_csv_window_loops_when_it_ends():
+    """The window restarts after its 24 h instead of stopping — the board does the same
+    (verified on hardware 2026-10-06, scripts/hw_csv_loop.py), so the expected line must."""
+    profile = _csv_profile(_DEXCOM_CSVS[0])
+    samples, _interval_s, foodlog = load_csv_window(profile)
+    s = ModelStepper(profile)
+
+    first = [s.tick(_TICK_MIN, FIXED_TS) for _ in range(len(samples))]
+    second = [s.tick(_TICK_MIN, FIXED_TS) for _ in range(len(samples))]
+    third = [s.tick(_TICK_MIN, FIXED_TS) for _ in range(len(samples))]
+
+    assert [round(r.glucose) for r in first] == samples
+    assert [round(r.glucose) for r in second] == samples  # not frozen, not NaN
+    assert [round(r.glucose) for r in third] == samples
+    if foodlog:  # the meals fire again each pass
+        meals = [sum(1 for r in w if r.carbs_rate > 0) for w in (first, second, third)]
+        assert meals[0] > 0
+        assert meals[1] == meals[0] == meals[2]
+
+
 def test_csv_person_without_a_window_runs_no_model():
     """data_source="csv" but no CSV assigned -> idle, not a model drifting in
     the background (user report 2026-09-09)."""

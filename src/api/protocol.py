@@ -421,6 +421,25 @@ def decode_sensor_select(data: bytes) -> int | None:
     return data[0]
 
 
+# User name (see ble_uuids.USER_NAME_UUID): the name of the user on the selected slot.
+MAX_USER_NAME_BYTES = 30  # the board's field is 32 B: 30 of name + NUL, always terminated
+
+
+def encode_user_name(name: str) -> bytes:
+    """The bare UTF-8 bytes of *name* (empty = no user). Refuses a name the board's
+    field cannot hold rather than cutting it: a silently shortened name would leave the
+    app and the board calling the same user by two names."""
+    raw = name.encode("utf-8")
+    if len(raw) > MAX_USER_NAME_BYTES:
+        raise ValueError(f"user name is {len(raw)} bytes, the board holds {MAX_USER_NAME_BYTES}")
+    return raw
+
+
+def decode_user_name(data: bytes) -> str:
+    """Inverse of encode_user_name — up to the first NUL, undecodable bytes replaced."""
+    return data.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+
+
 # ------------------------------------------------------------------
 # Readback (MCU -> app): inverse of the encode_* functions above, used to
 # recover whatever config is currently applied/stored on the board.

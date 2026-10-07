@@ -62,6 +62,7 @@ CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.SPEED_UUID: "speed",  # read + write, persisted (x1..x1000 multiplier)
     ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted (SIG CGMS vs Dexcom)
     ble_uuids.SENSOR_SELECT_UUID: "sensor_select",  # read + write, not persisted; per-slot cursor
+    ble_uuids.USER_NAME_UUID: "user_name",  # read + write, persisted per slot; no sim reset
     ble_uuids.CSV_CONTROL_UUID: "csv_control",  # write + notify, chunked CSV upload control
     ble_uuids.CSV_DATA_UUID: "csv_data",  # write-only, CSV upload data chunks
     ble_uuids.FOOD_EVENTS_READBACK_UUID: "food_list",  # read-only, full list

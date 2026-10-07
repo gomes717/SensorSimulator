@@ -54,6 +54,10 @@ enum cfg_msg_type {
 	 * slots subsequent person/sensor/food/exercise/data-source/CSV writes and
 	 * reads target. See PROTOCOL_SPEC.md's "Sensor select" section. */
 	CFG_MSG_SENSOR_SELECT,
+	/* Name of the user on the selected slot — part of sim_config (persisted) but
+	 * metadata only: saved to flash WITHOUT model_thread_apply_config(), so it
+	 * never resets the simulation. See PROTOCOL_SPEC.md's "User name" section. */
+	CFG_MSG_USER_NAME,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking
@@ -76,6 +80,8 @@ void comm_thread_copy_config(struct sim_config *out);
  * comm_thread_copy_selected_slot() returns the slot the sensor-select cursor
  * currently points at (what every per-sensor GATT read serves). */
 void comm_thread_copy_selected_slot(struct sensor_slot *out);
+/* Copies the selected slot's user name (always NUL-terminated) into out. */
+void comm_thread_copy_selected_user_name(char out[SIM_USER_NAME_MAX]);
 uint8_t comm_thread_comm_profile(void);
 float comm_thread_speed_mult(void);
 

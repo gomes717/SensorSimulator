@@ -69,10 +69,27 @@ int sim_config_load_from_flash(struct sim_config *cfg)
 	err = flash_area_read(fa, 0, cfg, sizeof(*cfg));
 	flash_area_close(fa);
 
-	if (err || cfg->magic != SIM_CONFIG_MAGIC || cfg->version != SIM_CONFIG_VERSION) {
+	bool is_v5 = !err && cfg->magic == SIM_CONFIG_MAGIC &&
+		     cfg->version == SIM_CONFIG_VERSION_V5;
+
+	if (err || cfg->magic != SIM_CONFIG_MAGIC ||
+	    (cfg->version != SIM_CONFIG_VERSION && !is_v5)) {
 		printk("sim_config: no valid config in flash (err=%d), using defaults\n", err);
 		sim_config_set_defaults(cfg);
 		return err ? err : -ENOENT;
+	}
+
+	if (is_v5) {
+		/* A v5 image ends where user_name[] begins; what we just read past
+		 * it is erased flash (0xFF), not names. Keep every slot, add empty
+		 * names; the next save writes v6. */
+		memset(cfg->user_name, 0, sizeof(cfg->user_name));
+		cfg->version = SIM_CONFIG_VERSION;
+		printk("sim_config: migrated v5 -> v%u (user names empty)\n", SIM_CONFIG_VERSION);
+	}
+	/* A name is always NUL-terminated, whatever the flash held. */
+	for (int i = 0; i < MAX_SIM_SENSORS; i++) {
+		cfg->user_name[i][SIM_USER_NAME_MAX - 1] = '\0';
 	}
 
 	/* sensor_count is fixed by the build (CONFIG_APP_SENSOR_COUNT), not a

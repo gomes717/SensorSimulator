@@ -73,7 +73,8 @@ def test_param_count_fits_the_firmware_buffer():
     ("name", "slot"),
     [
         ("Nordic Glucose Sensor 1", 0),
-        ("Nordic Glucose Sensor 4", 3),
+        ("Nordic Glucose Sensor 3", 2),
+        ("Nordic Glucose Sensor 4", None),  # the board has three sensors
         ("Nordic Glucose Sensor", None),
         ("Nordic Glucose Sensor 9", None),
         ("", None),
