@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.avatar import avatar_icon
+from gui.branding import LogoWidget
 from gui.run_clock import RunClock
 from gui.sensor_page import SensorPage
 from gui.sensor_pages import SensorPages
@@ -312,6 +313,8 @@ class _EmptyState(QWidget):
         self.button.clicked.connect(self.connect_requested)
         layout = QVBoxLayout(self)
         layout.addStretch(1)
+        layout.addWidget(LogoWidget(), 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(16)
         layout.addWidget(title)
         layout.addSpacing(12)
         layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignCenter)

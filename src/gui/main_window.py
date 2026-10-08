@@ -22,6 +22,7 @@ from gui.app_state import AppState
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
 from gui.board_mode import BoardMode
+from gui.branding import APP_NAME
 from gui.child_windows import ChildWindows, UsersDeps, WindowDeps
 from gui.config_controller import ConfigController
 from gui.configuration_window import ConfigurationWindow
@@ -51,7 +52,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         """Build the state, the sensor tabs, the run controls and the child windows."""
         super().__init__()
-        self.setWindowTitle("TCC App")
+        self.setWindowTitle(APP_NAME)
         self.resize(1100, 750)
         # Every other window and dialog opens centred on this one.
         app = QApplication.instance()
