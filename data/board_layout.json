@@ -1,20 +1,13 @@
 {
   "slots": [
     {
-      "person": "test2",
-      "sensor": "Sample Sensor"
+      "person": "Maria"
     },
     {
-      "person": "test3",
-      "sensor": "Sample Sensor"
+      "person": "Guilherme"
     },
     {
-      "person": "test3",
-      "sensor": "Sample Sensor"
-    },
-    {
-      "person": "Sample Patient",
-      "sensor": "Sample Sensor"
+      "person": "Jo\u00e3o"
     }
   ]
 }

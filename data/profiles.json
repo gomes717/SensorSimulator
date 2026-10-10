@@ -72,50 +72,45 @@
         }
       ],
       "basal_u_per_h": null,
-      "data_source": "model",
+      "data_source": "csv",
       "csv_path": null,
       "csv_window_start_iso": null,
       "food_log_path": null
     },
     {
       "name": "test2",
-      "model_id": 1,
+      "model_id": 0,
       "params": {
         "BW": 75.0,
-        "VG": 1.88,
-        "VI": 0.05,
-        "k1": 0.065,
-        "k2": 0.079,
-        "m1": 0.19,
-        "m2": 0.484,
-        "m4": 0.194,
-        "kmin": 0.008,
-        "kmax": 0.0558,
-        "kgri": 0.0558,
-        "kabs": 0.057,
-        "ki": 0.0079,
-        "Fcns": 1.0,
-        "Vm0": 2.5,
-        "Vmx": 0.047,
-        "Km0": 225.59,
-        "p2u": 0.0331,
-        "kp1": 2.7,
-        "kp2": 0.0021,
-        "kp3": 0.009,
-        "ke1": 0.0005,
-        "ke2": 339.0,
-        "ka1": 0.0018,
-        "ka2": 0.0182,
-        "kd": 0.0164,
-        "Td": 10.0,
-        "bmeal": 0.69,
-        "cmeal": 0.17,
-        "f": 0.9,
-        "HEeq": 0.6,
-        "Gpeq": 100.0,
-        "Ib": 25.0
+        "VG": 0.1599999964237213,
+        "VI": 0.11999999731779099,
+        "k12": 0.06599999964237213,
+        "ka1": 0.006000000052154064,
+        "ka2": 0.05999999865889549,
+        "ka3": 0.029999999329447746,
+        "SIT": 0.005119999870657921,
+        "SID": 0.0008200000156648457,
+        "SIE": 0.052000001072883606,
+        "ke": 0.1379999965429306,
+        "tmaxI": 55.0,
+        "tmaxG": 40.0,
+        "AG": 0.800000011920929,
+        "EGP0": 0.016100000590085983,
+        "F01": 0.009700000286102295,
+        "Gpeq": 100.0
       },
-      "food_events": [],
+      "food_events": [
+        {
+          "time_of_day_min": 480,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 900,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        }
+      ],
       "exercise_events": [],
       "basal_u_per_h": null,
       "data_source": "model",
@@ -192,9 +187,12 @@
   "sensors": [
     {
       "name": "Sample Sensor",
-      "sensor_id": 0,
+      "sensor_id": 1,
       "params": {
-        "sampling_time_min": 5.0
+        "pacf": 0.7,
+        "sigma": 1.5,
+        "alpha": 1.0,
+        "beta": 0.0
       }
     }
   ]

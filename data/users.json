@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "users": [
+    {
+      "id": "dccdcd2938304f4d9054e1c7e5617bec",
+      "name": "Maria",
+      "height_cm": 170.0,
+      "weight_kg": 60.0,
+      "picture": "picture.png",
+      "mode": "csv",
+      "model_id": 3,
+      "model_params": {
+        "Gpeq": 100.0,
+        "BW": 60.0,
+        "Gb": 172.0,
+        "Ib": 10.0,
+        "HRb": 80.0,
+        "p1": 0.0041,
+        "p2": 0.0155,
+        "p3": 6.913e-06,
+        "alpha": 0.000259,
+        "beta": 0.000339,
+        "tauHR": 5.0,
+        "tau": 600.0,
+        "f": 0.1,
+        "AG": 0.8,
+        "Vg": 1.6,
+        "tau_m": 60.0,
+        "k21": 0.0085,
+        "kd": 0.0247,
+        "ka": 0.011,
+        "ke": 0.0357,
+        "Vi": 0.104,
+        "IIRb": 0.5
+      },
+      "sensor_id": 2,
+      "sensor_params": {
+        "a0": 1.1,
+        "a1": 0.0002,
+        "a2": 0.0,
+        "b0": -14.8,
+        "b1": 0.04,
+        "b2": 0.0,
+        "aw1": 1.013,
+        "aw2": -0.2135,
+        "sigma_v": 3.8013155617496426,
+        "ac1": 1.23,
+        "ac2": -0.3995,
+        "sigma_c": 3.361547262794322
+      },
+      "food_events": [
+        {
+          "time_of_day_min": 480,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 900,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        }
+      ],
+      "exercise_events": [
+        {
+          "time_of_day_min": 360,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        },
+        {
+          "time_of_day_min": 1080,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        }
+      ],
+      "basal_u_per_h": null
+    },
+    {
+      "id": "cd15f83f8db741358cb6ccab3035241a",
+      "name": "Jo\u00e3o",
+      "height_cm": 180.0,
+      "weight_kg": 100.0,
+      "picture": "picture.png",
+      "mode": "model",
+      "model_id": 3,
+      "model_params": {
+        "Gpeq": 100.0,
+        "BW": 100.0,
+        "Gb": 172.0,
+        "Ib": 10.0,
+        "HRb": 80.0,
+        "p1": 0.0041,
+        "p2": 0.0155,
+        "p3": 6.913e-06,
+        "alpha": 0.000259,
+        "beta": 0.000339,
+        "tauHR": 5.0,
+        "tau": 600.0,
+        "f": 0.1,
+        "AG": 0.8,
+        "Vg": 1.6,
+        "tau_m": 60.0,
+        "k21": 0.0085,
+        "kd": 0.0247,
+        "ka": 0.011,
+        "ke": 0.0357,
+        "Vi": 0.104,
+        "IIRb": 0.5
+      },
+      "sensor_id": 0,
+      "sensor_params": {},
+      "food_events": [
+        {
+          "time_of_day_min": 480,
+          "carbs_g": 30.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 1020,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        }
+      ],
+      "exercise_events": [
+        {
+          "time_of_day_min": 1080,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        }
+      ],
+      "basal_u_per_h": null
+    },
+    {
+      "id": "ed474737861949faa261dfd126a7c21c",
+      "name": "Guilherme",
+      "height_cm": 180.0,
+      "weight_kg": 75.0,
+      "picture": "picture.png",
+      "mode": "csv",
+      "model_id": 0,
+      "model_params": {
+        "BW": 75.0,
+        "VG": 0.1599999964237213,
+        "VI": 0.11999999731779099,
+        "k12": 0.06599999964237213,
+        "ka1": 0.006000000052154064,
+        "ka2": 0.05999999865889549,
+        "ka3": 0.029999999329447746,
+        "SIT": 0.005119999870657921,
+        "SID": 0.0008200000156648457,
+        "SIE": 0.052000001072883606,
+        "ke": 0.1379999965429306,
+        "tmaxI": 55.0,
+        "tmaxG": 40.0,
+        "AG": 0.800000011920929,
+        "EGP0": 0.016100000590085983,
+        "F01": 0.009700000286102295,
+        "Gpeq": 100.0
+      },
+      "sensor_id": 0,
+      "sensor_params": {},
+      "food_events": [
+        {
+          "time_of_day_min": 60,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 360,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 720,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 1080,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        }
+      ],
+      "exercise_events": [
+        {
+          "time_of_day_min": 480,
+          "duration_min": 30,
+          "intensity_pct": 30.0
+        },
+        {
+          "time_of_day_min": 900,
+          "duration_min": 30,
+          "intensity_pct": 30.0
+        }
+      ],
+      "basal_u_per_h": null
+    },
+    {
+      "id": "316f4b3423e24b4d89731d4b31a38804",
+      "name": "Maria#2",
+      "height_cm": null,
+      "weight_kg": 60.0,
+      "picture": "picture.png",
+      "mode": "csv",
+      "model_id": 3,
+      "model_params": {
+        "Gpeq": 100.0,
+        "BW": 60.0,
+        "Gb": 172.0,
+        "Ib": 10.0,
+        "HRb": 80.0,
+        "p1": 0.004100000020116568,
+        "p2": 0.01549999974668026,
+        "p3": 6.913000106578693e-06,
+        "alpha": 0.0002589999930933118,
+        "beta": 0.0003389999910723418,
+        "tauHR": 5.0,
+        "tau": 600.0,
+        "f": 0.10000000149011612,
+        "AG": 0.800000011920929,
+        "Vg": 1.600000023841858,
+        "tau_m": 60.0,
+        "k21": 0.008500000461935997,
+        "kd": 0.024700000882148743,
+        "ka": 0.010999999940395355,
+        "ke": 0.0357000008225441,
+        "Vi": 0.10400000214576721,
+        "IIRb": 0.5
+      },
+      "sensor_id": 1,
+      "sensor_params": {
+        "pacf": 0.699999988079071,
+        "sigma": 1.5,
+        "alpha": 1.0,
+        "beta": 0.0
+      },
+      "food_events": [
+        {
+          "time_of_day_min": 480,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        },
+        {
+          "time_of_day_min": 900,
+          "carbs_g": 50.0,
+          "duration_min": 15
+        }
+      ],
+      "exercise_events": [
+        {
+          "time_of_day_min": 360,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        },
+        {
+          "time_of_day_min": 1080,
+          "duration_min": 30,
+          "intensity_pct": 50.0
+        }
+      ],
+      "basal_u_per_h": null
+    }
+  ]
+}
