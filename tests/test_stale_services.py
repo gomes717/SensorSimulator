@@ -114,3 +114,120 @@ def test_a_healthy_connection_is_not_retried(monkeypatch):
     attempts, outcome = _connect(monkeypatch, closed_attempts=0)
     assert len(attempts) == 1
     assert outcome[0][0] == "connected" and outcome[0][4] == ""
+
+
+# ---- a live link whose objects close under it --------------------------------------------------
+
+
+class _LiveService(_Service):
+    def __init__(self):
+        super().__init__()
+        self.characteristics.append(_Char(bs.ble_uuids.SPEED_UUID, 2, ["read", "write"]))
+
+
+class _LiveClient:
+    """Subscribing works; the config characteristic's reads and writes fail with the closed-object
+    error on the first ``closed_connections`` connections (set by :func:`_live_client`)."""
+
+    attempts: list[dict]
+    done: list[tuple]
+    closed_connections: int
+
+    def __init__(self, _address, disconnected_callback=None, **options):
+        self.attempts.append(options)
+        self.is_connected = True
+        self.services = [_LiveService()]
+        self._closed = len(self.attempts) <= self.closed_connections
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def start_notify(self, _char, _callback):
+        pass
+
+    def _check(self, char) -> bool:
+        """True for the config characteristic on a healthy connection."""
+        if char.handle != 2:
+            return False
+        if self._closed:
+            raise OSError(_CLOSED)
+        return True
+
+    async def write_gatt_char(self, char, payload, **_kwargs):
+        if self._check(char):
+            self.done.append(("write", bytes(payload)))
+
+    async def read_gatt_char(self, char):
+        self._check(char)
+        self.done.append(("read", char.handle))
+        return b""
+
+
+def _live_client(attempts: list[dict], done: list[tuple], closed_connections: int):
+    return type(
+        "Client",
+        (_LiveClient,),
+        {"attempts": attempts, "done": done, "closed_connections": closed_connections},
+    )
+
+
+def _run_live(monkeypatch, closed_connections: int, act):
+    attempts: list[dict] = []
+    done: list[tuple] = []
+    monkeypatch.setattr(bs, "BleakClient", _live_client(attempts, done, closed_connections))
+    monkeypatch.setattr(bs, "sys", type("S", (), {"platform": "linux"}))
+    monkeypatch.setattr(bs.time, "sleep", lambda _s: None)
+    session = bs.BleSession("AA:BB", "Nordic Glucose Sensor 1", silence_limit_s=1e9)
+    events: list[tuple] = []
+    session.connected.connect(lambda *args: events.append(("connected", *args)))
+    session.connect_failed.connect(lambda *args: events.append(("connect_failed", *args)))
+    session.write_failed.connect(lambda *args: events.append(("write_failed", *args)))
+    session.config_read.connect(lambda *args: events.append(("config_read", *args)))
+    session.start()
+    for _ in range(100):
+        if events:
+            break
+        QTest.qWait(50)
+    act(session)
+    for _ in range(100):
+        if len(events) > 1 or done:
+            break
+        QTest.qWait(50)
+    QTest.qWait(300)  # long enough for a stray second signal to show up
+    session.stop()
+    session.wait(5000)
+    return attempts, done, events
+
+
+def test_a_write_that_finds_the_objects_closed_is_retried_on_a_fresh_connection(monkeypatch):
+    attempts, done, events = _run_live(monkeypatch, 1, lambda s: s.queue_write("speed", b"\x05"))
+    assert len(attempts) == 2
+    assert attempts[1] == {"winrt": {"use_cached_services": False}}
+    assert done == [("write", b"\x05")]  # exactly once, on the second connection
+    assert [e[0] for e in events] == ["connected"]  # the recovery is not announced, nor a failure
+
+
+def test_a_read_that_finds_the_objects_closed_is_asked_again(monkeypatch):
+    attempts, done, events = _run_live(monkeypatch, 1, lambda s: s.request_read("speed"))
+    assert len(attempts) == 2
+    assert done == [("read", 2)]
+    assert [e[0] for e in events] == ["connected", "config_read"]
+    assert events[1][2:] == ("speed", b"\x07")
+
+
+def test_it_retries_a_closed_write_only_once(monkeypatch):
+    attempts, done, events = _run_live(monkeypatch, 5, lambda s: s.queue_write("speed", b"\x05"))
+    assert len(attempts) == 2  # no reconnect loop
+    assert done == []
+    assert [e[0] for e in events] == ["connected", "write_failed"]
+    assert "object" in events[1][3].lower() or "objeto" in events[1][3].lower()
+
+
+def test_a_healthy_write_is_not_retried(monkeypatch):
+    attempts, done, events = _run_live(monkeypatch, 0, lambda s: s.queue_write("speed", b"\x05"))
+    assert len(attempts) == 1
+    assert done == [("write", b"\x05")]
+    assert [e[0] for e in events] == ["connected"]

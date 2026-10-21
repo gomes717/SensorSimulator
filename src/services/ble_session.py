@@ -93,7 +93,14 @@ _CLOSED_OBJECT = "-2147483629"
 
 
 class _StaleServices(ConnectionError):
-    """The connection came up with disposed GATT objects: discover again without the cache."""
+    """The connection came up with disposed GATT objects: discover again without the cache.
+
+    Also raised when a queued write or read finds a *live* link's objects closed; that operation
+    travels in ``retry_op`` and runs again on the fresh connection."""
+
+    def __init__(self, message: str, retry_op: tuple | None = None):
+        super().__init__(message)
+        self.retry_op = retry_op
 
 
 def _sfloat_to_float(raw: int) -> float:
@@ -322,9 +329,9 @@ class BleSession(QThread):
         try:
             try:
                 asyncio.run(self._session())
-            except _StaleServices:
+            except _StaleServices as stale:
                 time.sleep(1.0)  # let Windows finish tearing the old connection down
-                asyncio.run(self._session(fresh_services=True))
+                asyncio.run(self._session(fresh_services=True, retry_op=stale.retry_op))
         except asyncio.CancelledError:
             # The WinRT backend cancels an in-flight GATT operation when the
             # link drops mid service discovery (the congested 3rd/4th link
@@ -340,11 +347,18 @@ class BleSession(QThread):
         finally:
             self._link_up = False
 
-    async def _session(self, fresh_services: bool = False) -> None:
+    async def _session(self, fresh_services: bool = False, retry_op: tuple | None = None) -> None:
         """Pair (Windows only, best-effort), open the connection, subscribe, then wait.
 
         *fresh_services* discovers the board's services again instead of using Windows' cached
-        copy (the retry after a connection came up with closed objects)."""
+        copy (the retry after a connection came up with closed objects). *retry_op* is a queued
+        write or read that found a live link's objects closed: it runs first on this connection."""
+        # A queue binds to the loop that first waits on it, and a recovery runs a second loop. Swap
+        # them before announcing the loop, so queue_write() never feeds an abandoned one.
+        self._write_queue = asyncio.Queue()
+        self._csv_ctrl_queue = asyncio.Queue()
+        if retry_op is not None:
+            self._write_queue.put_nowait(retry_op)
         self._loop = asyncio.get_running_loop()
         pairing_error = ""
         if sys.platform == "win32" and self._require_pairing:
@@ -506,7 +520,8 @@ class BleSession(QThread):
                 # subscribe (Not connected)" would just be a confusing way of
                 # saying the connection never really came up.
                 raise ConnectionError("link dropped during setup — try connecting again")
-            self.connected.emit(self._address, subscribed_count, notify_count, last_error)
+            if retry_op is None:  # a recovered link was never announced as gone
+                self.connected.emit(self._address, subscribed_count, notify_count, last_error)
 
             while not self.isInterruptionRequested() and not link_lost.is_set():
                 await self._check_silence(client, measurement_char)
@@ -518,19 +533,29 @@ class BleSession(QThread):
                 # writes, so "set the sensor-select cursor, then read that
                 # slot" is correctly ordered (a bare run_coroutine_threadsafe
                 # read could execute before the queued cursor write landed).
-                if char_key is _READ_OP:
-                    await self._do_read(payload)
-                    continue
-                characteristic = self._config_characteristics.get(char_key)
-                if characteristic is None:
-                    self.write_failed.emit(
-                        self._address, char_key, "device does not expose this characteristic"
-                    )
-                    continue
                 try:
+                    if char_key is _READ_OP:
+                        await self._do_read(payload)
+                        continue
+                    characteristic = self._config_characteristics.get(char_key)
+                    if characteristic is None:
+                        self.write_failed.emit(
+                            self._address, char_key, "device does not expose this characteristic"
+                        )
+                        continue
                     await client.write_gatt_char(characteristic, payload, response=True)
                 except Exception as exc:  # pylint: disable=broad-except
-                    self.write_failed.emit(self._address, char_key, str(exc))
+                    if _CLOSED_OBJECT in str(exc) and not fresh_services:
+                        # Windows disposed this link's GATT objects under it. Reconnect without
+                        # its cache and run the operation again, once (run() owns the retry).
+                        self._link_up = False
+                        self._loop = None  # queue_write() drops writes until the new loop is up
+                        self._client = None
+                        raise _StaleServices(
+                            "a live link's GATT objects were closed", (char_key, payload)
+                        ) from exc
+                    failed_key = payload if char_key is _READ_OP else char_key
+                    self.write_failed.emit(self._address, failed_key, str(exc))
 
         self._link_up = False
         self.disconnected.emit(self._address)
@@ -637,6 +662,8 @@ class BleSession(QThread):
         try:
             data = await self._client.read_gatt_char(characteristic)
         except Exception as exc:  # pylint: disable=broad-except
+            if _CLOSED_OBJECT in str(exc):
+                raise  # the session loop reconnects and asks again
             self.write_failed.emit(self._address, char_key, str(exc))
             return
         self.config_read.emit(self._address, char_key, bytes(data))
