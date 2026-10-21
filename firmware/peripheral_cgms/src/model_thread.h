@@ -15,6 +15,7 @@
 struct model_measurement {
 	float glucose_mg_dl;
 	int valid; /* 1 if glucose_mg_dl is a fresh, unconsumed sensor sample */
+	double sim_s; /* simulated time of that sample, seconds since the clock (re)started */
 	float carbs_g_per_min;
 	float exercise_pct;
 };

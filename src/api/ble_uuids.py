@@ -80,11 +80,11 @@ SPEED_UUID = "5b2c0012-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # (1 - depth_frac * sin(pi * elapsed/duration)), a smooth false low that does
 # not reflect real hypoglycaemia. See PROTOCOL_SPEC.md.
 PISA_INSTANT_UUID = "5b2c0013-0d6d-4a3a-8c1e-3f9b6e7a1a00"
-# Read + write, persisted in sim_config (v4). 1 byte: 0 = stream the standard
-# Bluetooth SIG CGM Service (0x181F, default), 1 = stream a basic Dexcom-style
-# proprietary format (FEBC service, opcode-tagged messages, no auth). Switching
-# re-advertises the board — reconnect to rediscover. See PROTOCOL_SPEC.md's
-# "Comm profile" section.
+# Read + write, persisted in sim_config. The BOARD MODE, 1 byte: 0 = "Multi" (the default): the
+# board's three sensors stream the standard Bluetooth SIG CGM Service (0x181F) with no pairing;
+# 1 = "Dexcom": ONE sensor, advertised as a Dexcom G6 transmitter (see the DEXCOM_* UUIDs below)
+# that xDrip can read, while the PC app uses "Nordic Glucose Sensor 1". Switching drops every link
+# and re-advertises: the app must rescan and reconnect. See PROTOCOL_SPEC.md's "Board mode" section.
 COMM_PROFILE_UUID = "5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # Read + write, NOT persisted (a session cursor, like RUN_STATE_UUID). 1 byte:
 # the sensor slot index [0, sensor_count) that subsequent per-sensor config
@@ -108,8 +108,16 @@ USER_NAME_UUID = "5b2c0016-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 # so every earlier handle keeps its number. See PROTOCOL_SPEC.md's "CSV readback" section.
 CSV_READ_UUID = "5b2c0017-0d6d-4a3a-8c1e-3f9b6e7a1a00"
 
-# Basic Dexcom-style profile (see ble_session.py / PROTOCOL_SPEC.md). NOT a real
-# Dexcom implementation — no J-PAKE/AES auth, realtime glucose message only.
-DEXCOM_SERVICE_UUID = "0000febc-0000-1000-8000-00805f9b34fb"
-DEXCOM_CONTROL_CHAR_UUID = "f8083535-849e-531c-c594-30f1f86a4ea5"
-DEXCOM_GLUCOSE_CHAR_UUID = "f8083538-849e-531c-c594-30f1f86a4ea5"
+# Read + write, persisted in sim_config (v7). 6 ASCII bytes [0-9A-Z]: the Dexcom transmitter ID,
+# the secret of the G6 challenge and the source of the advertised name ("Dexcom" + chars 5-6).
+# Anything else is refused (ATT 0x0D wrong length, 0x13 bad characters). Registered last.
+DEXCOM_ID_UUID = "5b2c0018-0d6d-4a3a-8c1e-3f9b6e7a1a00"
+
+# The Dexcom G6 transmitter's own GATT (what xDrip talks to; see api/dexcom_g6.py). The PC app
+# never connects to it: a transmitter takes one connection at a time and that one is the phone's.
+DEXCOM_ADVERT_UUID = "0000febc-0000-1000-8000-00805f9b34fb"
+DEXCOM_SERVICE_UUID = "f8083532-849e-531c-c594-30f1f86a4ea5"
+DEXCOM_CONTROL_UUID = "f8083534-849e-531c-c594-30f1f86a4ea5"
+DEXCOM_AUTH_UUID = "f8083535-849e-531c-c594-30f1f86a4ea5"
+DEXCOM_BACKFILL_UUID = "f8083536-849e-531c-c594-30f1f86a4ea5"
+DEXCOM_EXTRA_UUID = "f8083538-849e-531c-c594-30f1f86a4ea5"

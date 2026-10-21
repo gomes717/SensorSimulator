@@ -9,7 +9,7 @@ this file implements a representative subset (each suite gets 1-4 real cases).
 Usage:
   python scripts/e2e.py                    # all implemented suites, default board
   python scripts/e2e.py --smoke            # a fast subset (~10 min)
-  python scripts/e2e.py --only S7,S16      # selected suites
+  python scripts/e2e.py --only S7,S10      # selected suites
   python scripts/e2e.py --no-board         # skip board suites (SKIP, not FAIL)
   python scripts/e2e.py --reflash          # build.ps1 -Pristine + flash.ps1 first
   python scripts/e2e.py --loop 3           # run the whole thing 3 times back to back
@@ -484,22 +484,12 @@ def pump(ms: int) -> None:
 
 def cgm_stream(ctx: Ctx) -> list[tuple[float, float]]:
     """(t_off_min, glucose) parsed from the shared BLE message log — works for
-    both the SIG and Dexcom decoders (both emit glucose_value)."""
+    the SIG decoder (S16, the Dexcom board mode, moved to scripts/hw_dexcom_mode.py)."""
     out = []
     for m in ctx.w._ble_log.get_messages():
         if "glucose_value" in m and m.get("glucose_value") is not None:
             out.append((m.get("time_offset_min", 0), float(m["glucose_value"])))
     return out
-
-
-def dexcom_stream(ctx: Ctx) -> list[float]:
-    """Glucose values that came specifically from the Dexcom-style decoder
-    (only it adds a `sequence` field)."""
-    return [
-        float(m["glucose_value"])
-        for m in ctx.w._ble_log.get_messages()
-        if "sequence" in m and m.get("glucose_value") is not None
-    ]
 
 
 def sig_stream(ctx: Ctx) -> list[float]:
@@ -751,52 +741,6 @@ def s8_csv(ctx: Ctx):
         )
         c.assert_(not all(g == 100.0 for g in got), "not the model default")
         sess.queue_write("data_source", protocol.encode_data_source(False))
-
-
-def _switch_profile(ctx, c, dexcom: bool):
-    """Write comm_profile, reconnect, start, return the fresh count of the
-    target stream once >=3 have arrived."""
-    label = "dexcom" if dexcom else "sig"
-    sess = ctx.sessions.get(ctx.board_addr) or ctx.connect_board()
-    sess.queue_write("comm_profile", protocol.encode_comm_profile(dexcom))
-    pump(1500)
-    ctx.stop_sessions()
-    pump(2000)
-    sess = ctx.connect_board()
-    sess.queue_write("speed", protocol.encode_speed(60.0))
-    sess.queue_write("run_state", protocol.encode_run_state(1))
-    stream = dexcom_stream if dexcom else sig_stream
-    n0 = len(stream(ctx))
-    c.wait_until(lambda: len(stream(ctx)) >= n0 + 3, 45, f"{label} glucose notifications")
-    return list(stream(ctx)[n0:])
-
-
-def s16_comm_profile(ctx: Ctx):
-    with Case(ctx, "S16-01", "dexcom_profile_roundtrip", "S16") as c:
-        ctx.require_board()
-        c.step("force SIG CGMS baseline")
-        sig1 = _switch_profile(ctx, c, dexcom=False)
-        c.measure("sig_vals", sig1[:5])
-        c.assert_(all(20 <= g <= 500 for g in sig1), "SIG stream plausible", f"{sig1[:5]}")
-
-        c.step("switch to Dexcom-style profile")
-        dex = _switch_profile(ctx, c, dexcom=True)
-        c.measure("dexcom_vals", dex[:5])
-        c.assert_(all(20 <= g <= 500 for g in dex), "Dexcom stream decodes plausible", f"{dex[:5]}")
-        c.assert_(
-            len(dexcom_stream(ctx)) > 0, "app received Dexcom-format messages (with sequence)"
-        )
-        c.assert_(
-            (ctx.serial_has("pushed dexcom") if ctx.serial_live() else True),
-            "firmware pushing dexcom messages",
-        )
-
-        c.step("switch back to SIG CGMS")
-        sig2 = _switch_profile(ctx, c, dexcom=False)
-        c.measure("sig_after", sig2[:5])
-        c.assert_(all(20 <= g <= 500 for g in sig2), "SIG stream restored", f"{sig2[:5]}")
-        ctx.stop_sessions()
-        pump(1500)
 
 
 def s10_window(ctx: Ctx):
@@ -1151,10 +1095,9 @@ SUITES: dict[str, list] = {
     "S9": [s9_cgms_only],
     "S10": [s10_window],
     "S12": [s12_malformed],
-    "S16": [s16_comm_profile],
     "S17": [s17_scenario],
 }
-SMOKE = ["S1", "S2", "S5", "S6", "S7", "S16", "S17"]
+SMOKE = ["S1", "S2", "S5", "S6", "S7", "S17"]
 
 
 # ----------------------------------------------------------------------

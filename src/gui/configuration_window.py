@@ -10,6 +10,8 @@ surface, issue 18) — it no longer takes ``MainWindow`` or reaches its private 
 
 from __future__ import annotations
 
+from PyQt6.QtCore import QRegularExpression
+from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,16 +21,20 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from api import dexcom_g6
 from gui.config_controller import ConfigController
 from gui.theme import apply_theme
 from gui.widgets import NoWheelDoubleSpinBox
-from models import app_settings
+from models import app_settings, board_profile
+from models.board_profile import BoardProfile
 
 _THEME_LABELS = [("system", "System default"), ("light", "Light"), ("dark", "Dark")]
 # (seconds, label); 0 = show the whole run
@@ -64,6 +70,7 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         body = QWidget()
         inner = QVBoxLayout(body)
         inner.addWidget(self._build_modes_group())
+        inner.addWidget(self._build_board_group())
         inner.addWidget(self._build_appearance_group())
         inner.addWidget(self._build_thresholds_group())
         inner.addStretch(1)
@@ -83,6 +90,8 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         controller.speed_display_changed.connect(self._show_speed)
         controller.model_only_display_changed.connect(self._show_model_only)
         controller.controls_locked.connect(self._set_controls_locked)
+        controller.board_profile_display_changed.connect(self._show_board_profile)
+        controller.board_status_changed.connect(self.board_status.setText)
 
     def _resize_to_content(self, body: QWidget, scroll: QScrollArea) -> None:
         """Open wide/tall enough for the scroll area's widget, capped to the screen.
@@ -178,8 +187,84 @@ class ConfigurationWindow(QWidget):  # pylint: disable=too-many-instance-attribu
         for widget in (
             self.speed_combo,
             self.model_only_check,
+            self.board_mode_combo,
+            self.board_id_edit,
+            self.board_apply_btn,
         ):
             widget.setEnabled(not locked)
+        if not locked:
+            self._on_board_choice_changed()  # the ID box follows the chosen mode again
+
+    # ------------------------------------------------------------------
+    # Board mode (3 sensors, standard Bluetooth / 1 sensor, Dexcom G6)
+    # ------------------------------------------------------------------
+
+    def _build_board_group(self) -> QGroupBox:
+        group = QGroupBox("Board")
+        form = QFormLayout(group)
+
+        self.board_mode_combo = QComboBox()
+        for profile in BoardProfile:
+            self.board_mode_combo.addItem(board_profile.LABELS[profile], profile.value)
+        self.board_mode_combo.currentIndexChanged.connect(self._on_board_choice_changed)
+        form.addRow("Mode:", self.board_mode_combo)
+
+        self.board_id_edit = QLineEdit(dexcom_g6.DEFAULT_TRANSMITTER_ID)
+        self.board_id_edit.setMaxLength(dexcom_g6.TRANSMITTER_ID_LEN)
+        self.board_id_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression("[0-9A-Za-z]{0,6}"))
+        )
+        self.board_id_edit.setToolTip(
+            "6 characters, digits and capital letters. Enter it in xDrip."
+        )
+        self.board_id_edit.textEdited.connect(lambda text: self.board_id_edit.setText(text.upper()))
+        form.addRow("Transmitter ID:", self.board_id_edit)
+
+        self.board_apply_btn = QPushButton("Apply to board")
+        self.board_apply_btn.clicked.connect(self._on_board_apply)
+        form.addRow("", self.board_apply_btn)
+
+        self.board_status = QLabel("Connect a sensor to read the board's mode.")
+        self.board_status.setWordWrap(True)
+        form.addRow(self.board_status)
+        self._on_board_choice_changed()
+        return group
+
+    def _chosen_profile(self) -> BoardProfile:
+        return BoardProfile(self.board_mode_combo.currentData())
+
+    def _on_board_choice_changed(self, _index: int = 0) -> None:
+        """The transmitter ID only matters in the Dexcom mode."""
+        self.board_id_edit.setEnabled(self._chosen_profile().is_dexcom)
+
+    def _on_board_apply(self) -> None:
+        profile = self._chosen_profile()
+        tx_id = self.board_id_edit.text().strip().upper()
+        if profile.is_dexcom:
+            problem = board_profile.check_transmitter_id(tx_id)
+            if problem is not None:
+                self.board_status.setText(problem)
+                return
+        reply = QMessageBox.question(
+            self,
+            "Change the board mode",
+            board_profile.switch_warning(profile),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._c.board_profile_requested.emit(profile.value, tx_id)
+
+    def _show_board_profile(self, profile: str, tx_id: str) -> None:
+        """Show what the board reports, without sending it back."""
+        self._syncing = True
+        index = self.board_mode_combo.findData(profile)
+        if index >= 0:
+            self.board_mode_combo.setCurrentIndex(index)
+        if tx_id:
+            self.board_id_edit.setText(tx_id)
+        self._syncing = False
+        self._on_board_choice_changed()
 
     # ------------------------------------------------------------------
     # Appearance (theme + graph time window)

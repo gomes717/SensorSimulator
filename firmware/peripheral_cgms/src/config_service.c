@@ -11,6 +11,7 @@
 
 #include "config_service.h"
 #include "comm_thread.h"
+#include "dexcom_g6.h"
 #include "model_thread.h"
 #include "sim_config.h"
 
@@ -63,6 +64,8 @@ static struct bt_uuid_128 user_name_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0016, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 static struct bt_uuid_128 csv_read_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x5b2c0017, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
+static struct bt_uuid_128 dexcom_id_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x5b2c0018, 0x0d6d, 0x4a3a, 0x8c1e, 0x3f9b6e7a1a00));
 
 /* Config writes are rejected while CGMS-only mode is active — see
  * model_thread.h's model_thread_set_cgms_only() comment. Deliberately does
@@ -316,6 +319,44 @@ static ssize_t write_comm_profile(struct bt_conn *conn, const struct bt_gatt_att
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
 	if (comm_thread_enqueue_config(CFG_MSG_COMM_PROFILE, buf, len) != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+	}
+	return len;
+}
+
+/* ── Dexcom transmitter ID: read + write (6 ASCII chars, persisted) ───────
+ * The secret of the G6 challenge and the source of the advertised name. A write of anything but
+ * exactly six digits / capital letters is refused and the stored ID is untouched. */
+
+static ssize_t read_dexcom_id(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			      void *buf, uint16_t len, uint16_t offset)
+{
+	char id[SIM_DEXCOM_ID_BUF];
+
+	comm_thread_copy_dexcom_tx_id(id);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, id, SIM_DEXCOM_ID_LEN);
+}
+
+static ssize_t write_dexcom_id(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			       const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
+	if (cfg_write_blocked()) {
+		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
+	}
+	if (offset != 0) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
+	if (len != SIM_DEXCOM_ID_LEN) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+	}
+	if (!g6_valid_id(buf, len)) {
+		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+	}
+	if (comm_thread_enqueue_config(CFG_MSG_DEXCOM_ID, buf, len) != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
 	}
 	return len;
@@ -764,6 +805,12 @@ BT_GATT_SERVICE_DEFINE(sim_config_svc,
 		BT_GATT_CHRC_READ,
 		BT_GATT_PERM_READ,
 		read_csv_readback, NULL, NULL),
+
+	/* Last again: the Dexcom transmitter ID. */
+	BT_GATT_CHARACTERISTIC(&dexcom_id_uuid.uuid,
+		BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+		read_dexcom_id, write_dexcom_id, NULL),
 );
 
 /* Finds the VALUE attribute (not the declaration attribute) for a

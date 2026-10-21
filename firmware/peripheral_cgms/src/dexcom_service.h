@@ -2,31 +2,36 @@
 #define DEXCOM_SERVICE_H
 
 /*
- * A minimal imitation of a Dexcom transmitter's BLE profile, used when
- * sim_config.comm_profile == SIM_COMM_DEXCOM. This is NOT a faithful Dexcom
- * implementation: there is no J-PAKE / AES authentication handshake and only
- * the realtime glucose message is emitted (no backfill, no calibration). It
- * exists so the app (and other tooling) can exercise a second, non-SIG-CGMS
- * wire format. See PROTOCOL_SPEC.md's "Comm profile" section and
- * docs/BLE_PAYLOAD_VALIDATION.md §2.
+ * The GATT face of the Dexcom G6 board mode: a transmitter xDrip can authenticate against and read.
+ * The protocol itself (CRC, the AES challenge, request -> reply, the 5-minute grid) lives in
+ * dexcom_g6.c and is tested on the PC; this file only moves bytes between GATT and that module and
+ * keeps the per-connection authentication state.
  *
- * Service UUID: 0xFEBC. Characteristics under the base
- * F8083532-849E-531C-C594-30F1F86A4EA5:
- *   - ...3535  Control  (write + notify) — writes are ACKed, nothing else
- *   - ...3538  Glucose  (notify)         — the 14-byte realtime message
+ * Characteristics (base F8083532-849E-531C-C594-30F1F86A4EA5, as xDrip's BluetoothServices):
+ *   ...3533 Communication  read + notify
+ *   ...3534 Control        write + indicate   commands in, replies out
+ *   ...3535 Authentication write + read + indicate
+ *   ...3536 Backfill       notify
+ *   ...3538 ExtraData      notify
+ * No characteristic requires encryption: the board reports itself "already bonded" and the G6
+ * challenge (keyed by the transmitter ID, sim_config.dexcom_tx_id) is the only gate. The service is
+ * registered unconditionally but answers only in the Dexcom board mode.
  *
- * The GATT service is registered unconditionally (BT_GATT_SERVICE_DEFINE);
- * comm_thread only *feeds* it when the Dexcom profile is active, and main.c
- * only advertises 0xFEBC / the "DXCM01" name in that mode.
+ * A G6 never streams: the client connects, authenticates, asks for the reading, and leaves. The
+ * board keeps the latest reading and answers requests from it.
  */
 
 #include <stdint.h>
 
-/* Notifies the Glucose characteristic with a realtime message:
- *   opcode(0x4E) | status(0) | u32 sequence | u32 timestamp_s |
- *   u16 glucose(mg/dL, low 12 bits) | state(0x06) | int8 trend
- * (little-endian, 14 bytes). Safe to call every tick; a negative return
- * (nobody subscribed) is expected and ignored by the caller. */
-int dexcom_service_notify_glucose(uint16_t glucose_mg_dl, int8_t trend);
+#include "dexcom_g6.h"
+
+/* Forget the held reading and the transmitter clock (mode switch, boot). */
+void dexcom_service_reset(void);
+
+/* Make *r the reading clients are served until the next one. */
+void dexcom_service_publish(const struct g6_reading *r);
+
+/* The transmitter clock in seconds (simulated time); answered to a time request. */
+void dexcom_service_set_clock(uint32_t now_s);
 
 #endif /* DEXCOM_SERVICE_H */

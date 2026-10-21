@@ -46,13 +46,6 @@ def test_sig_measurement_decodes_to_a_message():
     assert "flags" in m  # SIG decoder marker
 
 
-def test_dexcom_glucose_decodes_to_a_message():
-    msg = struct.pack("<BBIIHBb", 0x4E, 0, 9, 600, 142, 0x06, 1)
-    m = _msg(_decode(ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID, msg))
-    assert m["glucose_value"] == 142
-    assert m["sequence"] == 9
-
-
 def test_reset_sync_and_csv_control_are_control_events():
     assert _decode(ble_uuids.RESET_SYNC_UUID, b"\x02").kind == "reset_sync"
     r = _decode(ble_uuids.CSV_CONTROL_UUID, protocol.encode_csv_status(0))

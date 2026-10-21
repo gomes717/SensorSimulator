@@ -318,14 +318,28 @@ read back → assert equal (byte-exact through `protocol.decode_*`).
 | S12-05 | 30-minute soak at x1000 | no watchdog reset, RAM stable, `sim_clock_min` keeps advancing, stream never freezes |
 | S12-06 | pull board power during a flash write (`sim_config_save_to_flash`) | next boot either loads the old or defaults — never a hang (documents flash-write atomicity risk) |
 
-### S16 — Comm profile (`5b2c0014` — SIG CGMS vs Dexcom-style)
+### S16 — Board mode (`5b2c0014` — Multi vs Dexcom G6; `5b2c0018` transmitter ID)
+
+Hardware-only, run by its own script rather than by `e2e.py` (the app has to reconnect to a
+*different* BLE identity after a switch, which the single-address `e2e.py` context cannot do):
+`uv run python scripts/hw_dexcom_mode.py` (about 12 minutes; `--quick` skips the five-minute waits).
+Last run: see the header of that script. The pure-Python and C halves of the protocol are covered by
+`tests/test_dexcom_g6.py`, `tests/test_dexcom_g6_c.py` and the golden vectors.
 
 | ID | Do | Expect |
 |---|---|---|
-| ✅ S16-01 | force SIG → switch to Dexcom → switch back to SIG, reconnecting each time | SIG stream (`0x2AA7`, has `flags`) then Dexcom stream (`FEBC` `…3538`, 14-byte msg, has `sequence`) then SIG again; all decode to plausible mg/dL; serial `pushed dexcom` while active; `Advertising started (comm_profile=dexcom)` on the reconnect |
-| S16-02 | write comm_profile while connected | switch **deferred**: serial `re-advertise deferred until disconnect`, applied on the next `disconnected()` |
-| S16-03 | persistence | power-cycle after Dexcom write → boots advertising `DXCM01` |
-| S16-04 | PISA + speed in Dexcom mode | both still shape the streamed value (they act upstream in `model_thread`) |
+| ✅ S16-01 | Multi → Dexcom over BLE | `Dexcom00` and `Nordic Glucose Sensor 1` advertise, Sensors 2/3 do not; serial `board mode -> dexcom` |
+| ✅ S16-02 | G6 client: challenge with the right ID | authenticated; the board's own `tokenHash` verifies (xDrip checks it) |
+| ✅ S16-03 | wrong ID; Control before authentication | the proof does not verify; ATT error 8 |
+| ✅ S16-04 | read the reading, time, version, battery | reading is what the console logged (`seq`/`ts`/`glucose`); replies have valid CRCs |
+| ✅ S16-05 | scan 75 s after a reading | `Dexcom00` is not advertising (connect window shut) |
+| ✅ S16-06 | wait five minutes | a second reading: `seq` +1, `ts` +300 s; the app received the same value over CGMS; `Dexcom00` connectable again and serves the new reading |
+| ✅ S16-07 | Dexcom → Multi | three Nordic sensors advertise, the transmitter does not |
+| S16-08 | hold Button 1 for 3 s | the mode toggles; a 1 s press does nothing; 2nd LED blinks in Multi, 3rd in Dexcom (manual) |
+| S16-09 | power-cycle in Dexcom mode | boots into Dexcom mode, first window open |
+| S16-10 | xDrip on Android | reads the board (docs `.scratch/dexcom-g6-transmitter/issues/08`) |
+
+Overnight: `scripts/overnight_dexcom.py` (see §10c).
 
 ### S17 — Scenario runner (`scripts/scenario.py`, `scenarios/*.json`; test tooling, not part of the app)
 

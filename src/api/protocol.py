@@ -15,6 +15,7 @@ import zlib
 from collections.abc import Iterator
 from datetime import datetime
 
+from api import dexcom_g6
 from models import cambridge, deichmann, royparker, uva_padova
 from models.types import ExerciseEvent, FoodEvent, ModelId, SensorId
 
@@ -129,48 +130,40 @@ def encode_pisa_instant(duration_min: int, depth_frac: float) -> bytes:
 
 
 # ------------------------------------------------------------------
-# Comm profile (see ble_uuids.COMM_PROFILE_UUID) + the basic Dexcom-style
-# glucose message. Must match firmware src/sim_config.h + src/dexcom_service.c.
+# Board mode (see ble_uuids.COMM_PROFILE_UUID) and the Dexcom transmitter ID. Must match firmware
+# src/sim_config.h + src/config_service.c. The G6 protocol itself is api/dexcom_g6.py.
 # ------------------------------------------------------------------
 
-COMM_SIG_CGMS = 0
-COMM_DEXCOM = 1
-
-_DEXCOM_MSG_FMT = "<BBIIHBb"  # opcode, status, u32 seq, u32 ts_s, u16 glucose, state, i8 trend
-DEXCOM_MSG_LEN = struct.calcsize(_DEXCOM_MSG_FMT)  # 14
+COMM_SIG_CGMS = 0  # "Multi": N sensors, standard CGMS, no pairing
+COMM_DEXCOM = 1  # "Dexcom": one sensor, the G6 protocol
 
 
 def encode_comm_profile(dexcom: bool) -> bytes:
-    """1 byte: 0 = SIG CGMS (0x181F), 1 = basic Dexcom-style stream (FEBC)."""
+    """1 byte: 0 = Multi (SIG CGMS, 3 sensors), 1 = Dexcom (one sensor, the G6 protocol)."""
     return struct.pack("<B", COMM_DEXCOM if dexcom else COMM_SIG_CGMS)
 
 
 def decode_comm_profile(data: bytes) -> bool | None:
-    """Inverse of encode_comm_profile — True if the board is in Dexcom-style mode."""
+    """Inverse of encode_comm_profile — True if the board is in the Dexcom mode."""
     if len(data) < 1:
         return None
     return data[0] == COMM_DEXCOM
 
 
-def decode_dexcom_glucose(data: bytes) -> dict | None:
-    """Decode a basic Dexcom-style realtime glucose message (14 bytes, LE).
+def encode_dexcom_id(tx_id: str) -> bytes:
+    """The 6 ASCII bytes of a Dexcom transmitter ID; ValueError unless six digits / capitals."""
+    if not dexcom_g6.valid_transmitter_id(tx_id):
+        raise ValueError(f"not a Dexcom transmitter ID: {tx_id!r}")
+    return tx_id.encode("ascii")
 
-    Returns ``{glucose_value, sequence, time_offset_min, trend}`` or None. The
-    glucose field carries mg/dL in its low 12 bits (top bits are display flags,
-    ignored here — the firmware sets them to 0)."""
-    if len(data) < DEXCOM_MSG_LEN:
+
+def decode_dexcom_id(data: bytes) -> str | None:
+    """Inverse of encode_dexcom_id; None for anything that is not a valid ID."""
+    try:
+        tx_id = bytes(data[: dexcom_g6.TRANSMITTER_ID_LEN]).decode("ascii")
+    except UnicodeDecodeError:
         return None
-    opcode, status, seq, ts_s, raw_glucose, _state, trend = struct.unpack_from(
-        _DEXCOM_MSG_FMT, data
-    )
-    return {
-        "glucose_value": float(raw_glucose & 0x0FFF),
-        "sequence": seq,
-        "time_offset_min": ts_s // 60,
-        "trend": trend,
-        "opcode": opcode,
-        "status": status,
-    }
+    return tx_id if dexcom_g6.valid_transmitter_id(tx_id) else None
 
 
 def encode_food_event(event: FoodEvent) -> bytes:

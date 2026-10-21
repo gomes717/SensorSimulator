@@ -84,10 +84,11 @@ Custom 128-bit UUIDs (`src/ble_uuids.py`), all under one primary service:
 | Data source | `5b2c0011-...` | **read + write** | 1 B |
 | Speed | `5b2c0012-...` | **read + write** | 4 B (float32) |
 | PISA instant event | `5b2c0013-...` | write (one-shot) | 6 B |
-| Comm profile | `5b2c0014-...` | **read + write** | 1 B |
+| Board mode (a.k.a. Comm profile) | `5b2c0014-...` | **read + write** | 1 B |
 | Sensor select | `5b2c0015-...` | **read + write** | 1 B |
 | User name | `5b2c0016-...` | **read + write** | 0–30 B (UTF-8) |
 | CSV read | `5b2c0017-...` | read | 22 B header + ≤ 200 B of a track |
+| Dexcom transmitter ID | `5b2c0018-...` | **read + write** | 6 B (ASCII `[0-9A-Z]`) |
 
 All multi-byte fields little-endian. Requires ATT MTU >= 140 B
 (`CONFIG_BT_L2CAP_TX_MTU=247` on the firmware side). Every read/write payload
@@ -388,53 +389,114 @@ Verified on hardware (2026-09): 40 % / 10 min bout drove the streamed value from
 100 to ~60 at the midpoint and back to 100, `pisa` factor in the tick log
 tracing `0.88 → 0.60 → 0.88 → 1.0`.
 
-### Comm profile — `5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
+### Board mode (Comm profile) — `5b2c0014-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
-Added 2026-09 (`sim_config` v4). Selects which BLE profile the board streams
-glucose over. `0` = **SIG CGMS** (the standard `0x181F` / `0x2AA7` service,
-default). `1` = a **basic Dexcom-style** imitation — *not* a real Dexcom: no
-J-PAKE/AES authentication handshake, realtime glucose message only (no backfill,
-no calibration). Persisted; a write re-advertises the board. Because a
-connectable adv set can't restart with the single connection slot occupied
-(`CONFIG_BT_MAX_CONN=1`), if a client is connected the firmware **drops the
-link** and re-advertises under the new profile on disconnect; the app then
-reconnects automatically (`BluetoothWindow.reconnect()`).
+One firmware image, two modes, chosen at run time and persisted (`sim_config.comm_profile`; the
+characteristic kept its original UUID and name so older harnesses still work):
 
-App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile` and
-`services/ble_session.py`'s Dexcom decoder branch. (The "Communication type" combo
-that used to live in the Configuration window, and its reconnect, were removed in
-2026-10 pending a refactor; the hardware harnesses still write the characteristic
-directly.)
+| Value | Mode | Sensors | Protocol | Security |
+|---|---|---|---|---|
+| `0` | **Multi** (default) | 3 (`CONFIG_APP_SENSOR_COUNT`) | Bluetooth SIG CGMS (`0x181F`), one instance per identity | none: `CGMS_NO_AUTH`, no pairing |
+| `1` | **Dexcom** | 1 (slot 0) | a Dexcom **G6 transmitter** (see below) for xDrip, plus SIG CGMS for the PC app | none: the G6 challenge is the only gate |
 
-#### Dexcom-style stream
+`sensor_count` is **derived** from the mode (never trusted from flash): Dexcom → 1, Multi → 3. The
+data of slots 1–2 stays in flash untouched while the board is in Dexcom mode; slot 0 runs in both.
 
-Advertising in Dexcom mode: the `0xFEBC` service UUID and the name `DXCM01`.
-GATT (`firmware/peripheral_cgms/src/dexcom_service.c`), base
-`F8083532-849E-531C-C594-30F1F86A4EA5`:
+**Three ways to change it, one code path** (`comm_thread` → `main_apply_comm_profile`): a BLE write
+here (refused in CGMS-only mode like every config write), **holding Button 1 for 3 s** (works with
+no client and in CGMS-only mode; a short press does nothing), and boot (the saved mode). A change
+persists, drops every link, resets the simulation (as a Speed write does), forces speed to ×1 when
+entering Dexcom mode (xDrip polls in real time), clears the held reading, and re-advertises under
+the new layout. Writing the mode the board is already in does nothing.
 
-| Char | UUID suffix | Props | Purpose |
-|---|---|---|---|
-| Control | `…3535` | write + notify | writes are ACKed and ignored (no auth here) |
-| Glucose | `…3538` | notify | the 14-byte realtime message below |
+**LEDs** (DK numbering): the 1st is the connection indicator (unchanged); the **2nd blinks in Multi
+mode, the 3rd in Dexcom mode** (1 Hz), the other off; both are steady for about 1 s during a switch;
+both flash fast while the button is held.
 
-Realtime glucose message (LE, 14 bytes):
+**Identity layout per mode:**
 
-| Off | Size | Field |
+| Identity | Multi | Dexcom |
 |---|---|---|
-| 0 | u8 | opcode `0x4E` (EGV) |
-| 1 | u8 | status `0` |
-| 2 | u32 | sequence (increments per message) |
-| 6 | u32 | timestamp, seconds since boot |
-| 10 | u16 | glucose mg/dL in the low 12 bits (top bits = display flags, `0` here) |
-| 12 | u8 | state `0x06` |
-| 13 | i8 | trend (`0` = flat) |
+| 0 | `Nordic Glucose Sensor 1` | **`Dexcom` + ID characters 5–6** (e.g. `Dexcom00`), `0xFEBC`: the G6 transmitter, for the phone |
+| 1 | `Nordic Glucose Sensor 2` | `Nordic Glucose Sensor 1`: SIG CGMS instance 0 + the config service, for the PC app |
+| 2 | `Nordic Glucose Sensor 3` | not advertised |
 
-Speed multiplier, CSV data source, and PISA all still apply — they shape
-`latest.glucose_mg_dl` upstream in `model_thread`, before `comm_thread` picks the
-profile. See [`docs/BLE_PAYLOAD_VALIDATION.md`](docs/BLE_PAYLOAD_VALIDATION.md)
-§2 for how this compares to a real Dexcom transmitter. Comm profile is
-single-sensor only — a multi-sensor build always streams SIG CGMS and ignores
-a Dexcom write.
+The app binds a session to a slot by the digit in the name, so "Sensor 1" is slot 0 in both modes
+and the app needs no protocol change. The app never connects to the `Dexcom…` device (one
+connection at a time, and it is the phone's). Switching drops the links, so the app rescans and
+reconnects by name (`BluetoothWindow.reconnect_slots`): "Sensor 1" is at another address after a
+switch. `disconnected()` does not back off the G6 identity: a G6 poll is a short link by design.
+
+App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile`, `models/board_profile.py`
+(the enum, labels, `active_slots`), `gui/board_profile.py` (reads the mode back when a sensor
+connects, writes it, waits for the links to drop, reconnects), and the Configuration window's
+*Board* group. The mode is read from the board, never stored in `data/`.
+
+#### Dexcom G6 transmitter
+
+Implemented in `firmware/peripheral_cgms/src/dexcom_g6.c` (protocol, no Zephyr, host-tested),
+`aes128.c` and `dexcom_service.c` (GATT glue); the Python twin is `src/api/dexcom_g6.py` and
+`src/api/dexcom_g6_transmitter.py`, both held to the golden vectors in
+`tests/data/dexcom_g6_vectors.json`. Design and the xDrip source it follows:
+`.scratch/dexcom-g6-transmitter/`.
+
+GATT, base `F8083532-849E-531C-C594-30F1F86A4EA5`, advertised with `0xFEBC` and the name
+`Dexcom` + the last two characters of the transmitter ID (what xDrip scans for). **No characteristic
+requires encryption.**
+
+| Char | Suffix | Props | Purpose |
+|---|---|---|---|
+| Communication | `…3533` | read + notify | present, unused |
+| Control | `…3534` | write + **indicate** | commands in, replies indicated |
+| Authentication | `…3535` | write + read + **indicate** | the challenge; a read returns the last reply |
+| Backfill | `…3536` | notify | present, unused |
+| ExtraData | `…3538` | notify | xDrip subscribes before authenticating |
+
+All multi-byte values little-endian; every message except the authentication ones ends in a
+**CRC-16/XMODEM** (poly `0x1021`, init 0) of the preceding bytes.
+
+**Authentication** (on `…3535`): the client writes `01 | token[8] | 02`; the board indicates
+`03 | tokenHash[8] | challenge[8]` with `hash(x) = AES-128-ECB(key, x ‖ x)[0:8]` and
+`key = ASCII("00" + ID + "00" + ID)` (16 bytes): **the 6-character transmitter ID is the shared
+secret and xDrip verifies the board's `tokenHash`**. The client writes `04 | hash(challenge)[8]`; the
+board indicates `05 | authenticated | bonded` (`bonded` is always `1`: no pairing happens). Control
+writes before a successful challenge fail with ATT error `0x08`. `06` (keep-alive) and `07` (bond
+request) are accepted silently.
+
+| Request on Control | Reply (indicated on Control) |
+|---|---|
+| `4E` + CRC | `4F status seq[4] ts[4] glucose[2] state trend predicted[2] CRC` (18 B): the one xDrip uses |
+| `30` + CRC | `31 status seq[4] ts[4] glucose[2] state trend CRC` (16 B) |
+| `2E` + CRC | `2F status ts[4] unfiltered[4] filtered[4] CRC` (16 B; raw = glucose × 1000) |
+| `24` + CRC | `25 status now[4] sessionStart[4] CRC` (12 B) |
+| `20` / `4A` / `52` + CRC | version replies `21` (18 B) / `4B` (19 B) / `53` (9 B), fixed values |
+| `22` + CRC | `23` battery (10 B), fixed values |
+| `26` / `28` / `34` | session start / stop / calibrate: accepted (`27`, `29`: 17 B; `35`: 5 B) |
+| `09` / `0A` | disconnect / unbond |
+| anything else | logged on the console (`dexcom: unknown op …`), ignored |
+
+`glucose` is `u16 & 0x0FFF` (bits `0xF000` = display-only, never set), clamped to 40–400 mg/dL;
+`state 0x06` = OK; `trend` is an int8 in tenths of mg/dL/min (`127` = unknown); `ts` is simulated
+seconds since the grid started.
+
+**The 5-minute rule.** A G6 never streams: the client connects, authenticates, asks for the
+reading and leaves. The board samples the model / CSV value at every multiple of **300 simulated
+seconds** and holds it (`seq` counts publications, `ts` is the boundary time; the first reading is
+published at once). The same reading goes, once, to the CGMS instance the app reads — so both
+readers see identical points. Speed is ×1 in Dexcom mode; at ×N the grid shrinks to 300/N seconds.
+
+**Connect window.** The G6 identity is connectable only for `CONFIG_APP_G6_WINDOW_S` (default 30 s)
+after each published reading, and after a mode switch or boot; it is never closed under a connected
+client. `0`, or a grid shorter than the window (speed ≥ 10), means always connectable. This keeps a
+client that schedules its next connection from the last one (xDrip) locked to the grid.
+
+**Transmitter ID** (`5b2c0018`, 6 bytes, read + write, persisted, `sim_config` v7): anything but
+exactly six digits / capital letters is refused (`0x0D` wrong length, `0x13` bad characters); a write
+in Dexcom mode re-advertises (the name derives from it) and drops a connected G6 client. Registered
+last in the GATT table, so every earlier handle keeps its number. Default `8SIM00`.
+
+Speed multiplier, CSV data source and PISA all still apply: they shape the model's output upstream of
+the grid. See [`docs/BLE_PAYLOAD_VALIDATION.md`](docs/BLE_PAYLOAD_VALIDATION.md) §2.
 
 ### Sensor select — `5b2c0015-0d6d-4a3a-8c1e-3f9b6e7a1a00`, 1 byte, read + write
 
@@ -677,8 +739,8 @@ devicetree labels must be globally unique, which is why this one is
 
 ```c
 #define SIM_CONFIG_MAGIC 0x53494D31u  /* "SIM1" */
-#define SIM_CONFIG_VERSION 6   /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
-                                * v6 user_name[] appended after slots[] */
+#define SIM_CONFIG_VERSION 7   /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
+                                * v6 user_name[] appended after slots[]; v7 dexcom_tx_id[] */
 #define SIM_USER_NAME_MAX 32   /* 30 bytes of name + a NUL that is always present */
 #define MAX_MODEL_PARAMS 34
 #define MAX_SENSOR_PARAMS 14
@@ -704,11 +766,12 @@ struct sensor_slot {
 struct sim_config {
     uint32_t magic;             /* SIM_CONFIG_MAGIC; anything else => use defaults */
     uint16_t version;           /* bump on incompatible layout change */
-    uint8_t  sensor_count;      /* 1..MAX_SIM_SENSORS; boot-init from CONFIG_APP_SENSOR_COUNT */
-    uint8_t  comm_profile;      /* global; 0 SIG CGMS, 1 Dexcom-style; forced SIG when count > 1 */
+    uint8_t  sensor_count;      /* derived from comm_profile: Dexcom 1, SIG CGMS 3 */
+    uint8_t  comm_profile;      /* global board mode: 0 Multi (SIG CGMS), 1 Dexcom G6 */
     float    speed_mult;        /* global: x1..x1000 simulation-speed multiplier */
     struct sensor_slot slots[MAX_SIM_SENSORS];
     char     user_name[MAX_SIM_SENSORS][SIM_USER_NAME_MAX];  /* v6; empty = no user */
+    char     dexcom_tx_id[7];   /* v7; 6 chars [0-9A-Z] + NUL, default "8SIM00" */
 };  /* ~2.98 KB total — fits one 4 KB erase sector, but far too big for a
      * single BLE attribute (§2's split + Sensor-select characteristics exist
      * because of this 512 B ATT limit, not the flash sector size). */
@@ -797,7 +860,7 @@ identity gets its own extended-advertising set (`adv_param.id = i`), its own
 re-advertises independently on its own disconnect. `comm_thread`'s
 `push_measurement_and_status()` loops the N slots — `model_thread_take_measurement(i)`
 → `bt_cgms_measurement_add(g_cgms[i], …)` — and emits one per-slot Food/Exercise
-Status notification each (§2). The Dexcom comm profile is single-sensor only.
+Status notification each (§2). In the Dexcom board mode only slot 0 runs (see *Board mode*, §2).
 
 **App.** Each `BleSession` binds to one identity: it parses the advertised
 name's trailing digit (1-based) to a 0-based `_own_instance_index` and shows

@@ -29,11 +29,14 @@ class ConfigController(QObject):
     thresholds_saved = pyqtSignal()
     theme_changed = pyqtSignal()  # the palette was switched: rebuild what cached the colors
     view_window_changed = pyqtSignal()  # the graph time-window preference changed
+    board_profile_requested = pyqtSignal(str, str)  # board mode ("multi"/"dexcom"), transmitter ID
 
     # -- app -> widget ----------------------------------------------------
     speed_display_changed = pyqtSignal(float)  # move the slider/spin, do not re-emit
     model_only_display_changed = pyqtSignal(bool)
     controls_locked = pyqtSignal(bool)  # CGMS-only: disable every config-sending control
+    board_profile_display_changed = pyqtSignal(str, str)  # what the board reports: mode, ID
+    board_status_changed = pyqtSignal(str)  # a line under the board-mode controls
 
     def __init__(self, speed_mult: Callable[[], float]) -> None:
         super().__init__()
@@ -53,3 +56,9 @@ class ConfigController(QObject):
 
     def set_controls_locked(self, locked: bool) -> None:
         self.controls_locked.emit(bool(locked))
+
+    def set_board_profile_display(self, profile: str, tx_id: str) -> None:
+        self.board_profile_display_changed.emit(profile, tx_id)
+
+    def set_board_status(self, text: str) -> None:
+        self.board_status_changed.emit(text)

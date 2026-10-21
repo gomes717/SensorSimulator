@@ -14,11 +14,18 @@
 #include <zephyr/devicetree.h>
 
 #define SIM_CONFIG_MAGIC   0x53494D31u /* "SIM1" */
-#define SIM_CONFIG_VERSION 6 /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
-			      * v6 user_name[] appended after slots[] */
-/* The last layout that differs from the current one only by the tail appended
- * since: sim_config_load_from_flash() still accepts it (the new tail is zeroed). */
+#define SIM_CONFIG_VERSION 7 /* v2 data_source; v3 speed_mult; v4 comm_profile; v5 per-slot;
+			      * v6 user_name[] appended after slots[]; v7 dexcom_tx_id[] appended */
+/* Older layouts that differ from the current one only by the tail appended since:
+ * sim_config_load_from_flash() still accepts them (the missing tail is defaulted). */
 #define SIM_CONFIG_VERSION_V5 5
+#define SIM_CONFIG_VERSION_V6 6
+
+/* The Dexcom G6 transmitter ID: six characters, digits and capital letters. It is the AES
+ * secret of the G6 challenge and fixes the advertised name ("Dexcom" + characters 5-6). */
+#define SIM_DEXCOM_ID_LEN     6
+#define SIM_DEXCOM_ID_BUF     (SIM_DEXCOM_ID_LEN + 1)
+#define SIM_DEXCOM_ID_DEFAULT "8SIM00"
 
 /* Name of the user on a slot: UTF-8, at most 30 bytes plus a NUL that is always
  * present. Empty = no user. See PROTOCOL_SPEC.md's "User name" section. */
@@ -60,8 +67,8 @@
  * "Comm profile" section. SIG_CGMS is the Bluetooth SIG standard CGM Service
  * (0x181F). DEXCOM is a basic imitation of a Dexcom transmitter (FEBC service,
  * opcode-tagged glucose messages, no auth handshake). */
-#define SIM_COMM_SIG_CGMS 0
-#define SIM_COMM_DEXCOM   1
+#define SIM_COMM_SIG_CGMS 0 /* "Multi" board mode: N sensors, standard CGMS, no pairing */
+#define SIM_COMM_DEXCOM   1 /* "Dexcom" board mode: 1 sensor, the G6 protocol (dexcom_g6.c) */
 
 /* Where the streamed glucose comes from — see PROTOCOL_SPEC.md's "CSV playback
  * data source" section and src/csv_store.h. SIM_DATA_CSV makes model_thread
@@ -114,14 +121,17 @@ struct sensor_slot {
 struct sim_config {
 	uint32_t magic;
 	uint16_t version;
-	uint8_t sensor_count;  /* 1..MAX_SIM_SENSORS; boot-init from CONFIG_APP_SENSOR_COUNT */
-	uint8_t comm_profile;  /* global; forced SIM_COMM_SIG_CGMS when sensor_count > 1 */
+	uint8_t sensor_count;  /* 1..MAX_SIM_SENSORS; derived from comm_profile, never trusted from flash:
+				* Dexcom -> 1, SIG CGMS -> CONFIG_APP_SENSOR_COUNT */
+	uint8_t comm_profile;  /* global "board mode": SIM_COMM_SIG_CGMS or SIM_COMM_DEXCOM */
 	float speed_mult;      /* global: SIM_SPEED_MIN..SIM_SPEED_MAX */
 	struct sensor_slot slots[MAX_SIM_SENSORS];
 	/* v6. Appended AFTER slots[] so a v5 image's bytes keep their offsets and can
 	 * still be loaded (names empty). Metadata only: writing a name saves it but
 	 * never goes through model_thread_apply_config() (no sim reset). */
 	char user_name[MAX_SIM_SENSORS][SIM_USER_NAME_MAX];
+	/* v7. Appended after user_name[] for the same reason. Metadata for the Dexcom board mode. */
+	char dexcom_tx_id[SIM_DEXCOM_ID_BUF];
 } __packed; /* ~2.98 KB — fits the 4 KB sim_storage_partition */
 
 /* BLE wire-format structs — byte-identical to what SensorSimulator's
@@ -168,6 +178,9 @@ struct comm_profile_wire {
 struct sensor_select_wire {
 	uint8_t slot;
 } __packed;
+
+/* How many sensors run in the given board mode: Dexcom -> 1, SIG CGMS -> SIM_SENSOR_COUNT. */
+uint8_t sim_config_sensor_count_for(uint8_t comm_profile);
 
 /* Fills *cfg with Cambridge + Ideal CGM defaults, no events, normal mode. */
 void sim_config_set_defaults(struct sim_config *cfg);

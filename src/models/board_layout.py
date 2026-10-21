@@ -97,9 +97,22 @@ def save(layout: BoardLayout) -> None:
     )
 
 
+# In the Dexcom board mode one identity advertises as a G6 transmitter: "Dexcom" + two characters
+# of its ID ("Dexcom00", "Dexcom12"...). It belongs to the phone (xDrip): the app must never take
+# it for a sensor slot, whatever digits the name ends in.
+_G6_NAME_PREFIX = "Dexcom"
+
+
+def is_g6_transmitter(advertised_name: str) -> bool:
+    """Whether *advertised_name* is the board's Dexcom G6 transmitter (xDrip's, not ours)."""
+    return (advertised_name or "").startswith(_G6_NAME_PREFIX)
+
+
 def slot_of(advertised_name: str) -> int | None:
     """0-based sensor slot an advertised name maps to ("... Sensor 3" -> 2), or
-    None for an unnumbered (single-sensor) name."""
+    None for an unnumbered (single-sensor) name or the Dexcom transmitter."""
+    if is_g6_transmitter(advertised_name):
+        return None
     m = _TRAILING_NUM.search(advertised_name or "")
     if not m:
         return None

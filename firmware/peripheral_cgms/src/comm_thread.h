@@ -59,6 +59,10 @@ enum cfg_msg_type {
 	 * metadata only: saved to flash WITHOUT model_thread_apply_config(), so it
 	 * never resets the simulation. See PROTOCOL_SPEC.md's "User name" section. */
 	CFG_MSG_USER_NAME,
+	/* Dexcom G6 transmitter ID (6 chars, digits/capitals) — part of sim_config (persisted),
+	 * metadata only like the user name (no sim reset). Re-advertises in Dexcom board mode: the
+	 * advertised name derives from it. See PROTOCOL_SPEC.md's "Dexcom transmitter ID" section. */
+	CFG_MSG_DEXCOM_ID,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking
@@ -87,6 +91,8 @@ void comm_thread_copy_selected_user_name(char out[SIM_USER_NAME_MAX]);
  * many bytes of it are meaningful: CSV_READBACK_HDR plus its `len`. */
 uint16_t comm_thread_copy_csv_readback(struct csv_readback_wire *out);
 uint8_t comm_thread_comm_profile(void);
+/* Copies the Dexcom transmitter ID (always NUL-terminated) into out. Thread-safe. */
+void comm_thread_copy_dexcom_tx_id(char out[SIM_DEXCOM_ID_BUF]);
 float comm_thread_speed_mult(void);
 
 /* The slot index (0..sensor_count-1) that per-sensor config reads/writes

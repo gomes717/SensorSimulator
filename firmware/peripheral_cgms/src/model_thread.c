@@ -434,6 +434,7 @@ static void tick_slot(int s, double dt_min, double time_of_day, int day_index)
 	k_mutex_lock(&meas_lock, K_FOREVER);
 	if (reading_valid) {
 		latest[s].glucose_mg_dl = (float)reading_val;
+		latest[s].sim_s = sim_clock_min * 60.0;
 		latest[s].valid = 1;
 	}
 	latest[s].carbs_g_per_min = (float)carbs_rate_display;

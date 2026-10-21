@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -54,6 +54,12 @@ class BluetoothWindow(QWidget):
         self._advertised: dict[str, str] = {}  # address -> raw advertised BLE name
         self._statuses: dict[str, str] = {}  # address -> last known Status cell text
         self._addresses: list[str] = []
+        # What the current scan actually saw (address -> advertised name): the table also holds
+        # connected devices that were not advertising, and _advertised remembers stale names.
+        self._seen: dict[str, str] = {}
+        # After a board-mode switch: the sensor slots to reconnect once the board is back.
+        self._reconnect_slots: set[int] = set()
+        self._reconnect_tries = 0
 
         layout = QVBoxLayout(self)
 
@@ -110,6 +116,7 @@ class BluetoothWindow(QWidget):
         """
         self._table.setRowCount(0)
         self._addresses = []
+        self._seen = {}
         for address in list(self._sessions):
             self._add_device(self._advertised.get(address, address), address, None)
         self._status.setText("Scanning for nearby BLE devices…")
@@ -135,14 +142,22 @@ class BluetoothWindow(QWidget):
             # already learned: the numbered name is what picks the sensor slot.
             name = self._advertised[address]
         self._advertised[address] = name
+        if rssi is not None:
+            self._seen[address] = name
         label = board_layout.device_label(name)
+        status = self._statuses.get(address, "")
+        if board_layout.is_g6_transmitter(name):
+            # The board's Dexcom G6 transmitter belongs to xDrip on the phone (it takes one
+            # connection at a time): shown, but never connectable from here.
+            label = f"{name} — G6 transmitter"
+            status = "for xDrip"
         self._addresses.append(address)
         row = self._table.rowCount()
         self._table.insertRow(row)
         self._table.setItem(row, 0, QTableWidgetItem(label))
         self._table.setItem(row, 1, QTableWidgetItem(address))
         self._table.setItem(row, 2, QTableWidgetItem(str(rssi) if rssi is not None else "–"))
-        self._table.setItem(row, 3, QTableWidgetItem(self._statuses.get(address, "")))
+        self._table.setItem(row, 3, QTableWidgetItem(status))
 
     def _on_scan_failed(self, message: str) -> None:
         """Show the scan error to the user."""
@@ -154,6 +169,7 @@ class BluetoothWindow(QWidget):
         if "failed" not in self._status.text().lower():
             count = self._table.rowCount()
             self._status.setText(f"Found {count} device(s). Select one and press Connect.")
+        self._reconnect_found()
 
     # ------------------------------------------------------------------
     # Connecting
@@ -170,8 +186,45 @@ class BluetoothWindow(QWidget):
         if address in self._sessions:
             self._status.setText(f"Already connected to {address}.")
             return
+        if board_layout.is_g6_transmitter(self._advertised.get(address, "")):
+            self._status.setText(
+                "That is the board's Dexcom G6 transmitter: it is for xDrip on the phone and "
+                'takes one connection at a time. Connect to "Nordic Glucose Sensor 1" instead.'
+            )
+            return
 
         self._open_session(address, self._advertised.get(address, address))
+
+    def reconnect_slots(self, slots: set[int], delay_ms: int = 2500) -> None:
+        """Rescan after the board changed mode and reopen the sensors for *slots*.
+
+        A mode switch drops every link and moves "Nordic Glucose Sensor 1" to another BLE
+        identity, so the old address cannot be reused (in the Dexcom mode it is the G6
+        transmitter). Wait *delay_ms* for the board to restart, scan, and connect by name.
+        """
+        self._reconnect_slots = set(slots)
+        self._reconnect_tries = 4
+        self._status.setText("The board is restarting…")
+        QTimer.singleShot(delay_ms, self._start_scan)
+
+    def _reconnect_found(self) -> None:
+        """After a scan: open a session for each wanted slot that is advertising now."""
+        if not self._reconnect_slots:
+            return
+        for address, name in list(self._seen.items()):
+            slot = board_layout.slot_of(name)
+            if slot in self._reconnect_slots and address not in self._sessions:
+                self._reconnect_slots.discard(slot)
+                self._open_session(address, name)
+        if not self._reconnect_slots:
+            return
+        if self._reconnect_tries > 0:
+            self._reconnect_tries -= 1
+            QTimer.singleShot(2000, self._start_scan)
+            return
+        missing = ", ".join(board_layout.advert_name(s) for s in sorted(self._reconnect_slots))
+        self._reconnect_slots.clear()
+        self._status.setText(f"Could not find {missing} after the board restarted. Rescan.")
 
     def _open_session(self, address: str, advertised: str) -> None:
         """Wire up and start a BleSession for *address*, tracked in self._sessions.
@@ -406,7 +459,8 @@ class BluetoothWindow(QWidget):
             return
         address = self._addresses[row]
         connected = address in self._sessions
-        self._connect_btn.setEnabled(not connected)
+        g6 = board_layout.is_g6_transmitter(self._advertised.get(address, ""))
+        self._connect_btn.setEnabled(not connected and not g6)
         self._disconnect_btn.setEnabled(connected)
 
     # ------------------------------------------------------------------

@@ -52,6 +52,19 @@ config APP_CGMS_STAGGER_NOTIFY
 	  Sensor 4 accepted start_notify and then never notified in 12 of 12
 	  runs. Only connecting Sensor 4 first on its own avoided it.
 
+config APP_G6_WINDOW_S
+	int "Dexcom board mode: seconds the G6 identity stays connectable around each reading"
+	range 0 600
+	default 30
+	help
+	  A real G6 transmitter accepts a connection only around each reading, and xDrip schedules
+	  its next connection from the last one. In the Dexcom board mode the identity the phone
+	  connects to therefore advertises only for this many seconds after every new reading (and
+	  after a mode switch or boot), and is never cut while a client is connected.
+
+	  0 keeps it connectable all the time. It is also effectively always open whenever the
+	  speed multiplier makes the 5-minute reading grid shorter than this window.
+
 endmenu
 
 source "Kconfig.zephyr"

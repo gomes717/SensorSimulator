@@ -22,6 +22,7 @@ from gui.app_state import AppState
 from gui.bluetooth_window import BluetoothWindow
 from gui.board_link import BoardLink
 from gui.board_mode import BoardMode
+from gui.board_profile import BoardProfileController
 from gui.branding import APP_NAME
 from gui.child_windows import ChildWindows, UsersDeps, WindowDeps
 from gui.config_controller import ConfigController
@@ -140,6 +141,11 @@ class MainWindow(QMainWindow):
         c.theme_changed.connect(lambda: self.sensors.rebuild_for_theme())
         c.view_window_changed.connect(self._on_view_window_changed)
         self._configuration_window = ConfigurationWindow(c)
+        # The board's mode (3 sensors / Dexcom G6): read back from the board whenever a sensor
+        # connects, changed from the Configuration window's Board group.
+        board_profile = BoardProfileController(
+            c, lambda: self.windows.bluetooth, self._show_status, self
+        )
         sender = UserSender(parent=self)
         profiles = UserProfiles(
             ProfileDeps(
@@ -158,9 +164,7 @@ class MainWindow(QMainWindow):
         self.windows = ChildWindows(
             WindowDeps(
                 ble_log=self._ble_log,
-                on_bluetooth_created=lambda bt: bt.session_connected.connect(
-                    self._on_session_ready
-                ),
+                on_bluetooth_created=lambda bt: self._wire_bluetooth(bt, board_profile),
                 users=UsersDeps(
                     users=self.state.users,
                     save=self.state.save_users,
@@ -212,6 +216,14 @@ class MainWindow(QMainWindow):
     def _ensure_bluetooth_window(self) -> BluetoothWindow:
         """The Bluetooth window, created (not shown) if needed — scripts and callbacks use it."""
         return self.windows.ensure_bluetooth()
+
+    def _wire_bluetooth(self, bt: BluetoothWindow, board_profile: BoardProfileController) -> None:
+        """The Bluetooth window now exists: open a sensor's tab when it connects, and ask the
+        board which mode it is in."""
+        bt.session_connected.connect(self._on_session_ready)
+        bt.session_connected.connect(
+            lambda _address, session: board_profile.on_session_connected(session)
+        )
 
     def _on_session_ready(self, address: str, session) -> None:
         """A sensor connected: open its tab and make sure a write the board refuses is

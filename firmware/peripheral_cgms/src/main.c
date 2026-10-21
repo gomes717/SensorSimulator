@@ -28,6 +28,7 @@
 #include "sim_config.h"
 #include "csv_store.h"
 #include "config_service.h"
+#include "dexcom_g6.h"
 #include "dexcom_service.h"
 #include "model_thread.h"
 #include "comm_thread.h"
@@ -52,8 +53,25 @@
 
 #define N_SENSORS SIM_SENSOR_COUNT
 
-#define LED_BLINK_INTERVAL_MS 500
-#define APP_LED DK_LED1
+/* LEDs (DK library numbering, in board order) and the mode button. One place, so a different
+ * layout is a one-line change. The 1st LED is the connection indicator; the 2nd blinks in Multi
+ * mode (3 sensors, standard BLE), the 3rd in Dexcom mode (1 sensor, G6). Holding Button 1 for
+ * BUTTON_HOLD_MS toggles the mode. */
+#define APP_LED         DK_LED1
+#define LED_MULTI       DK_LED2
+#define LED_DEXCOM      DK_LED3
+#define MODE_BUTTON_MSK DK_BTN1_MSK
+#define BUTTON_HOLD_MS  3000
+#define SWITCH_LED_MS   1000 /* both mode LEDs steady while the board switches */
+#define LED_TICK_MS     100
+#define LED_SLOW_TICKS  5 /* 5 ticks = 500 ms: a 1 Hz blink at 50 % duty */
+
+/* The board mode: SIM_COMM_SIG_CGMS ("Multi": N sensors, standard CGMS, no pairing) or
+ * SIM_COMM_DEXCOM (1 sensor, the G6 protocol). Persisted in sim_config.comm_profile; changed only
+ * through main_apply_comm_profile(), whether the request came over BLE or from the button. */
+static volatile uint8_t g_mode = SIM_COMM_SIG_CGMS;
+static volatile bool g_button_armed;
+static volatile int64_t g_switch_until_ms;
 
 static void led_blink_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(led_blink_work, led_blink_work_handler);
@@ -98,15 +116,31 @@ static bool any_connected(void)
 
 static void led_blink_work_handler(struct k_work *work)
 {
-	static bool led_on;
+	static uint32_t tick;
+	static bool slow_on;
 
 	ARG_UNUSED(work);
-
-	led_on = !led_on;
-	if (!any_connected()) {
-		dk_set_led(APP_LED, led_on);
+	tick++;
+	if (tick % LED_SLOW_TICKS == 0) {
+		slow_on = !slow_on;
+		if (!any_connected()) {
+			dk_set_led(APP_LED, slow_on);
+		}
 	}
-	k_work_reschedule(&led_blink_work, K_MSEC(LED_BLINK_INTERVAL_MS));
+
+	if (k_uptime_get() < g_switch_until_ms) {
+		/* switching: both mode LEDs steady */
+		dk_set_led_on(LED_MULTI);
+		dk_set_led_on(LED_DEXCOM);
+	} else if (g_button_armed) {
+		/* the button is held: both flash fast until it is released or the hold completes */
+		dk_set_led(LED_MULTI, tick & 1);
+		dk_set_led(LED_DEXCOM, tick & 1);
+	} else {
+		dk_set_led(LED_MULTI, g_mode == SIM_COMM_SIG_CGMS && slow_on);
+		dk_set_led(LED_DEXCOM, g_mode == SIM_COMM_DEXCOM && slow_on);
+	}
+	k_work_reschedule(&led_blink_work, K_MSEC(LED_TICK_MS));
 }
 
 /* SIG CGMS advertises the standard 0x181F service + DIS; the per-identity name
@@ -120,21 +154,59 @@ static const struct bt_data ad_cgms[] = {
 				BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
 };
 
-#if N_SENSORS == 1
-/* The Dexcom-style comm profile is a single-sensor-only feature (see
- * PROTOCOL_SPEC.md's "Comm profile" section): it advertises 0xFEBC + a
- * "DXCM01" name so a Dexcom-style client recognises it. Multi-sensor builds
- * always advertise SIG CGMS. */
-#define DEXCOM_ADV_NAME "DXCM01"
+/* The Dexcom board mode advertises 0xFEBC and the name xDrip scans for ("Dexcom" + the last two
+ * characters of the transmitter ID). */
 static const struct bt_data ad_dexcom[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_DEXCOM_VAL)),
 };
-static const struct bt_data sd_dexcom[] = {
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEXCOM_ADV_NAME, sizeof(DEXCOM_ADV_NAME) - 1),
-};
-static uint8_t g_comm_profile = SIM_COMM_SIG_CGMS;
-#endif /* N_SENSORS == 1 */
+
+/* The transmitter ID (a copy of sim_config.dexcom_tx_id; changed by main_apply_dexcom_id). */
+static char g_tx_id[SIM_DEXCOM_ID_BUF] = SIM_DEXCOM_ID_DEFAULT;
+
+/* ---- who advertises what, per board mode ---------------------------------------------------
+ *   Multi  : identity i = "Nordic Glucose Sensor i+1", standard CGMS, every identity
+ *   Dexcom : identity 0 = the G6 transmitter for the phone, identity 1 = "Nordic Glucose Sensor 1"
+ *            for the PC app (the app binds a session to a slot by the digit in the name),
+ *            identity 2 silent
+ * The G6 identity is connectable only in a window around each reading (see g6_open_window). */
+
+static bool g_g6_window_open = true;
+static struct k_work_delayable g6_close_work;
+
+static bool identity_is_g6(int i)
+{
+	return g_mode == SIM_COMM_DEXCOM && i == 0;
+}
+
+static bool identity_active(int i)
+{
+	if (i >= N_SENSORS) {
+		return false;
+	}
+	return g_mode == SIM_COMM_DEXCOM ? i <= 1 : true;
+}
+
+static bool identity_wants_adv(int i)
+{
+	return identity_active(i) && (!identity_is_g6(i) || g_g6_window_open);
+}
+
+static void rebuild_names(void)
+{
+	for (int i = 0; i < N_SENSORS; i++) {
+		if (identity_is_g6(i)) {
+			g6_adv_name(g_tx_id, g_adv_name[i]);
+		} else if (g_mode == SIM_COMM_DEXCOM) {
+			snprintk(g_adv_name[i], sizeof(g_adv_name[i]), "%s 1", CONFIG_BT_DEVICE_NAME);
+		} else if (N_SENSORS == 1) {
+			strcpy(g_adv_name[i], CONFIG_BT_DEVICE_NAME);
+		} else {
+			snprintk(g_adv_name[i], sizeof(g_adv_name[i]), "%s %d",
+				 CONFIG_BT_DEVICE_NAME, i + 1);
+		}
+	}
+}
 
 static int set_adv_data(int i)
 {
@@ -142,14 +214,11 @@ static int set_adv_data(int i)
 		BT_DATA(BT_DATA_NAME_COMPLETE, g_adv_name[i], strlen(g_adv_name[i])),
 	};
 
-#if N_SENSORS == 1
-	if (g_comm_profile == SIM_COMM_DEXCOM) {
-		return bt_le_ext_adv_set_data(g_adv[i], ad_dexcom, ARRAY_SIZE(ad_dexcom),
-					      sd_dexcom, ARRAY_SIZE(sd_dexcom));
+	if (identity_is_g6(i)) {
+		return bt_le_ext_adv_set_data(g_adv[i], ad_dexcom, ARRAY_SIZE(ad_dexcom), sd,
+					      ARRAY_SIZE(sd));
 	}
-#endif
-	return bt_le_ext_adv_set_data(g_adv[i], ad_cgms, ARRAY_SIZE(ad_cgms),
-				      sd, ARRAY_SIZE(sd));
+	return bt_le_ext_adv_set_data(g_adv[i], ad_cgms, ARRAY_SIZE(ad_cgms), sd, ARRAY_SIZE(sd));
 }
 
 static void arm_adv(int i)
@@ -176,6 +245,13 @@ static void advertising_work_handler(struct k_work *work)
 			continue;
 		}
 
+		/* Always stop first: a switch re-arms sets that may still be advertising under the
+		 * old mode's data, and an identity that no longer advertises must go quiet. */
+		(void)bt_le_ext_adv_stop(g_adv[i]);
+		if (!identity_wants_adv(i)) {
+			continue;
+		}
+
 		int err = set_adv_data(i);
 
 		if (err) {
@@ -192,30 +268,133 @@ static void advertising_work_handler(struct k_work *work)
 	}
 }
 
-/* Called by comm_thread when a Comm-profile config write is applied. Only
- * meaningful for the single-sensor build — multi-sensor always streams SIG
- * CGMS. A connectable adv set cannot restart while its connection slot is
- * occupied, so if a client is connected, drop it: disconnected() then
- * re-advertises under the new profile and the app reconnects automatically. */
-void main_apply_comm_profile(uint8_t profile)
+/* G6 connect window: a real transmitter is connectable only around each reading, and xDrip, which
+ * schedules its next connection from the last one, stays locked to that grid. The window opens when
+ * a reading is published (and at boot / mode entry) and closes CONFIG_APP_G6_WINDOW_S later unless a
+ * client is still connected. 0, or a grid shorter than the window (speed multiplier), means always
+ * open. */
+static bool g6_always_open(void)
 {
-#if N_SENSORS == 1
-	if (profile == g_comm_profile) {
-		return;
-	}
-	g_comm_profile = profile;
-	printk("main: comm_profile -> %s\n", profile == SIM_COMM_DEXCOM ? "dexcom" : "sig-cgms");
+	float speed = comm_thread_speed_mult();
 
-	if (g_conn[0]) {
-		printk("main: dropping client to re-advertise under new profile\n");
-		(void)bt_conn_disconnect(g_conn[0], BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-	} else {
-		(void)bt_le_ext_adv_stop(g_adv[0]);
+	return CONFIG_APP_G6_WINDOW_S == 0 || speed * (float)CONFIG_APP_G6_WINDOW_S >= 300.0f;
+}
+
+static void g6_open_window(void)
+{
+	bool was_open = g_g6_window_open;
+
+	g_g6_window_open = true;
+	if (!was_open && !g_conn[0]) {
 		arm_adv(0);
 	}
-#else
-	ARG_UNUSED(profile); /* comm profile is fixed to SIG CGMS when N_SENSORS > 1 */
-#endif
+	if (g6_always_open()) {
+		k_work_cancel_delayable(&g6_close_work);
+	} else {
+		k_work_reschedule(&g6_close_work, K_SECONDS(CONFIG_APP_G6_WINDOW_S));
+	}
+}
+
+static void g6_close_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (g_mode != SIM_COMM_DEXCOM) {
+		return;
+	}
+	if (g_conn[0]) {
+		/* a client is mid-session: never cut it, look again shortly */
+		k_work_reschedule(&g6_close_work, K_SECONDS(5));
+		return;
+	}
+	g_g6_window_open = false;
+	arm_adv(0); /* the handler sees that identity 0 no longer wants advertising and stops it */
+	printk("dexcom: connect window closed\n");
+}
+
+/* Called by comm_thread each time a new G6 reading is published. */
+void main_g6_reading_published(void)
+{
+	if (g_mode == SIM_COMM_DEXCOM) {
+		g6_open_window();
+	}
+}
+
+/* Switches the board mode (SIM_COMM_*): the one entry point, reached from a BLE write to the
+ * Board-mode characteristic or from the button (both via comm_thread, which has already updated and
+ * will persist the config). Every link is dropped and every advertising set re-armed under the new
+ * layout; disconnected() re-arms the sets whose link ended. */
+void main_apply_comm_profile(uint8_t profile)
+{
+	if (profile == g_mode) {
+		return;
+	}
+	g_mode = profile;
+	g_switch_until_ms = k_uptime_get() + SWITCH_LED_MS;
+	rebuild_names();
+	printk("main: board mode -> %s\n", profile == SIM_COMM_DEXCOM ? "dexcom (G6, 1 sensor)"
+								   : "multi (standard BLE)");
+
+	k_work_cancel_delayable(&g6_close_work);
+	g_g6_window_open = true; /* the first window opens at once */
+	if (profile == SIM_COMM_DEXCOM && !g6_always_open()) {
+		k_work_reschedule(&g6_close_work, K_SECONDS(CONFIG_APP_G6_WINDOW_S));
+	}
+
+	for (int i = 0; i < N_SENSORS; i++) {
+		g_short_links[i] = 0;
+		k_work_cancel_delayable(&g_adv_retry[i]);
+		if (g_conn[i]) {
+			(void)bt_conn_disconnect(g_conn[i], BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+		} else {
+			arm_adv(i);
+		}
+	}
+}
+
+/* The transmitter ID changed: the advertised name derives from it, so re-advertise (Dexcom mode). */
+void main_apply_dexcom_id(void)
+{
+	comm_thread_copy_dexcom_tx_id(g_tx_id);
+	if (g_mode != SIM_COMM_DEXCOM) {
+		return;
+	}
+	rebuild_names();
+	if (g_conn[0]) {
+		(void)bt_conn_disconnect(g_conn[0], BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	} else {
+		arm_adv(0);
+	}
+}
+
+/* ---- the mode button: hold Button 1 for BUTTON_HOLD_MS --------------------------------------- */
+
+static struct k_work_delayable button_hold_work;
+
+static void button_hold_handler(struct k_work *work)
+{
+	uint8_t next = g_mode == SIM_COMM_DEXCOM ? SIM_COMM_SIG_CGMS : SIM_COMM_DEXCOM;
+
+	ARG_UNUSED(work);
+	g_button_armed = false;
+	printk("main: mode button held -> switching\n");
+	/* The same queue a BLE write goes through: works with no client, and in CGMS-only mode. */
+	if (comm_thread_enqueue_config(CFG_MSG_COMM_PROFILE, &next, 1) != 0) {
+		printk("main: mode switch request dropped (config queue full)\n");
+	}
+}
+
+static void button_changed(uint32_t button_state, uint32_t has_changed)
+{
+	if (!(has_changed & MODE_BUTTON_MSK)) {
+		return;
+	}
+	if (button_state & MODE_BUTTON_MSK) {
+		g_button_armed = true;
+		k_work_reschedule(&button_hold_work, K_MSEC(BUTTON_HOLD_MS));
+	} else {
+		g_button_armed = false; /* released early: a short press does nothing */
+		k_work_cancel_delayable(&button_hold_work);
+	}
 }
 
 static int conn_identity(struct bt_conn *conn)
@@ -290,6 +469,16 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	g_conn[id] = NULL;
 	if (!any_connected()) {
 		dk_set_led_off(APP_LED);
+	}
+
+	if (identity_is_g6(id)) {
+		/* A G6 poll is a short link by design, not a connect storm: no backoff. Whether it
+		 * advertises again depends on the connect window. */
+		arm_adv(id);
+		return;
+	}
+	if (!identity_active(id)) {
+		return; /* this identity is silent in the current board mode */
 	}
 
 	if (k_uptime_get() - g_link_start_ms[id] >= SHORT_LINK_MS) {
@@ -478,6 +667,12 @@ int main(void)
 		printk("LEDs init failed (err %d)\n", err);
 		return 0;
 	}
+	k_work_init_delayable(&button_hold_work, button_hold_handler);
+	k_work_init_delayable(&g6_close_work, g6_close_handler);
+	err = dk_buttons_init(button_changed);
+	if (err) {
+		printk("Buttons init failed (err %d); the mode button is unavailable\n", err);
+	}
 
 	bt_conn_auth_cb_register(&auth_cb_display);
 
@@ -496,18 +691,13 @@ int main(void)
 
 	sim_config_load_from_flash(&cfg);
 	csv_store_load_manifest();
-#if N_SENSORS == 1
-	g_comm_profile = cfg.comm_profile;
-#endif
+	g_mode = cfg.comm_profile;
+	memcpy(g_tx_id, cfg.dexcom_tx_id, sizeof(g_tx_id));
+	rebuild_names();
+	printk("Board mode: %s\n", g_mode == SIM_COMM_DEXCOM ? "dexcom (G6, 1 sensor)"
+							       : "multi (standard BLE)");
 
 	for (int i = 0; i < N_SENSORS; i++) {
-		if (N_SENSORS == 1) {
-			strcpy(g_adv_name[i], CONFIG_BT_DEVICE_NAME);
-		} else {
-			snprintk(g_adv_name[i], sizeof(g_adv_name[i]), "%s %d",
-				 CONFIG_BT_DEVICE_NAME, i + 1);
-		}
-
 		err = bt_cgms_init(&params, &g_cgms[i]);
 		if (err) {
 			printk("cgms %d: init failed (err %d)\n", i, err);
@@ -536,6 +726,12 @@ int main(void)
 	config_service_init();
 	comm_thread_start(g_cgms, &cfg);
 	model_thread_start(&cfg);
+
+	/* In Dexcom mode the first G6 connect window opens now. */
+	g_g6_window_open = true;
+	if (g_mode == SIM_COMM_DEXCOM && !g6_always_open()) {
+		k_work_reschedule(&g6_close_work, K_SECONDS(CONFIG_APP_G6_WINDOW_S));
+	}
 
 	atomic_set(&adv_pending, BIT_MASK(N_SENSORS));
 	k_work_submit(&adv_work);

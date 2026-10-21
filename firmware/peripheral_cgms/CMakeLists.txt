@@ -14,6 +14,8 @@ target_sources(app PRIVATE
   src/csv_store.c
   src/config_service.c
   src/dexcom_service.c
+  src/dexcom_g6.c
+  src/aes128.c
   src/model_thread.c
   src/comm_thread.c
   src/models/cgmsim_cambridge.c

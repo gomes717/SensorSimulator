@@ -10,10 +10,15 @@
 #include "config_service.h"
 #include "sim_config.h"
 #include "csv_store.h"
+#include "dexcom_g6.h"
 #include "dexcom_service.h"
 
-/* Defined in main.c — re-advertise under the given SIM_COMM_* profile. */
+/* Defined in main.c — switch the board mode (SIM_COMM_*): identities, advertising, LEDs. */
 void main_apply_comm_profile(uint8_t profile);
+/* Defined in main.c — the Dexcom transmitter ID changed: re-advertise under the new name. */
+void main_apply_dexcom_id(void);
+/* Defined in main.c — a new G6 reading was published: open the connect window. */
+void main_g6_reading_published(void);
 
 #define COMM_THREAD_STACK_SIZE 4096
 #define COMM_THREAD_PRIORITY   5
@@ -141,6 +146,14 @@ uint16_t comm_thread_copy_csv_readback(struct csv_readback_wire *out)
 	return CSV_READBACK_HDR + out->len;
 }
 
+void comm_thread_copy_dexcom_tx_id(char out[SIM_DEXCOM_ID_BUF])
+{
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	memcpy(out, working_cfg.dexcom_tx_id, SIM_DEXCOM_ID_BUF);
+	k_mutex_unlock(&working_cfg_lock);
+	out[SIM_DEXCOM_ID_LEN] = '\0';
+}
+
 uint8_t comm_thread_comm_profile(void)
 {
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
@@ -243,17 +256,67 @@ static void apply_speed_msg(const uint8_t *data, uint16_t len)
 	k_mutex_unlock(&working_cfg_lock);
 }
 
-static void apply_comm_profile_msg(const uint8_t *data, uint16_t len)
+/* The 5-minute grid and the trend's previous point (Dexcom board mode). */
+static struct g6_grid g6_grid;
+static bool g6_prev_valid;
+static double g6_prev_glucose;
+static double g6_prev_sim_s;
+/* After a mode switch the model thread applies the new config (clock back to 0) on its next tick,
+ * up to a second later; the sample still waiting from before that is stale and must not become a
+ * reading. */
+static int g6_skip_samples;
+
+static void g6_restart(void)
+{
+	g6_grid_init(&g6_grid, G6_PERIOD_S);
+	g6_prev_valid = false;
+	g6_skip_samples = 0;
+	dexcom_service_reset();
+}
+
+/* A board-mode write (from BLE, or the button via the same queue). Returns true if the mode
+ * actually changed — a write of the current mode is not worth a restart. Entering Dexcom mode
+ * forces speed x1: xDrip polls in wall-clock 5 minutes. The slot cursor goes back to slot 0, the
+ * only sensor that runs in Dexcom mode. */
+static bool apply_comm_profile_msg(const uint8_t *data, uint16_t len)
 {
 	if (len < 1) {
-		return;
+		return false;
 	}
 	uint8_t p = (data[0] == SIM_COMM_DEXCOM) ? SIM_COMM_DEXCOM : SIM_COMM_SIG_CGMS;
 
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
-	working_cfg.comm_profile = p;
+	bool changed = working_cfg.comm_profile != p;
+
+	if (changed) {
+		working_cfg.comm_profile = p;
+		working_cfg.sensor_count = sim_config_sensor_count_for(p);
+		working_sel = 0;
+		if (p == SIM_COMM_DEXCOM) {
+			working_cfg.speed_mult = 1.0f;
+		}
+	}
 	k_mutex_unlock(&working_cfg_lock);
+	if (!changed) {
+		return false;
+	}
+	g6_restart();
+	g6_skip_samples = 1; /* the sample in flight predates the simulation reset */
 	main_apply_comm_profile(p);
+	return true;
+}
+
+/* CFG_MSG_DEXCOM_ID: the GATT write already refused anything that is not six digits/capitals. */
+static void apply_dexcom_id_msg(const uint8_t *data, uint16_t len)
+{
+	if (!g6_valid_id((const char *)data, len)) {
+		return;
+	}
+	k_mutex_lock(&working_cfg_lock, K_FOREVER);
+	memcpy(working_cfg.dexcom_tx_id, data, SIM_DEXCOM_ID_LEN);
+	working_cfg.dexcom_tx_id[SIM_DEXCOM_ID_LEN] = '\0';
+	k_mutex_unlock(&working_cfg_lock);
+	main_apply_dexcom_id();
 }
 
 /* CFG_MSG_CSV_CONTROL — opcode-tagged, handled straight through csv_store_*
@@ -468,6 +531,14 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		return;
 	}
 
+	if (msg->type == CFG_MSG_DEXCOM_ID) {
+		/* Persisted metadata, like the user name: no sim reset. */
+		apply_dexcom_id_msg(msg->data, msg->len);
+		comm_thread_copy_config(&snapshot);
+		sim_config_save_to_flash(&snapshot);
+		return;
+	}
+
 	if (msg->type == CFG_MSG_CGMS_ONLY) {
 		if (msg->len >= 1) {
 			model_thread_set_cgms_only(msg->data[0] != 0);
@@ -501,7 +572,9 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		apply_speed_msg(msg->data, msg->len);
 		break;
 	case CFG_MSG_COMM_PROFILE:
-		apply_comm_profile_msg(msg->data, msg->len);
+		if (!apply_comm_profile_msg(msg->data, msg->len)) {
+			return; /* already in that mode: nothing to restart, nothing to save */
+		}
 		break;
 	case CFG_MSG_FOOD_EVENT:
 		apply_food_event_msg(msg->data, msg->len);
@@ -516,6 +589,62 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 	model_thread_apply_config(&snapshot);
 }
 
+/* Adds one glucose value to slot s's CGMS instance (retrying briefly, see below). */
+static void cgms_push(int s, float glucose_mg_dl)
+{
+	struct bt_cgms_measurement result;
+
+	if (!g_cgms[s]) {
+		return;
+	}
+	result.glucose = sfloat_from_float(glucose_mg_dl);
+	for (int i = 0; i < MEASUREMENT_RETRY_COUNT; i++) {
+		int err = bt_cgms_measurement_add(g_cgms[s], result);
+
+		if (err == 0) {
+			printk("comm_thread: pushed slot %d glucose=%.2f\n", s, glucose_mg_dl);
+			return;
+		}
+		/* Short retry: a dropped measurement is re-sent on the next push anyway, and
+		 * with N connections this loop must not starve the config message queue
+		 * (Board Layout push). */
+		k_sleep(K_MSEC(40));
+	}
+}
+
+/* Dexcom board mode, slot 0: one reading per 5 simulated minutes, held until the next. The same
+ * reading goes to the G6 characteristics (xDrip pulls it) and, once, to the CGMS instance the
+ * app reads — so both readers see exactly the same points. */
+static void dexcom_tick(const struct model_measurement *meas)
+{
+	struct g6_reading r;
+
+	if (g6_skip_samples > 0) {
+		g6_skip_samples--;
+		return;
+	}
+	if (meas->sim_s < g6_prev_sim_s) {
+		g6_prev_valid = false; /* the simulated clock restarted */
+	}
+	double dt_min = (meas->sim_s - g6_prev_sim_s) / 60.0;
+	bool has_trend = g6_prev_valid && dt_min > 0.5;
+	double trend = has_trend ? ((double)meas->glucose_mg_dl - g6_prev_glucose) / dt_min : 0.0;
+
+	dexcom_service_set_clock((uint32_t)meas->sim_s);
+	if (!g6_grid_feed(&g6_grid, meas->sim_s, meas->glucose_mg_dl, has_trend, trend,
+			  G6_STATE_OK, &r)) {
+		return;
+	}
+	g6_prev_valid = true;
+	g6_prev_glucose = meas->glucose_mg_dl;
+	g6_prev_sim_s = meas->sim_s;
+	dexcom_service_publish(&r);
+	printk("comm_thread: dexcom reading seq=%u ts=%us glucose=%u trend=%d\n", r.seq, r.ts_s,
+	       r.glucose, r.trend);
+	cgms_push(0, (float)r.glucose);
+	main_g6_reading_published();
+}
+
 static void push_measurement_and_status(void)
 {
 	k_mutex_lock(&working_cfg_lock, K_FOREVER);
@@ -526,7 +655,7 @@ static void push_measurement_and_status(void)
 	if (count > MAX_SIM_SENSORS) {
 		count = MAX_SIM_SENSORS;
 	}
-	bool dexcom = (comm_profile == SIM_COMM_DEXCOM) && (count == 1);
+	bool dexcom = (comm_profile == SIM_COMM_DEXCOM);
 	bool cgms_only = model_thread_get_cgms_only();
 
 	for (int s = 0; s < count; s++) {
@@ -538,28 +667,9 @@ static void push_measurement_and_status(void)
 		 * are always current, so the per-slot status notify below fires
 		 * every tick regardless. */
 		if (meas.valid && dexcom) {
-			if (dexcom_service_notify_glucose(
-				    (uint16_t)(meas.glucose_mg_dl + 0.5f), 0) == 0) {
-				printk("comm_thread: pushed dexcom glucose=%.2f\n",
-				       meas.glucose_mg_dl);
-			}
-		} else if (meas.valid && g_cgms[s]) {
-			struct bt_cgms_measurement result;
-
-			result.glucose = sfloat_from_float(meas.glucose_mg_dl);
-			for (int i = 0; i < MEASUREMENT_RETRY_COUNT; i++) {
-				int err = bt_cgms_measurement_add(g_cgms[s], result);
-
-				if (err == 0) {
-					printk("comm_thread: pushed slot %d glucose=%.2f\n",
-					       s, meas.glucose_mg_dl);
-					break;
-				}
-				/* Short retry: a dropped measurement is re-sent on the
-				 * next push anyway, and with N connections this loop must
-				 * not starve the config message queue (Board Layout push). */
-				k_sleep(K_MSEC(40));
-			}
+			dexcom_tick(&meas);
+		} else if (meas.valid) {
+			cgms_push(s, meas.glucose_mg_dl);
 		}
 
 		if (cgms_only) {
@@ -596,6 +706,7 @@ static void comm_thread_entry(void *p1, void *p2, void *p3)
 
 void comm_thread_start(struct bt_cgms **cgms, const struct sim_config *initial_cfg)
 {
+	g6_restart();
 	for (int i = 0; i < MAX_SIM_SENSORS; i++) {
 		g_cgms[i] = cgms[i];
 	}

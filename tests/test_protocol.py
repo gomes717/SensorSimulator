@@ -127,13 +127,15 @@ def test_iter_csv_data_chunks_reassembles():
     assert bytes(rebuilt) == blob
 
 
-def test_decode_dexcom_glucose_from_a_realtime_message():
-    msg = struct.pack("<BBIIHBb", 0x4E, 0, 7, 12345, 142 & 0x0FFF, 0x06, 1)
-    got = protocol.decode_dexcom_glucose(msg)
-    assert got is not None
-    assert got["glucose_value"] == 142
-    assert got["sequence"] == 7
-    assert got["trend"] == 1
+def test_the_dexcom_transmitter_id_round_trips_and_rejects_anything_else():
+    assert protocol.encode_dexcom_id("8SIM00") == b"8SIM00"
+    assert protocol.decode_dexcom_id(b"8SIM00") == "8SIM00"
+    for bad in ("8sim00", "8SIM0", "8SIM000", ""):
+        with pytest.raises(ValueError):
+            protocol.encode_dexcom_id(bad)
+    assert protocol.decode_dexcom_id(b"8sim00") is None
+    assert protocol.decode_dexcom_id(b"\xff\xfe\xfd\xfc\xfb\xfa") is None
+    assert protocol.decode_dexcom_id(b"8SIM") is None
 
 
 @pytest.mark.parametrize("bad", [b"", b"\x00", b"\x00\x01\x02"])
@@ -145,7 +147,7 @@ def test_decoders_tolerate_short_input(bad):
         protocol.decode_data_source,
         protocol.decode_run_state,
         protocol.decode_sensor_select,
-        protocol.decode_dexcom_glucose,
+        protocol.decode_dexcom_id,
     ):
         dec(bad)
 

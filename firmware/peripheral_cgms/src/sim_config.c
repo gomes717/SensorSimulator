@@ -14,6 +14,11 @@ BUILD_ASSERT(sizeof(struct sim_config) <= 4096,
 
 #define STORAGE_PARTITION_ID FIXED_PARTITION_ID(sim_storage_partition)
 
+uint8_t sim_config_sensor_count_for(uint8_t comm_profile)
+{
+	return comm_profile == SIM_COMM_DEXCOM ? 1 : SIM_SENSOR_COUNT;
+}
+
 void sim_config_set_defaults(struct sim_config *cfg)
 {
 	memset(cfg, 0, sizeof(*cfg));
@@ -22,6 +27,7 @@ void sim_config_set_defaults(struct sim_config *cfg)
 	cfg->sensor_count = SIM_SENSOR_COUNT;
 	cfg->comm_profile = SIM_COMM_SIG_CGMS;
 	cfg->speed_mult = SIM_SPEED_DEFAULT;
+	memcpy(cfg->dexcom_tx_id, SIM_DEXCOM_ID_DEFAULT, SIM_DEXCOM_ID_BUF);
 
 	/* CambridgeParams is a plain struct-of-doubles whose field order
 	 * matches PARAM_NAMES in SensorSimulator/src/models/cambridge.py
@@ -71,9 +77,11 @@ int sim_config_load_from_flash(struct sim_config *cfg)
 
 	bool is_v5 = !err && cfg->magic == SIM_CONFIG_MAGIC &&
 		     cfg->version == SIM_CONFIG_VERSION_V5;
+	bool is_v6 = !err && cfg->magic == SIM_CONFIG_MAGIC &&
+		     cfg->version == SIM_CONFIG_VERSION_V6;
 
 	if (err || cfg->magic != SIM_CONFIG_MAGIC ||
-	    (cfg->version != SIM_CONFIG_VERSION && !is_v5)) {
+	    (cfg->version != SIM_CONFIG_VERSION && !is_v5 && !is_v6)) {
 		printk("sim_config: no valid config in flash (err=%d), using defaults\n", err);
 		sim_config_set_defaults(cfg);
 		return err ? err : -ENOENT;
@@ -84,19 +92,41 @@ int sim_config_load_from_flash(struct sim_config *cfg)
 		 * it is erased flash (0xFF), not names. Keep every slot, add empty
 		 * names; the next save writes v6. */
 		memset(cfg->user_name, 0, sizeof(cfg->user_name));
-		cfg->version = SIM_CONFIG_VERSION;
 		printk("sim_config: migrated v5 -> v%u (user names empty)\n", SIM_CONFIG_VERSION);
+	}
+	if (is_v5 || is_v6) {
+		/* A v5/v6 image ends before dexcom_tx_id[]: what we read past it is erased
+		 * flash. Keep everything, default the transmitter ID; the next save writes v7. */
+		memcpy(cfg->dexcom_tx_id, SIM_DEXCOM_ID_DEFAULT, SIM_DEXCOM_ID_BUF);
+		cfg->version = SIM_CONFIG_VERSION;
+		if (is_v6) {
+			printk("sim_config: migrated v6 -> v%u (default Dexcom ID)\n",
+			       SIM_CONFIG_VERSION);
+		}
 	}
 	/* A name is always NUL-terminated, whatever the flash held. */
 	for (int i = 0; i < MAX_SIM_SENSORS; i++) {
 		cfg->user_name[i][SIM_USER_NAME_MAX - 1] = '\0';
 	}
+	/* The transmitter ID is exactly six digits / capitals; anything else is the default. */
+	cfg->dexcom_tx_id[SIM_DEXCOM_ID_LEN] = '\0';
+	for (int i = 0; i < SIM_DEXCOM_ID_LEN; i++) {
+		char c = cfg->dexcom_tx_id[i];
 
-	/* sensor_count is fixed by the build (CONFIG_APP_SENSOR_COUNT), not a
-	 * runtime-writable field — always force it to this firmware's value so a
-	 * flash image saved by a different build (e.g. the =1 regression build)
-	 * can't leave =4 running only one model slot while 4 identities advertise. */
-	cfg->sensor_count = SIM_SENSOR_COUNT;
+		if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) {
+			memcpy(cfg->dexcom_tx_id, SIM_DEXCOM_ID_DEFAULT, SIM_DEXCOM_ID_BUF);
+			break;
+		}
+	}
+
+	/* The board mode decides how many sensors run: Dexcom -> 1, SIG CGMS -> the
+	 * build's CONFIG_APP_SENSOR_COUNT. Never trust a stored count: a flash image
+	 * saved by a different build must not leave N identities advertising for fewer
+	 * model slots. The data of the slots that are not running stays in flash. */
+	if (cfg->comm_profile != SIM_COMM_DEXCOM) {
+		cfg->comm_profile = SIM_COMM_SIG_CGMS;
+	}
+	cfg->sensor_count = sim_config_sensor_count_for(cfg->comm_profile);
 
 	printk("sim_config: loaded from flash (sensor_count=%u, comm_profile=%u, "
 	       "slot0 model_id=%u sensor_id=%u data_source=%u)\n",

@@ -40,7 +40,6 @@ _FUNCTIONAL_NOTIFY_UUIDS = frozenset(
         ble_uuids.RESET_SYNC_UUID.lower(),
         ble_uuids.FOOD_EXERCISE_STATUS_UUID.lower(),
         ble_uuids.CSV_CONTROL_UUID.lower(),
-        ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID.lower(),
     }
 )
 
@@ -60,7 +59,8 @@ CONFIG_CHAR_KEY_BY_UUID = {
     ble_uuids.CGMS_ONLY_UUID: "cgms_only",  # read + write, not persisted on the board
     ble_uuids.DATA_SOURCE_UUID: "data_source",  # read + write, persisted (model vs CSV)
     ble_uuids.SPEED_UUID: "speed",  # read + write, persisted (x1..x1000 multiplier)
-    ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted (SIG CGMS vs Dexcom)
+    ble_uuids.COMM_PROFILE_UUID: "comm_profile",  # read + write, persisted: the board mode
+    ble_uuids.DEXCOM_ID_UUID: "dexcom_id",  # read + write, persisted: the G6 transmitter ID
     ble_uuids.SENSOR_SELECT_UUID: "sensor_select",  # read + write, not persisted; per-slot cursor
     ble_uuids.CSV_READ_UUID: "csv_read",  # read-only; chunks of a track, after a CSV_OP_READ
     ble_uuids.USER_NAME_UUID: "user_name",  # read + write, persisted per slot; no sim reset
@@ -181,10 +181,6 @@ def decode_notification(
     }
     if u == CGM_MEASUREMENT_UUID:
         message.update(_decode_cgm_measurement(data))
-    elif u == ble_uuids.DEXCOM_GLUCOSE_CHAR_UUID:
-        decoded = protocol.decode_dexcom_glucose(data)
-        if decoded is not None:
-            message.update(decoded)
     elif u == ble_uuids.FOOD_EXERCISE_STATUS_UUID:
         decoded = protocol.decode_food_exercise_status(data)
         if (

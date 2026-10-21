@@ -208,6 +208,7 @@ def test_a_rescan_without_a_name_keeps_the_name_already_learned():
     win = SimpleNamespace(
         _addresses=[],
         _advertised={"AA:BB": "Nordic Glucose Sensor 2"},
+        _seen={},
         _statuses={},
         _table=SimpleNamespace(
             rowCount=lambda: 0,
