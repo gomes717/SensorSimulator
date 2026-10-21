@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import subprocess
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -63,14 +64,17 @@ def checked_slot(slot: int) -> int:
 
 
 class SerialCapture:
-    """Context manager: append the firmware console to *log* until the block ends."""
+    """Context manager: append the firmware console to *log* until the block ends.
+
+    The reader is a PowerShell process that can stall (a USB-serial glitch leaves the port object
+    faulted and every read failing quietly), so a long run watches :meth:`idle_s` and calls
+    :meth:`restart`, which reopens the port and keeps appending to the same log."""
 
     def __init__(self, log: Path) -> None:
         self.log = log
         self._proc: subprocess.Popen | None = None
 
-    def __enter__(self) -> SerialCapture:
-        self.log.parent.mkdir(parents=True, exist_ok=True)
+    def _launch(self, mode: str) -> None:
         script = (
             f"$p=New-Object System.IO.Ports.SerialPort {SERIAL_PORT},115200,None,8,One;"
             "$p.ReadTimeout=1500;try{$p.Open()}catch{exit 2};"
@@ -78,14 +82,30 @@ class SerialCapture:
         )
         self._proc = subprocess.Popen(
             ["powershell", "-NoProfile", "-Command", script],
-            stdout=self.log.open("w", encoding="utf-8", errors="replace"),
+            stdout=self.log.open(mode, encoding="utf-8", errors="replace"),
             stderr=subprocess.DEVNULL,
         )
+
+    def __enter__(self) -> SerialCapture:
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        self._launch("w")
         return self
 
     def __exit__(self, *_exc: object) -> None:
         if self._proc is not None:
             self._proc.kill()
+
+    def idle_s(self) -> float:
+        """Seconds since the log last grew (the running board prints about once a second)."""
+        return max(0.0, time.time() - self.log.stat().st_mtime)
+
+    def restart(self) -> None:
+        """Kill the reader and start a new one that appends to the same log."""
+        if self._proc is not None:
+            self._proc.kill()
+            self._proc.wait()
+        time.sleep(1.0)  # let Windows release the port
+        self._launch("a")
 
     def text(self) -> str:
         """Everything captured so far."""
