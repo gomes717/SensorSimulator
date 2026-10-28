@@ -75,9 +75,12 @@ def handle_auth(session: Session, tx_id: str, data: bytes, random8: bytes) -> Au
         proof = g6.challenge_hash(data[1:9], tx_id)
         return AuthOutcome(True, bytes([g6.OP_AUTH_CHALLENGE]) + proof + random8)
     if op == g6.OP_AUTH_CHALLENGE_REPLY and len(data) == 9:
-        ok = session.challenge is not None and data[1:9] == g6.challenge_hash(
-            session.challenge, tx_id
-        )
+        if session.challenge is not None:
+            ok = data[1:9] == g6.challenge_hash(session.challenge, tx_id)
+        else:
+            # xDrip sometimes writes the reply twice: with the challenge already used, a repeat
+            # on a link that did authenticate leaves the session as it is.
+            ok = session.authenticated
         session.authenticated = ok
         session.challenge = None
         return AuthOutcome(True, bytes([g6.OP_AUTH_STATUS, 1 if ok else 0, BONDED]))

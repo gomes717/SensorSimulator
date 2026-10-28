@@ -32,7 +32,7 @@ struct g6v_control { const char *name; int authed; int has_reading; unsigned seq
 static const struct g6v_control G6V_CONTROL[] = {
 	{"eglucose", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "4e0aa9", "reply", "4f0007000000340800007b0006f47b00f3e6"},
 	{"glucose", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "305336", "reply", "310007000000340800007b0006f459ab"},
-	{"sensor", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "2eacc5", "reply", "2f003408000078e0010078e001002b57"},
+	{"sensor", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "2eacc5", "reply", "2f003408000006180000061800004e19"},
 	{"time", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "24e664", "reply", "25006b08000000000000c733"},
 	{"version", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "206224", "reply", "210001060519010000000100000000008411"},
 	{"version1", 1, 1, 7u, 2100u, 123u, 6u, -12, 2155u, "4a8ee9", "reply", "4b000106051900000000000000700000009f46"},

@@ -117,6 +117,16 @@ def test_the_auth_flow_matches_the_vectors_and_ends_authenticated():
     assert out.reply.hex() == a["status"] and session.authenticated
 
 
+def test_a_repeated_challenge_reply_keeps_the_session_authenticated():
+    """xDrip sometimes writes the reply twice; the second must not undo the first."""
+    a = VECTORS["auth"]
+    session = tx.Session()
+    tx.handle_auth(session, a["id"], bytes.fromhex(a["request"]), bytes.fromhex(a["random"]))
+    tx.handle_auth(session, a["id"], bytes.fromhex(a["reply"]), bytes.fromhex(a["random"]))
+    again = tx.handle_auth(session, a["id"], bytes.fromhex(a["reply"]), bytes.fromhex(a["random"]))
+    assert again.reply.hex() == a["status"] and session.authenticated
+
+
 def test_a_wrong_challenge_reply_is_refused():
     a = VECTORS["auth"]
     session = tx.Session()
@@ -219,7 +229,7 @@ def test_the_sensor_reply_carries_raw_values_derived_from_the_glucose():
     out = tx.handle_control(
         tx.Session(authenticated=True), g6.Reading(0, 300, 120), 300, g6.sensor_request()
     )
-    assert g6.decode_sensor(out.reply) == (300, 120_000, 120_000)
+    assert g6.decode_sensor(out.reply) == (300, 6_000, 6_000)
 
 
 # -- the 5-minute rule ---------------------------------------------------------------------

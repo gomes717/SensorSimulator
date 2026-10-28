@@ -153,6 +153,12 @@ static void test_auth_flow(void)
 	CHECK_BYTES(blob_of(out, n), G6V_AUTH.status, "status");
 	CHECK(s.authenticated);
 
+	/* the same reply written again (xDrip does this) keeps the session authenticated */
+	n = from_hex(G6V_AUTH.reply, in, sizeof in);
+	CHECK(g6_auth_handle(&s, G6V_AUTH.id, in, n, rnd, out, &n));
+	CHECK_BYTES(blob_of(out, n), G6V_AUTH.status, "repeated status");
+	CHECK(s.authenticated);
+
 	/* a wrong reply is refused */
 	memset(&s, 0, sizeof s);
 	n = from_hex(G6V_AUTH.request, in, sizeof in);

@@ -467,7 +467,7 @@ request) are accepted silently.
 |---|---|
 | `4E` + CRC | `4F status seq[4] ts[4] glucose[2] state trend predicted[2] CRC` (18 B): the one xDrip uses |
 | `30` + CRC | `31 status seq[4] ts[4] glucose[2] state trend CRC` (16 B) |
-| `2E` + CRC | `2F status ts[4] unfiltered[4] filtered[4] CRC` (16 B; raw = glucose × 1000) |
+| `2E` + CRC | `2F status ts[4] unfiltered[4] filtered[4] CRC` (16 B; raw = glucose × 50, so xDrip's G6 raw-range check passes) |
 | `24` + CRC | `25 status now[4] sessionStart[4] CRC` (12 B) |
 | `20` / `4A` / `52` + CRC | version replies `21` (18 B) / `4B` (19 B) / `53` (9 B), fixed values |
 | `22` + CRC | `23` battery (10 B), fixed values |

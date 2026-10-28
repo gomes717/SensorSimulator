@@ -165,6 +165,11 @@ bool g6_auth_handle(struct g6_session *s, const char *id, const uint8_t *in, siz
 
 			g6_challenge_hash(id, s->challenge, want);
 			ok = memcmp(want, in + 1, G6_TOKEN_LEN) == 0;
+		} else {
+			/* xDrip sometimes writes the reply twice. With the challenge already used, a
+			 * repeat on a link that did authenticate leaves the session as it is; on one
+			 * that did not, it is still refused. */
+			ok = s->authenticated;
 		}
 		s->authenticated = ok;
 		s->has_challenge = false;
@@ -200,7 +205,9 @@ static size_t glucose_reply(const struct g6_reading *r, bool extended, uint8_t *
 
 static size_t sensor_reply(const struct g6_reading *r, uint8_t *out)
 {
-	uint32_t raw = (uint32_t)r->glucose * 1000u;
+	/* xDrip rescales a G6 raw value (about x0.034) and rejects one outside 5..1000 as a sensor
+	 * fault: 40..400 mg/dL x 50 stays inside after scaling. */
+	uint32_t raw = (uint32_t)r->glucose * 50u;
 
 	out[0] = OP_SENSOR_REPLY;
 	out[1] = r->status;

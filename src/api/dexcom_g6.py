@@ -27,6 +27,7 @@ from dataclasses import dataclass
 TRANSMITTER_ID_LEN = 6
 _ID_CHARS = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 DEFAULT_TRANSMITTER_ID = "8SIM00"
+RAW_PER_MGDL = 50  # the fake raw (unfiltered/filtered) value per mg/dL; see sensor_reply()
 
 # Auth characteristic opcodes
 OP_AUTH_REQUEST = 0x01
@@ -301,8 +302,11 @@ def encode_eglucose_reply(reading: Reading) -> bytes:
 
 
 def encode_sensor_reply(reading: Reading) -> bytes:
-    """``2F status ts[4] unfiltered[4] filtered[4] CRC`` (16 bytes); raw = glucose * 1000."""
-    raw = reading.glucose * 1000
+    """``2F status ts[4] unfiltered[4] filtered[4] CRC`` (16 bytes); raw = glucose * 50.
+
+    xDrip rescales a G6 raw value (about x0.034) and rejects one outside 5..1000 as a sensor
+    fault, so the fake raw must stay small enough: 40..400 mg/dL gives 68..680 after scaling."""
+    raw = reading.glucose * RAW_PER_MGDL
     return with_crc(struct.pack("<BBIII", OP_SENSOR_REPLY, reading.status, reading.ts_s, raw, raw))
 
 
