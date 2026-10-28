@@ -56,12 +56,19 @@
 /* LEDs (DK library numbering, in board order) and the mode button. One place, so a different
  * layout is a one-line change. The 1st LED is the connection indicator; the 2nd blinks in Multi
  * mode (3 sensors, standard BLE), the 3rd in Dexcom mode (1 sensor, G6). Holding Button 1 for
- * BUTTON_HOLD_MS toggles the mode. */
+ * BUTTON_HOLD_MS toggles the mode. A short press of Button 2 injects a meal, of Button 3 a bout of
+ * exercise, into the selected sensor (the same instant events a BLE write makes). */
 #define APP_LED         DK_LED1
 #define LED_MULTI       DK_LED2
 #define LED_DEXCOM      DK_LED3
 #define MODE_BUTTON_MSK DK_BTN1_MSK
 #define BUTTON_HOLD_MS  3000
+#define FOOD_BUTTON_MSK     DK_BTN2_MSK
+#define EXERCISE_BUTTON_MSK DK_BTN3_MSK
+#define BUTTON_FOOD_CARBS_G        30.0f
+#define BUTTON_FOOD_DURATION_MIN   10
+#define BUTTON_EXERCISE_DURATION_MIN   30
+#define BUTTON_EXERCISE_INTENSITY_PCT  70.0f
 #define SWITCH_LED_MS   1000 /* both mode LEDs steady while the board switches */
 #define LED_TICK_MS     100
 #define LED_SLOW_TICKS  5 /* 5 ticks = 500 ms: a 1 Hz blink at 50 % duty */
@@ -383,8 +390,43 @@ static void button_hold_handler(struct k_work *work)
 	}
 }
 
+/* A press of the food or exercise button: the same message a BLE write queues, so it lands on the
+ * selected sensor and works with no client connected. Ignored while the mode button is held, so
+ * a slip of the finger during the hold does not also inject an event. */
+static void button_inject(uint32_t button_state, uint32_t has_changed)
+{
+	if (g_button_armed || !(button_state & has_changed)) {
+		return; /* a release, or the mode hold is in progress */
+	}
+	if (has_changed & FOOD_BUTTON_MSK) {
+		struct food_instant_wire wire = {
+			.duration_min = BUTTON_FOOD_DURATION_MIN,
+			.carbs_g = BUTTON_FOOD_CARBS_G,
+		};
+
+		printk("main: food button -> %.0f g over %u min\n", (double)wire.carbs_g,
+		       wire.duration_min);
+		if (comm_thread_enqueue_config(CFG_MSG_FOOD_INSTANT, &wire, sizeof(wire)) != 0) {
+			printk("main: food request dropped (config queue full)\n");
+		}
+	}
+	if (has_changed & EXERCISE_BUTTON_MSK) {
+		struct exercise_instant_wire wire = {
+			.duration_min = BUTTON_EXERCISE_DURATION_MIN,
+			.intensity_pct = BUTTON_EXERCISE_INTENSITY_PCT,
+		};
+
+		printk("main: exercise button -> %u min at %.0f %%\n", wire.duration_min,
+		       (double)wire.intensity_pct);
+		if (comm_thread_enqueue_config(CFG_MSG_EXERCISE_INSTANT, &wire, sizeof(wire)) != 0) {
+			printk("main: exercise request dropped (config queue full)\n");
+		}
+	}
+}
+
 static void button_changed(uint32_t button_state, uint32_t has_changed)
 {
+	button_inject(button_state, has_changed & (FOOD_BUTTON_MSK | EXERCISE_BUTTON_MSK));
 	if (!(has_changed & MODE_BUTTON_MSK)) {
 		return;
 	}
@@ -671,7 +713,7 @@ int main(void)
 	k_work_init_delayable(&g6_close_work, g6_close_handler);
 	err = dk_buttons_init(button_changed);
 	if (err) {
-		printk("Buttons init failed (err %d); the mode button is unavailable\n", err);
+		printk("Buttons init failed (err %d); the buttons are unavailable\n", err);
 	}
 
 	bt_conn_auth_cb_register(&auth_cb_display);

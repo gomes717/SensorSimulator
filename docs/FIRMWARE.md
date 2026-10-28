@@ -373,6 +373,20 @@ the new profile and the app auto-reconnects (`BluetoothWindow.reconnect()`). The
 data source and PISA all apply upstream (they shape `latest.glucose_mg_dl`), so
 they carry into either profile unchanged.
 
+### 4.6 Board buttons
+
+| Button | Press | Effect |
+|---|---|---|
+| 1 | hold 3 s | switch the board mode (Multi <-> Dexcom) |
+| 2 | short press | instant food: 30 g of carbs over 10 min |
+| 3 | short press | instant exercise: 30 min at 70 % intensity |
+
+Buttons 2 and 3 queue the same `CFG_MSG_FOOD_INSTANT` / `CFG_MSG_EXERCISE_INSTANT` message a BLE
+write does, so the event lands on the selected sensor slot (`comm_thread_selected_slot()`), works
+with no client connected and in either board mode, and is dropped (logged) if every instant slot
+is taken. A press is ignored while Button 1's hold is in progress. The amounts are the
+`BUTTON_FOOD_*` / `BUTTON_EXERCISE_*` constants in `main.c`.
+
 ## 5. Boot sequence summary
 
 ```
