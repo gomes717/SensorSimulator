@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         board_profile = BoardProfileController(
             c, lambda: self.windows.bluetooth, self._show_status, self
         )
+        board_profile.speed_seen.connect(self._adopt_board_speed)
         sender = UserSender(parent=self)
         profiles = UserProfiles(
             ProfileDeps(
@@ -402,6 +403,21 @@ class MainWindow(QMainWindow):
         # Keep the Configuration window's slider/spin in step when the change
         # came from elsewhere (a scenario step); a no-op when it came from them.
         self._controller.set_speed_display(self.state.speed_mult)
+
+    def _adopt_board_speed(self, multiplier: float) -> None:
+        """The board says what speed it runs at: follow it, without writing it back. Entering the
+        Dexcom mode puts the board at x1, and an app still scaling its clock by the old multiplier
+        (x60) would draw the board's real-time data on a time axis a minute per second too fast.
+        The board is the authority (ADR 0002); the shared clock, the graphs, the saved choice and
+        the Configuration window all move to its value."""
+        multiplier = max(1.0, min(1000.0, multiplier))
+        if abs(multiplier - self.state.speed_mult) < 1e-6:
+            return
+        self.state.set_speed(multiplier)
+        self._clock.set_speed(self.state.speed_mult)
+        self.sim.restart()  # clears + re-anchors the graph at the new scale
+        self._controller.set_speed_display(self.state.speed_mult)
+        self._show_status(f"The board runs at x{self.state.speed_mult:g}: the app follows it.")
 
     def _on_model_only_toggled(self, checked: bool) -> None:
         """Switch between BLE-driven graphs and pure-model-only graphs."""

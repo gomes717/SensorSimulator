@@ -431,6 +431,9 @@ App side: `api/protocol.py`'s `encode_comm_profile`/`decode_comm_profile`, `mode
 (the enum, labels, `active_slots`), `gui/board_profile.py` (reads the mode back when a sensor
 connects, writes it, waits for the links to drop, reconnects), and the Configuration window's
 *Board* group. The mode is read from the board, never stored in `data/`.
+The board's **speed** is read back at the same time (`MainWindow._adopt_board_speed`): entering the
+Dexcom mode puts the board at x1, and the app follows it (shared clock, graphs, saved choice and the
+Configuration window) without writing it back, so a board at x1 is never shown on an x60 time axis.
 
 #### Dexcom G6 transmitter
 

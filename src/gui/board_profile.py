@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from api import protocol
 from gui.config_controller import ConfigController
@@ -29,6 +29,10 @@ _POLL_MS = 400
 
 class BoardProfileController(QObject):
     """Reads the board's mode and ID, shows them, and switches the board when asked."""
+
+    # The board's own speed multiplier, read back whenever a sensor connects: entering the Dexcom
+    # mode puts the board back to x1 (xDrip polls in real time), so the app must follow it.
+    speed_seen = pyqtSignal(float)
 
     def __init__(
         self,
@@ -56,6 +60,7 @@ class BoardProfileController(QObject):
             session.config_read.connect(lambda _address, key, data: self._on_read(key, data))
         session.request_read("comm_profile")
         session.request_read("dexcom_id")
+        session.request_read("speed")
 
     def _on_read(self, char_key: str, data: bytes) -> None:
         if char_key == "comm_profile":
@@ -68,6 +73,11 @@ class BoardProfileController(QObject):
             if tx_id is None:
                 return
             self.tx_id = tx_id
+        elif char_key == "speed":
+            mult = protocol.decode_speed(data)
+            if mult is not None:
+                self.speed_seen.emit(mult)
+            return
         else:
             return
         self._publish()
