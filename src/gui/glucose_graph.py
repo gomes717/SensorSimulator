@@ -28,16 +28,11 @@ from matplotlib.lines import Line2D
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QApplication, QSplitter
 
+from gui.range_bands import GREEN, RED, YELLOW, draw_range_bands
 from gui.run_clock import RunClock
 from models import alerts
 
-# red = TBR2/TAR2 (out of range), yellow = TBR1/TAR1 (borderline), green = TIR
-_RED = "#ef6c6c"
-_YELLOW = "#ffd24d"
-_GREEN = "#6fcf7a"
-_LINE_COLORS = {"r": _RED, "y": _YELLOW, "g": _GREEN}
-# Clinical range band colors (translucent), same 5-band order: TBR2, TBR1, TIR, TAR1, TAR2.
-_BAND_COLORS = (_RED, _YELLOW, _GREEN, _YELLOW, _RED)
+_LINE_COLORS = {"r": RED, "y": YELLOW, "g": GREEN}
 # Left/right are shared so the two stacked plot boxes line up on the time
 # axis; top/bottom differ — the glucose graph only reserves room for its
 # legend, the food/exercise graph also carries the "Time (s)" label.
@@ -410,19 +405,10 @@ class GlucoseGraph:
     # ------------------------------------------------------------------
 
     def _apply_range_bands(self) -> None:
-        """(Re)draw the 5 horizontal range bands from the current thresholds.
-
-        axhspan patches don't feed the data limits, so the y-axis still
-        autoscales to the glucose lines alone.
-        """
+        """(Re)draw the 5 horizontal range bands from the current thresholds."""
         for patch in self._g.range_bands:
             patch.remove()
-        t = self.thresholds
-        edges = [0.0, t["tbr2_below"], t["tbr1_below"], t["tar1_above"], t["tar2_above"], 600.0]
-        self._g.range_bands = [
-            self._g.ax.axhspan(lo, hi, color=color, alpha=0.09, zorder=0)
-            for lo, hi, color in zip(edges, edges[1:], _BAND_COLORS)
-        ]
+        self._g.range_bands = draw_range_bands(self._g.ax, self.thresholds)
 
     def _category(self, value: float) -> str:
         """'r' out of range (low/high), 'y' borderline, 'g' in target — vs current thresholds."""
