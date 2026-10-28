@@ -186,15 +186,13 @@ def test_a_meal_added_in_the_screen_makes_it_unsaved_and_saves_with_it():
 def test_a_meal_added_in_the_screen_shows_in_the_overview_at_once():
     user = _user()
     win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
-    assert win.overview.meal_marks == 0 and max(win.overview.food_values) == 0.0
+    assert win.overview.meal_marks == 0
     page = win.pages["food"]
     page.time_edit.setTime(QTime(8, 0))
     page.first_spin.setValue(60)
     page.second_spin.setValue(20)
     page.add_button.click()
     assert win.overview.meal_marks == 1
-    assert win.overview.food_values[480] == pytest.approx(3.0)  # 60 g over 20 min
-    assert win.overview.food_values[479] == 0.0
 
 
 def test_a_bout_added_and_a_meal_removed_in_the_screen_show_in_the_overview_at_once():
@@ -207,12 +205,10 @@ def test_a_bout_added_and_a_meal_removed_in_the_screen_show_in_the_overview_at_o
     exercise.second_spin.setValue(70)
     exercise.add_button.click()
     assert win.overview.exercise_spans == 1
-    assert win.overview.exercise_values[1080] == pytest.approx(70.0)
-    assert win.overview.exercise_values[1125] == 0.0
     food = win.pages["food"]
     food.table.selectRow(0)
     food.remove_button.click()
-    assert win.overview.meal_marks == 0 and max(win.overview.food_values) == 0.0
+    assert win.overview.meal_marks == 0
 
 
 # -- editing a row in place ----------------------------------------------------------------
@@ -283,7 +279,8 @@ def test_an_edit_in_the_screen_reaches_the_overview_at_once():
     win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
     page = win.pages["food"]
     page.table.selectRow(0)
-    page.first_spin.setValue(30.0)  # 30 g over 20 min
-    assert win.overview.food_values[480] == pytest.approx(1.5)
+    before = list(win.overview.glucose)
+    page.first_spin.setValue(30.0)  # half the carbs
+    assert win.overview.glucose != before  # the preview was recomputed
     assert page.table.currentRow() == 0  # the screen's own refresh did not lose the selection
     assert win.is_dirty

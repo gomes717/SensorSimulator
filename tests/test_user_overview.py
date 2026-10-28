@@ -57,11 +57,18 @@ def test_the_overview_draws_the_five_range_regions():
     assert UserOverview(_user(), _THRESHOLDS).band_count == 5
 
 
-def test_the_overview_draws_the_two_schedules_under_the_glucose():
+def test_the_overview_is_one_graph_with_a_legend_for_the_marks():
     view = UserOverview(_user(), _THRESHOLDS)
-    assert len(view.food_values) == len(view.exercise_values) == 1440
-    assert view.food_values[480] == pytest.approx(3.0)  # 60 g over 20 min
-    assert view.exercise_values[1080] == pytest.approx(70.0)
+    assert len(view.canvas.figure.axes) == 1
+    legend = view.ax.get_legend()
+    assert legend is not None
+    assert [t.get_text() for t in legend.get_texts()] == ["Meal", "Exercise"]
+
+
+def test_a_user_with_no_meals_or_exercise_has_no_legend():
+    user = _user()
+    user.food_events, user.exercise_events = [], []
+    assert UserOverview(user, _THRESHOLDS).ax.get_legend() is None
 
 
 def test_the_overview_follows_the_user_when_refreshed():
@@ -69,7 +76,7 @@ def test_the_overview_follows_the_user_when_refreshed():
     view = UserOverview(user, _THRESHOLDS)
     user.food_events = []
     view.refresh()
-    assert view.meal_marks == 0 and max(view.food_values) == 0.0
+    assert view.meal_marks == 0
 
 
 def test_the_overview_of_a_csv_user_is_the_recorded_window_without_schedules():
@@ -80,7 +87,7 @@ def test_the_overview_of_a_csv_user_is_the_recorded_window_without_schedules():
     assert view.glucose == [100.0, 120.0, 140.0]
     assert view.minutes == [0.0, 5.0, 10.0]
     assert view.meal_marks == 0 and view.exercise_spans == 0  # the recording drives it
-    assert view.food_values == [] and view.exercise_values == []
+    assert view.ax.get_xlabel() == "Hours into the recorded window"
     assert view.band_count == 5
 
 
