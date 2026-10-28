@@ -497,7 +497,7 @@ instead of reaching into the window. ([ADR 0004](adr/0004-decompose-main-window.
 ## 12. Users: one profile per simulated person (in progress)
 
 Status (2026-10-07): **done** — the model layer, the firmware's name field, the Users screen with
-read-from-board, the profile screen (Profile, CSV, Food, Exercise and Model pages, Preview, Save,
+read-from-board, the profile screen (Profile, CSV, Food, Exercise and Model pages, the overview graphs, Save,
 Send to…), the CSV readback and the removal of the Person / Sensor / Food / Exercise windows, all
 hardware-tested.
 [`.scratch/users-screen/spec.md`](../.scratch/users-screen/spec.md). Decision:

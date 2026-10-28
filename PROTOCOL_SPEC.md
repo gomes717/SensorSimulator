@@ -36,7 +36,7 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `gui/debug_window.py`, `gui/message_detail_window.py` | Raw message inspection |
 | `gui/device_target.py` | `restart_board()` and `await_send_confirmation()` — nudge a board running again after a push, and confirm a write landed |
 | `gui/users_window.py`, `gui/user_reader.py` | The Users list and **+ Read from…**: one slot read (name, source, person + sensor config, food + exercise lists) into a user |
-| `gui/user_profile_window.py` (+ `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py`, `user_csv_page.py`) | The profile screen: Profile / CSV / Food / Exercise / Model pages, Preview, Save, Send to… |
+| `gui/user_profile_window.py` (+ `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py`, `user_csv_page.py`) | The profile screen: Profile / CSV / Food / Exercise / Model pages, the overview graphs, Save, Send to… |
 | `gui/user_sender.py`, `models/user_send.py` | **Send to…**: the ordered writes that put a user on a slot (name first, then model + sensor + schedules, or the CSV upload and then the CSV source) and the push |
 | `gui/commands_panel.py`, `gui/instant_events.py` | The Food / Exercise / PISA Commands panel on each sensor's tab, and the fan-out of its one-shot events into an already-running simulation without resetting it (§2's instant characteristics) |
 | `models/types.py` | `ModelId`, `SensorId`, `PersonProfile`, `SensorProfile`, `FoodEvent`, `ExerciseEvent` |

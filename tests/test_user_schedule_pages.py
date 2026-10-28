@@ -1,5 +1,5 @@
-"""Users-screen slice 6: the Food and Exercise pages — the table, the add form, and the 24 h graph
-(gui/user_schedule_pages.py, gui/schedule_graph.py), and that the profile screen shows them."""
+"""Users-screen slice 6: the Food and Exercise pages — the table, and the add form
+(gui/user_schedule_pages.py), and that the profile screen shows them."""
 
 import os
 import sys
@@ -67,16 +67,12 @@ def test_the_food_page_lists_the_users_meals():
     assert env.rows() == [("08:00", "60", "20"), ("19:00", "45.5", "30")]
 
 
-def test_adding_a_meal_updates_the_user_the_table_and_the_graph():
+def test_adding_a_meal_updates_the_user_and_the_table():
     env = _Env(FOOD)
     env.add(8, 0, 60, 20)
     assert env.user.food_events == [FoodEvent(480, 60.0, 20)]
     assert env.rows() == [("08:00", "60", "20")]
     assert env.changes >= 1
-    values = env.page.graph.values
-    assert len(values) == 1440
-    assert values[480] == pytest.approx(3.0)  # 60 g over 20 min
-    assert values[479] == 0.0
 
 
 def test_meals_added_out_of_order_are_listed_in_time_order():
@@ -94,7 +90,6 @@ def test_removing_the_selected_meal():
     env.page.remove_button.click()
     assert env.user.food_events == [FoodEvent(1140, 45.0, 30)]
     assert env.rows() == [("19:00", "45", "30")]
-    assert env.page.graph.values[480] == 0.0
 
 
 def test_remove_with_nothing_selected_does_nothing():
@@ -138,9 +133,6 @@ def test_the_exercise_page_uses_duration_then_intensity():
     env.add(18, 0, 45, 70)
     assert env.user.exercise_events == [ExerciseEvent(1080, 45, 70.0)]
     assert env.rows() == [("18:00", "45", "70")]
-    values = env.page.graph.values
-    assert values[1080] == pytest.approx(70.0)
-    assert values[1125] == 0.0
 
 
 def test_food_and_exercise_pages_edit_their_own_lists():
@@ -159,7 +151,6 @@ def test_refresh_follows_changes_made_elsewhere():
     env.user.food_events = [FoodEvent(600, 30.0, 10)]
     env.page.refresh()
     assert env.rows() == [("10:00", "30", "10")]
-    assert env.page.graph.values[600] == pytest.approx(3.0)
 
 
 # -- inside the profile screen -------------------------------------------------------------
@@ -190,3 +181,35 @@ def test_a_meal_added_in_the_screen_makes_it_unsaved_and_saves_with_it():
     assert win.save() is True
     assert len(users[0].food_events) == 1
     assert user.food_events == []  # the screen edited a copy
+
+
+def test_a_meal_added_in_the_screen_shows_in_the_overview_at_once():
+    user = _user()
+    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
+    assert win.overview.meal_marks == 0 and max(win.overview.food_values) == 0.0
+    page = win.pages["food"]
+    page.time_edit.setTime(QTime(8, 0))
+    page.first_spin.setValue(60)
+    page.second_spin.setValue(20)
+    page.add_button.click()
+    assert win.overview.meal_marks == 1
+    assert win.overview.food_values[480] == pytest.approx(3.0)  # 60 g over 20 min
+    assert win.overview.food_values[479] == 0.0
+
+
+def test_a_bout_added_and_a_meal_removed_in_the_screen_show_in_the_overview_at_once():
+    user = _user()
+    user.food_events = [FoodEvent(480, 60.0, 20)]
+    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
+    exercise = win.pages["exercise"]
+    exercise.time_edit.setTime(QTime(18, 0))
+    exercise.first_spin.setValue(45)
+    exercise.second_spin.setValue(70)
+    exercise.add_button.click()
+    assert win.overview.exercise_spans == 1
+    assert win.overview.exercise_values[1080] == pytest.approx(70.0)
+    assert win.overview.exercise_values[1125] == 0.0
+    food = win.pages["food"]
+    food.table.selectRow(0)
+    food.remove_button.click()
+    assert win.overview.meal_marks == 0 and max(win.overview.food_values) == 0.0

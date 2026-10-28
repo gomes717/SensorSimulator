@@ -1,7 +1,8 @@
 """The Food and Exercise pages of the profile screen: one class, two configurations.
 
-Each page shows a 24 h graph of the user's recurring daily schedule above a table of its events,
-and a row of fields to add one. Events are kept in time order and the board holds 32 of each.
+Each page shows a table of the user's recurring daily events and a row of fields to add one; the
+graph of the schedule is the profile screen's overview (:mod:`gui.user_overview`), which follows
+every edit. Events are kept in time order and the board holds 32 of each.
 Edits go straight into the user the screen is working on (see :mod:`models.user_edit`).
 """
 
@@ -23,9 +24,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.schedule_graph import ScheduleGraph
 from gui.widgets import NoWheelDoubleSpinBox, NoWheelTimeEdit, wrapped_label
-from models import user_edit, user_schedule
+from models import user_edit
 from models.types import ExerciseEvent, FoodEvent, User
 
 
@@ -45,9 +45,6 @@ class ScheduleKind:
     """Everything that differs between the Food page and the Exercise page."""
 
     title: str
-    graph_title: str
-    ylabel: str
-    color: str
     default_time: QTime
     first: FieldSpec
     second: FieldSpec
@@ -55,7 +52,6 @@ class ScheduleKind:
     add: Callable[[User, int, float, float], None]
     remove: Callable[[User, int], None]
     row: Callable[[Any], tuple[str, str]]
-    series: Callable[[User], list[float]]
     note: str
 
 
@@ -65,9 +61,6 @@ def _hhmm(minutes: int) -> str:
 
 FOOD = ScheduleKind(
     title="Meals",
-    graph_title="Carbohydrate intake over the day",
-    ylabel="Carbs (g/min)",
-    color="#3f8fd0",
     default_time=QTime(8, 0),
     first=FieldSpec("Carbs (g)", 0.0, 500.0, 50.0, 1),
     second=FieldSpec("Spread over (min)", 1, 240, 15, 0),
@@ -77,7 +70,6 @@ FOOD = ScheduleKind(
     ),
     remove=user_edit.remove_food_event,
     row=lambda e: (f"{e.carbs_g:g}", str(e.duration_min)),
-    series=lambda user: user_schedule.food_rate_series(user.food_events),
     note=(
         "Meals recur every day. Drawn spread over their duration; Roy & Parker and Deichmann "
         "take the whole meal at its start time."
@@ -86,9 +78,6 @@ FOOD = ScheduleKind(
 
 EXERCISE = ScheduleKind(
     title="Exercise",
-    graph_title="Exercise intensity over the day",
-    ylabel="Intensity (%)",
-    color="#e0813f",
     default_time=QTime(18, 0),
     first=FieldSpec("Duration (min)", 1, 300, 30, 0),
     second=FieldSpec("Intensity (%)", 0.0, 100.0, 50.0, 1),
@@ -99,7 +88,6 @@ EXERCISE = ScheduleKind(
     ),
     remove=user_edit.remove_exercise_event,
     row=lambda e: (str(e.duration_min), f"{e.intensity_pct:g}"),
-    series=lambda user: user_schedule.exercise_series(user.exercise_events),
     note="Exercise bouts recur every day; where two overlap the stronger one counts.",
 )
 
@@ -128,8 +116,6 @@ class SchedulePage(QWidget):
         self._changed = changed
 
         layout = QVBoxLayout(self)
-        self.graph = ScheduleGraph(kind.graph_title, kind.ylabel, kind.color)
-        layout.addWidget(self.graph)
         layout.addWidget(wrapped_label(kind.note, muted=True))
 
         self.table = QTableWidget(0, 3)
@@ -173,14 +159,13 @@ class SchedulePage(QWidget):
     # -- user -> widgets ------------------------------------------------------------
 
     def refresh(self) -> None:
-        """Redraw the table and the graph from the user's events."""
+        """Redraw the table from the user's events."""
         events = self._kind.events(self._user)
         self.table.setRowCount(len(events))
         for row, event in enumerate(events):
             first, second = self._kind.row(event)
             for column, text in enumerate((_hhmm(event.time_of_day_min), first, second)):
                 self.table.setItem(row, column, QTableWidgetItem(text))
-        self.graph.set_values(self._kind.series(self._user))
 
     # -- widgets -> user ------------------------------------------------------------
 

@@ -46,7 +46,7 @@ app is called **GlucoEcho**; its icon (light and dark variants) lives in
   clock + speed
 - **Users:** one profile per simulated person (picture, name, weight, glucose model +
   sensor noise, meals, exercise — or a recorded CSV window), edited on a profile screen with a
-  24 h **Preview**, and **read back from a sensor** (*Users → + Read from…*) so a board that is
+  24 h **overview** (glucose with the range regions, meals, exercise), and **read back from a sensor** (*Users → + Read from…*) so a board that is
   already configured becomes a user in the app
 - **One tab per sensor**, browser-style: each tab has its own graphs, history,
   stats and commands. A "+" after the last tab (like a browser) connects another sensor. Nothing connected → a centered "Connect Bluetooth" start

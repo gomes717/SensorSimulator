@@ -566,7 +566,7 @@ uv run python scripts/overnight_users.py --no-board        # frontend flows only
 ```
 
 **A cycle** (about 28 min): *setup* — connect the three sensors from the Bluetooth window; create
-three users with **+ New** (every page, avatar from the gallery, Preview, Save, on-disk check);
+three users with **+ New** (every page, avatar from the gallery, overview graphs, Save, on-disk check);
 **Send to…** each sensor (plain; *save before send* answered Save; answered Send-without-saving then
 saved) and check the board holds what was sent; **+ Read from…** every case (matches, unknown →
 draft, differs → Overwrite, differs → Create "Name#2" and the board's user renamed). *Run* — 25 min at

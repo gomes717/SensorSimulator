@@ -314,18 +314,18 @@ class Flows:
             )
         self.pick_avatar(screen, spec.avatar)
 
-        preview = screen.preview()
+        preview = screen.overview
+        preview.refresh()
         minutes, glucose = preview.minutes, preview.glucose
         want = 288 if spec.mode == "csv" else 1440
         rec.check(
             area,
-            f"Preview draws 24 h without the sensor noise [{name}]",
+            f"The overview draws 24 h without the sensor noise [{name}]",
             len(glucose) == want and (max(glucose) - min(glucose) > 1.0 or spec.mode == "model"),
             f"{len(minutes)} points, {min(glucose):.0f}-{max(glucose):.0f} mg/dL"
             if glucose
             else "empty",
         )
-        preview.close()
 
         rec.check(area, f"the screen shows unsaved changes [{name}]", screen.is_dirty)
         saved_ok = screen.save()

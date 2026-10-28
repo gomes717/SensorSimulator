@@ -1,7 +1,8 @@
 """The profile screen: one window per user.
 
 A column on the left holds the picture, the name and the menu (Profile, CSV, Food, Exercise,
-Model); the chosen page fills the right; Save sits at the bottom. The mode picks which pages
+Model); the chosen page fills the right, under the overview of the user's day (glucose preview,
+meals and exercise on one time axis, redrawn after every edit); Save sits at the bottom. The mode picks which pages
 are usable (see :func:`models.user_edit.pages_for`).
 
 The screen edits a **copy** of the user and writes it into the app's list only on Save, so
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -39,11 +41,11 @@ from gui import user_picture
 from gui.avatar_picker import choose_avatar
 from gui.user_csv_page import CsvPage
 from gui.user_model_page import ModelPage
-from gui.user_preview_window import PreviewWindow
+from gui.user_overview import UserOverview
 from gui.user_profile_page import ProfilePage
 from gui.user_schedule_pages import EXERCISE, FOOD, SchedulePage
 from gui.widgets import fit_to_screen
-from models import app_settings, user_edit, user_send, user_store
+from models import user_edit, user_send, user_store
 from models.types import User
 
 PAGE_ORDER = ("profile", "csv", "food", "exercise", "model")
@@ -141,7 +143,7 @@ class UserProfileWindow(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowType.Window, True)
-        fit_to_screen(self, 760, 560)
+        fit_to_screen(self, 860, 820)
         self._deps = deps
         self._dialogs = Dialogs(ask_unsaved, ask_save_before_send, choose_sensor)
         self._user = copy.deepcopy(user)
@@ -165,18 +167,21 @@ class UserProfileWindow(QWidget):
         root.addLayout(left)
 
         right = QVBoxLayout()
+        self.overview = UserOverview(self._user)
         self.stack = QStackedWidget()
-        right.addWidget(self.stack, 1)
+        # The overview and the page share the column; the divider is the user's to move.
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(self.overview)
+        split.addWidget(self.stack)
+        split.setSizes([380, 300])
+        right.addWidget(split, 1)
         self.error = QLabel("")
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #b00020;")
         right.addWidget(self.error)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        self.preview_button = QPushButton("Preview")
-        self.preview_button.setToolTip("A 24 h graph of this user, with the edits on screen")
-        self.preview_button.clicked.connect(self.preview)
-        bottom.addWidget(self.preview_button)
         save_button = QPushButton("Save")
         save_button.clicked.connect(self.save)
         bottom.addWidget(save_button)
@@ -246,6 +251,7 @@ class UserProfileWindow(QWidget):
         scroll = viewport.parentWidget() if viewport is not None else None
         if scroll is not None:
             self.stack.setCurrentWidget(scroll)
+        self.overview.setVisible(key != "profile")  # the Profile page has no schedule to show
 
     def current_page(self) -> QWidget | None:
         """The page now showing."""
@@ -298,6 +304,7 @@ class UserProfileWindow(QWidget):
             refresh = getattr(page, "refresh", None)
             if refresh is not None:
                 refresh()
+        self.overview.refresh()
         self._update_header()
 
     def _picture_chosen(self, path: Path) -> None:
@@ -311,17 +318,6 @@ class UserProfileWindow(QWidget):
         )
         marker = " *" if self.is_dirty else ""
         self.setWindowTitle(f"User — {self._user.name}{marker}")
-
-    # ------------------------------------------------------------------
-    # Preview
-    # ------------------------------------------------------------------
-
-    def preview(self) -> PreviewWindow:
-        """Open a 24 h preview of the user as it is on screen (saved or not)."""
-        window = PreviewWindow(self._user, app_settings.load(), parent=self)
-        window.show()
-        window.raise_()
-        return window
 
     # ------------------------------------------------------------------
     # Send to…
