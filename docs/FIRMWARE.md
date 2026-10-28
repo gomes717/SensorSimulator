@@ -373,6 +373,18 @@ the new profile and the app auto-reconnects (`BluetoothWindow.reconnect()`). The
 data source and PISA all apply upstream (they shape `latest.glucose_mg_dl`), so
 they carry into either profile unchanged.
 
+**The G6 service is closed in the standard (Multi) mode.** The attribute table is static, so the
+Dexcom G6 service is present in every mode, but only the Dexcom mode serves it. In Multi mode a
+central that **subscribes** to one of its characteristics or **writes** to the Authentication or
+Control one is refused and disconnected (`dexcom_service.c`: `refuse_outside_dexcom_mode`; the
+subscription is caught by the GATT authorization hook, `CONFIG_BT_GATT_AUTHORIZATION_CUSTOM`).
+This is for a phone running xDrip that remembers identity 0's address from the Dexcom mode: it
+reconnects to that address, re-subscribes every ~15 s and would otherwise hold the link, so the
+identity stops advertising and Sensor 1 vanishes from the PC's scan (seen 2026-10-28). Reads are
+left alone: the PC's own Bluetooth stack touches the service while it sets a link up, and a bond
+restores old subscription values (`dexcom: subscription value 0x0002` at connect is that, not a
+client). The refused link counts as a short link, so the usual re-advertise backoff applies.
+
 ### 4.6 Board buttons
 
 | Button | Press | Effect |

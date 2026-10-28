@@ -61,6 +61,8 @@ void dexcom_service_set_clock(uint32_t now_s)
 struct g6_conn {
 	struct g6_session session;
 	struct k_work work;
+	struct k_work drop_work;
+	struct bt_conn *drop_conn; /* a reference, held until the refused central is dropped */
 	struct bt_conn *conn; /* a reference, held while a reply is pending */
 	const struct bt_gatt_attr *attr;
 	bool pending;
@@ -77,6 +79,36 @@ static struct g6_conn conns[CONFIG_BT_MAX_CONN];
 static bool dexcom_mode(void)
 {
 	return comm_thread_comm_profile() == SIM_COMM_DEXCOM;
+}
+
+/* The service is registered in every board mode (the attribute table is static), but only the
+ * Dexcom mode serves it. In the standard-BLE mode a central that subscribes to it or writes to it
+ * is a phone that remembered this address from the Dexcom mode (xDrip reconnects to a transmitter
+ * it knows): it is refused and dropped, so it cannot sit on the identity the PC app needs. Reads
+ * are left alone: the PC's own Bluetooth stack touches the service while it sets a link up. */
+static void drop_work_handler(struct k_work *work)
+{
+	struct g6_conn *c = CONTAINER_OF(work, struct g6_conn, drop_work);
+	struct bt_conn *conn = c->drop_conn;
+
+	if (!conn) {
+		return;
+	}
+	c->drop_conn = NULL;
+	(void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	bt_conn_unref(conn);
+}
+
+static void refuse_outside_dexcom_mode(struct bt_conn *conn, const char *what)
+{
+	struct g6_conn *c = &conns[bt_conn_index(conn)];
+
+	if (c->drop_conn) {
+		return; /* already being dropped */
+	}
+	printk("dexcom: refused a G6 %s in standard BLE mode, dropping the client\n", what);
+	c->drop_conn = bt_conn_ref(conn);
+	k_work_submit(&c->drop_work);
 }
 
 static void indicate_done(struct bt_conn *conn, struct bt_gatt_indicate_params *params, uint8_t err)
@@ -141,6 +173,7 @@ static ssize_t write_auth(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 	ARG_UNUSED(flags);
 	if (!dexcom_mode()) {
+		refuse_outside_dexcom_mode(conn, "authentication write");
 		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
 	}
 	if (offset != 0) {
@@ -198,6 +231,7 @@ static ssize_t write_control(struct bt_conn *conn, const struct bt_gatt_attr *at
 
 	ARG_UNUSED(flags);
 	if (!dexcom_mode()) {
+		refuse_outside_dexcom_mode(conn, "control write");
 		return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
 	}
 	if (offset != 0) {
@@ -294,6 +328,36 @@ BT_GATT_SERVICE_DEFINE(dexcom_svc,
 	BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
+/* A client's first move is to subscribe to the notifications, and a write to the subscription
+ * switch (the CCC descriptor) reaches no callback of ours that knows the connection: it is checked
+ * here, before it is applied. Anything else is allowed (the other services, and discovery). */
+static bool is_g6_subscription(const struct bt_gatt_attr *attr)
+{
+	return attr >= attr_dexcom_svc && attr < attr_dexcom_svc + ARRAY_SIZE(attr_dexcom_svc) &&
+	       bt_uuid_cmp(attr->uuid, BT_UUID_GATT_CCC) == 0;
+}
+
+static bool write_authorize(struct bt_conn *conn, const struct bt_gatt_attr *attr)
+{
+	if (is_g6_subscription(attr) && !dexcom_mode()) {
+		refuse_outside_dexcom_mode(conn, "subscription");
+		return false;
+	}
+	return true;
+}
+
+static bool read_authorize(struct bt_conn *conn, const struct bt_gatt_attr *attr)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	return true;
+}
+
+static const struct bt_gatt_authorization_cb authorization_cb = {
+	.read_authorize = read_authorize,
+	.write_authorize = write_authorize,
+};
+
 static void conn_gone(struct bt_conn *conn, uint8_t reason)
 {
 	struct g6_conn *c = &conns[bt_conn_index(conn)];
@@ -320,8 +384,9 @@ static int dexcom_service_init(void)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(conns); i++) {
 		k_work_init(&conns[i].work, reply_work_handler);
+		k_work_init(&conns[i].drop_work, drop_work_handler);
 	}
-	return 0;
+	return bt_gatt_authorization_cb_register(&authorization_cb);
 }
 
 SYS_INIT(dexcom_service_init, APPLICATION, 90);
