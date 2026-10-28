@@ -106,7 +106,6 @@ class UsersWindow(QWidget):
         confirm_delete: Callable[[User], bool] = _confirm_delete,
         on_deleted: Callable[[User], None] = lambda _user: None,
         label: Callable[[Any], str] = lambda session: session.user_id,
-        where: Callable[[User], str] = lambda _user: "",
         parent: QWidget | None = None,
     ) -> None:
         """*users* is the app's own list, changed in place; *save* persists it."""
@@ -122,7 +121,6 @@ class UsersWindow(QWidget):
         self._confirm_delete = confirm_delete
         self._on_deleted = on_deleted
         self._label = label
-        self._where = where
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
@@ -164,11 +162,7 @@ class UsersWindow(QWidget):
         keep = self._selected_user()
         self.list.clear()
         for user in self._users:
-            where = self._where(user)
-            item = QListWidgetItem(
-                _icon_for(user), f"{user.name}  ·  {where}" if where else user.name
-            )
-            self.list.addItem(item)
+            self.list.addItem(QListWidgetItem(_icon_for(user), user.name))
         if keep is not None and keep in self._users:
             self.list.setCurrentRow(self._users.index(keep))
 

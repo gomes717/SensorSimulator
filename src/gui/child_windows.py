@@ -35,7 +35,6 @@ class UsersDeps:
     on_open: Callable[[User, bool], object]  # a window opener may return its window
     on_deleted: Callable[[User], None]
     label: Callable[[Any], str]
-    where: Callable[[User], str]
 
 
 @dataclass
@@ -70,7 +69,6 @@ class ChildWindows:
             board_busy=d.board_busy,
             on_deleted=d.on_deleted,
             label=d.label,
-            where=d.where,
         )
         window.open_requested.connect(d.on_open)
         return window

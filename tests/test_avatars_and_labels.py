@@ -266,10 +266,9 @@ def _texts(window):
     return [item.text() for item in items if item is not None]
 
 
-def test_the_list_says_which_sensor_a_user_is_on():
+def test_the_list_shows_only_the_users_names():
     ana, bo = user_store.new_user("Ana"), user_store.new_user("Bo")
-    window = _users_window([ana, bo], where=lambda u: "Sensor 3" if u is ana else "")
-    assert _texts(window) == ["Ana  ·  Sensor 3", "Bo"]
+    assert _texts(_users_window([ana, bo])) == ["Ana", "Bo"]
 
 
 def test_the_read_status_names_the_sensor_by_its_label_not_the_stale_session_name():

@@ -174,7 +174,6 @@ class MainWindow(QMainWindow):
                     on_open=lambda user, draft: self._open_user(profiles, user, draft),
                     on_deleted=self._on_user_deleted,
                     label=self._sensor_label,
-                    where=self._where_is,
                 ),
             )
         )
@@ -326,15 +325,6 @@ class MainWindow(QMainWindow):
         return board_layout.device_label(
             board_layout.advert_name(session.slot_index), self.state.board_layout
         )
-
-    def _where_is(self, user: User) -> str:
-        """Which sensor(s) the slot record has *user* on: "Sensor 3", "Sensors 1, 3" or ""."""
-        slots = [
-            str(i + 1) for i, s in enumerate(self.state.board_layout.slots) if s.person == user.name
-        ]
-        if not slots:
-            return ""
-        return f"Sensor{'s' if len(slots) > 1 else ''} {', '.join(slots)}"
 
     def _tab_picture(self, key: str, _address: str | None):
         """The picture of the user on the sensor behind tab *key*, or None (initials disc)."""
