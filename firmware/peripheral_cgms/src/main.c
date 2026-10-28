@@ -57,7 +57,7 @@
  * layout is a one-line change. The 1st LED is the connection indicator; the 2nd blinks in Multi
  * mode (3 sensors, standard BLE), the 3rd in Dexcom mode (1 sensor, G6). Holding Button 1 for
  * BUTTON_HOLD_MS toggles the mode. A short press of Button 2 injects a meal, of Button 3 a bout of
- * exercise, into the selected sensor (the same instant events a BLE write makes). */
+ * exercise, into every sensor (the same instant events a BLE write makes, for all slots). */
 #define APP_LED         DK_LED1
 #define LED_MULTI       DK_LED2
 #define LED_DEXCOM      DK_LED3
@@ -390,9 +390,9 @@ static void button_hold_handler(struct k_work *work)
 	}
 }
 
-/* A press of the food or exercise button: the same message a BLE write queues, so it lands on the
- * selected sensor and works with no client connected. Ignored while the mode button is held, so
- * a slip of the finger during the hold does not also inject an event. */
+/* A press of the food or exercise button: the same payload a BLE write carries, but for
+ * every sensor slot at once; it works with no client connected. Ignored while the mode button
+ * is held, so a slip of the finger during the hold does not also inject an event. */
 static void button_inject(uint32_t button_state, uint32_t has_changed)
 {
 	if (g_button_armed || !(button_state & has_changed)) {
@@ -406,7 +406,7 @@ static void button_inject(uint32_t button_state, uint32_t has_changed)
 
 		printk("main: food button -> %.0f g over %u min\n", (double)wire.carbs_g,
 		       wire.duration_min);
-		if (comm_thread_enqueue_config(CFG_MSG_FOOD_INSTANT, &wire, sizeof(wire)) != 0) {
+		if (comm_thread_enqueue_config(CFG_MSG_FOOD_INSTANT_ALL, &wire, sizeof(wire)) != 0) {
 			printk("main: food request dropped (config queue full)\n");
 		}
 	}
@@ -418,7 +418,7 @@ static void button_inject(uint32_t button_state, uint32_t has_changed)
 
 		printk("main: exercise button -> %u min at %.0f %%\n", wire.duration_min,
 		       (double)wire.intensity_pct);
-		if (comm_thread_enqueue_config(CFG_MSG_EXERCISE_INSTANT, &wire, sizeof(wire)) != 0) {
+		if (comm_thread_enqueue_config(CFG_MSG_EXERCISE_INSTANT_ALL, &wire, sizeof(wire)) != 0) {
 			printk("main: exercise request dropped (config queue full)\n");
 		}
 	}

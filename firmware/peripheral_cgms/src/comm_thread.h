@@ -63,6 +63,11 @@ enum cfg_msg_type {
 	 * metadata only like the user name (no sim reset). Re-advertises in Dexcom board mode: the
 	 * advertised name derives from it. See PROTOCOL_SPEC.md's "Dexcom transmitter ID" section. */
 	CFG_MSG_DEXCOM_ID,
+	/* The board buttons' meal / exercise: the same payloads as CFG_MSG_FOOD_INSTANT /
+	 * CFG_MSG_EXERCISE_INSTANT, but injected into EVERY sensor slot — a button has no way to
+	 * say which sensor it means, and the sensor-select cursor is whatever the app addressed last. */
+	CFG_MSG_FOOD_INSTANT_ALL,
+	CFG_MSG_EXERCISE_INSTANT_ALL,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking

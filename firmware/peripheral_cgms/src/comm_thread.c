@@ -505,6 +505,31 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		return;
 	}
 
+	if (msg->type == CFG_MSG_FOOD_INSTANT_ALL) {
+		struct food_instant_wire wire;
+
+		if (msg->len >= sizeof(wire)) {
+			memcpy(&wire, msg->data, sizeof(wire));
+			for (int s = 0; s < SIM_SENSOR_COUNT; s++) {
+				model_thread_add_instant_food(s, wire.duration_min, wire.carbs_g);
+			}
+		}
+		return;
+	}
+
+	if (msg->type == CFG_MSG_EXERCISE_INSTANT_ALL) {
+		struct exercise_instant_wire wire;
+
+		if (msg->len >= sizeof(wire)) {
+			memcpy(&wire, msg->data, sizeof(wire));
+			for (int s = 0; s < SIM_SENSOR_COUNT; s++) {
+				model_thread_add_instant_exercise(s, wire.duration_min,
+								  wire.intensity_pct);
+			}
+		}
+		return;
+	}
+
 	if (msg->type == CFG_MSG_PISA_INSTANT) {
 		struct pisa_instant_wire wire;
 
