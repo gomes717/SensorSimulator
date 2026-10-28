@@ -213,3 +213,77 @@ def test_a_bout_added_and_a_meal_removed_in_the_screen_show_in_the_overview_at_o
     food.table.selectRow(0)
     food.remove_button.click()
     assert win.overview.meal_marks == 0 and max(win.overview.food_values) == 0.0
+
+
+# -- editing a row in place ----------------------------------------------------------------
+
+
+def _two_meals():
+    user = _user()
+    user.food_events = [FoodEvent(480, 60.0, 20), FoodEvent(1140, 45.0, 30)]
+    return _Env(FOOD, user)
+
+
+def test_selecting_a_row_loads_it_into_the_fields():
+    env = _two_meals()
+    env.page.table.selectRow(1)
+    assert env.page.time_edit.time() == QTime(19, 0)
+    assert env.page.first_spin.value() == 45.0 and env.page.second_spin.value() == 30
+
+
+def test_changing_a_field_changes_the_selected_row_without_add_and_remove():
+    env = _two_meals()
+    env.page.table.selectRow(0)
+    env.page.first_spin.setValue(80.0)
+    assert env.user.food_events == [FoodEvent(480, 80.0, 20), FoodEvent(1140, 45.0, 30)]
+    assert env.rows()[0] == ("08:00", "80", "20")
+    assert env.changes >= 1
+    env.page.second_spin.setValue(40)
+    assert env.user.food_events[0] == FoodEvent(480, 80.0, 40)  # still the same row, edited again
+
+
+def test_changing_the_time_moves_the_row_in_order_and_keeps_it_selected():
+    env = _two_meals()
+    env.page.table.selectRow(0)
+    env.page.time_edit.setTime(QTime(21, 0))
+    assert [e.time_of_day_min for e in env.user.food_events] == [1140, 1260]
+    assert env.page.table.currentRow() == 1
+    env.page.first_spin.setValue(10.0)  # the moved meal is the one that keeps changing
+    assert env.user.food_events[1] == FoodEvent(1260, 10.0, 20)
+    assert env.user.food_events[0] == FoodEvent(1140, 45.0, 30)
+
+
+def test_editing_leaves_the_event_count_alone():
+    env = _two_meals()
+    env.page.table.selectRow(0)
+    env.page.first_spin.setValue(70.0)
+    assert len(env.user.food_events) == 2 and env.page.table.rowCount() == 2
+
+
+def test_after_add_nothing_is_selected_so_the_next_add_leaves_the_first_alone():
+    env = _Env(FOOD)
+    env.add(8, 0, 60, 20)
+    assert env.page.table.selectionModel().selectedRows() == []
+    env.add(13, 0, 30, 10)
+    assert env.user.food_events == [FoodEvent(480, 60.0, 20), FoodEvent(780, 30.0, 10)]
+
+
+def test_exercise_rows_edit_in_place_too():
+    user = _user()
+    user.exercise_events = [ExerciseEvent(1080, 45, 70.0)]
+    env = _Env(EXERCISE, user)
+    env.page.table.selectRow(0)
+    env.page.second_spin.setValue(90.0)
+    assert env.user.exercise_events == [ExerciseEvent(1080, 45, 90.0)]
+
+
+def test_an_edit_in_the_screen_reaches_the_overview_at_once():
+    user = _user()
+    user.food_events = [FoodEvent(480, 60.0, 20)]
+    win = UserProfileWindow(user, False, ProfileDeps([user], lambda: None, lambda _u, _old: None))
+    page = win.pages["food"]
+    page.table.selectRow(0)
+    page.first_spin.setValue(30.0)  # 30 g over 20 min
+    assert win.overview.food_values[480] == pytest.approx(1.5)
+    assert page.table.currentRow() == 0  # the screen's own refresh did not lose the selection
+    assert win.is_dirty
