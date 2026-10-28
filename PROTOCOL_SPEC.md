@@ -409,6 +409,13 @@ persists, drops every link, resets the simulation (as a Speed write does), force
 entering Dexcom mode (xDrip polls in real time), clears the held reading, and re-advertises under
 the new layout. Writing the mode the board is already in does nothing.
 
+**Event buttons** (short presses; Button 1 stays the mode hold): **Button 2** a 30 g meal over 10 min,
+**Button 3** 30 min of exercise at 70 %, **Button 4** a 10 min PISA with 60 % peak attenuation. Each
+queues the payload of the instant-event message (`food_instant_wire` / `exercise_instant_wire` /
+`pisa_instant_wire`) as `CFG_MSG_*_INSTANT_ALL`, which injects it into **every** sensor slot (a button
+cannot say which sensor it means, and the sensor-select cursor is whatever the app addressed last).
+No reset, works with no client and in either mode; see `docs/FIRMWARE.md` §4.6.
+
 **LEDs** (DK numbering): the 1st is the connection indicator (unchanged); the **2nd blinks in Multi
 mode, the 3rd in Dexcom mode** (1 Hz), the other off; both are steady for about 1 s during a switch;
 both flash fast while the button is held.
@@ -436,6 +443,12 @@ Dexcom mode puts the board at x1, and the app follows it (shared clock, graphs, 
 Configuration window) without writing it back, so a board at x1 is never shown on an x60 time axis.
 
 #### Dexcom G6 transmitter
+
+The G6 GATT service is present in every mode (static attribute table) but **served only in the Dexcom
+mode**: in Multi mode a central that subscribes to it or writes to its Authentication / Control
+characteristic is refused (ATT *Insufficient Authorization*) and disconnected, so a phone that
+remembers identity 0 from the Dexcom mode cannot hold the link the PC app needs (`docs/FIRMWARE.md`
+§4.5). Reads are not refused.
 
 Implemented in `firmware/peripheral_cgms/src/dexcom_g6.c` (protocol, no Zephyr, host-tested),
 `aes128.c` and `dexcom_service.c` (GATT glue); the Python twin is `src/api/dexcom_g6.py` and

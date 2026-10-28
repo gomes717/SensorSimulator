@@ -549,6 +549,25 @@ refreshed. The scripts discover with `use_cached_services=False` (`hw_common.con
 | `hw_csv_loop.py` | **CSV playback loops** when its window ends: a 1 h, a synthetic 24 h and a real 24 h `Dexcom_001` window (+ Food Log) each play past the end at x60 / x1000; every console sample must equal `floor(t·60/interval) mod rows`, and the meals must fire again in the next window. Uses the last slot; restores it (model source, no CSV) and the speed (x60) afterwards. ~13 min. | A, B pass 2026-10-06 (see FIRMWARE.md) |
 | `hw_user_read.py` | The Users screen's **read-from-board** path through the *real* `BleSession` + `UserReader`: on the last slot it writes a known user (UVA/Padova, Breton, a meal, an exercise bout, values that are not float32-exact), reads it back and checks the three outcomes — same content → **Matches** (float32-aware on real wire data), a changed parameter → **Differs** `['model parameters']`, another name → **Unknown** — then renames the board's user (what *Create* does) and restores what the slot held. | 9/9, 2026-10-06 |
 
+## 10b-2. Board buttons and the closed G6 service (manual, with the console on COM10)
+
+Not scripted yet; run after flashing, with the sensors connected and the console open.
+
+| Step | Expect |
+|---|---|
+| Short press **Button 2** | console `main: food button -> 30 g over 10 min`; `carbs=` above 0 on **every** slot (on the Deichmann / Roy & Parker models as a single step, on Cambridge / UVA over 10 min); each tab's food graph reacts |
+| Short press **Button 3** | `main: exercise button -> 30 min at 70 %`; `ex=70.0` on every slot for 30 sim-minutes |
+| Short press **Button 4** | `main: PISA button -> 10 min, 60 % attenuation`; `pisa=` below 1.000 on every slot, lowest (about 0.4) at the middle of the bout; the reading dips on each sensor |
+| Hold **Button 1** while pressing 2–4 | no event is injected during the hold |
+| In **Multi** mode, connect a G6 client (xDrip, or a `BleakClient` that starts notify on `f8083535-…`) to identity 0 | console `dexcom: refused a G6 subscription in standard BLE mode, dropping the client`, then `Disconnected … reason 0x16`; the client gets ATT *Insufficient Authorization*; "Nordic Glucose Sensor 1" is advertising again within a few seconds (re-advertise backoff after a short link) |
+| In **Multi** mode, a normal PC connection to Sensor 1 | connects, stays up, notifications flow; `dexcom: subscription value 0x0002 …` right after the connect is the bond restoring old values, not a client |
+| Switch to **Dexcom** from the Configuration window | the app reconnects and the Configuration window shows **x1** (the board forces it); the graph restarts at the new scale |
+
+Diagnosing "Sensor 1 is not in the scan": read COM10 unfiltered and look for `Connected` /
+`Disconnected` lines and the peer address — a connected identity does not advertise (a phone
+holding identity 0 was the cause on 2026-10-28; fixed by the refusal above). Disconnect the
+sensors in the app before flashing: a reset leaves stale links behind.
+
 ## 10c. Overnight Users test — `scripts/overnight_users.py`
 
 The whole Users-era app against the real 3-sensor board, cycle after cycle with seeded variety

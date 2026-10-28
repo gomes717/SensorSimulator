@@ -46,7 +46,9 @@ app is called **GlucoEcho**; its icon (light and dark variants) lives in
   clock + speed
 - **Users:** one profile per simulated person (picture, name, weight, glucose model +
   sensor noise, meals, exercise — or a recorded CSV window), edited on a profile screen with a
-  24 h **overview** (glucose with the range regions, meals, exercise), and **read back from a sensor** (*Users → + Read from…*) so a board that is
+  24 h **overview** (the glucose preview with the range regions, meals marked and exercise
+  shaded) that redraws as you edit — select a meal or exercise row to change it in place — and
+  **read back from a sensor** (*Users → + Read from…*) so a board that is
   already configured becomes a user in the app
 - **One tab per sensor**, browser-style: each tab has its own graphs, history,
   stats and commands. A "+" after the last tab (like a browser) connects another sensor. Nothing connected → a centered "Connect Bluetooth" start
@@ -57,6 +59,11 @@ app is called **GlucoEcho**; its icon (light and dark variants) lives in
 - **Commands on every tab** — Food… / Exercise… / PISA… buttons that open a small
   form and send a one-shot event to *that* sensor without resetting the simulation; disabled (with the reason)
   until the run is going and the sensor's link is live, hidden for a CSV sensor
+- **Right-click a graph** for **Show points** and **Export as CSV…** (every plotted series of
+  that sensor on one simulated-time column)
+- **Board buttons** (no PC needed): Button 2 = a 30 g meal over 10 min, Button 3 = 30 min of
+  exercise at 70 %, Button 4 = a 10 min PISA at 60 % — each into every sensor; hold Button 1 for 3 s
+  to switch between the 3-sensor and the Dexcom G6 mode
 - **Start / Pause / Stop in the toolbar**, blocked until a sensor is connected
   (Model Only needs none)
 - The display follows what the **board** reports each sensor is running (CSV
@@ -64,7 +71,8 @@ app is called **GlucoEcho**; its icon (light and dark variants) lives in
 - Replay a recorded 24 h CGM trace (Dexcom CSV) from the board instead of a
   model — uploaded over BLE, stored in the board's external flash
 - Simulation speed of 1 second per second (real time) or 1 minute per second (x60)
-  in the app (the firmware still accepts any multiplier up to x1000); rolling "last 1 hour"
+  in the app (the firmware still accepts any multiplier up to x1000); the app follows the
+  speed the board reports (entering the Dexcom mode puts it at x1); rolling "last 1 hour"
   graph view (or the whole run)
 - PISA (pressure-induced sensor attenuation) injection with the affected
   interval shaded on that sensor's graph
