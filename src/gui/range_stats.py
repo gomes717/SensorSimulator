@@ -1,6 +1,6 @@
 """The live "Time in range — current view" panel below the glucose graph:
-TIR / TBR(1/2) / TAR(1/2) as time (h:mm), plus mean and variance, for whatever
-series is currently plotted.
+time in range, time below range (levels 1 and 2) and time above range (levels 1 and 2)
+as time (h:mm), plus mean and variance, for whatever series is currently plotted.
 
 Pulled out of :class:`MainWindow` (issue 18). The owner feeds it the in-view
 series + the window span; this widget owns the 9-cell grid and the formatting.
@@ -8,18 +8,19 @@ series + the window span; this widget owns the 9-cell grid and the formatting.
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QGridLayout, QGroupBox, QLabel, QVBoxLayout
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QGridLayout, QGroupBox, QLabel
 
 from models import cgm_metrics
 
 _CELLS = (
-    ("tir", "TIR"),
-    ("tbr", "TBR"),
-    ("tbr1", "TBR1"),
-    ("tbr2", "TBR2"),
-    ("tar", "TAR"),
-    ("tar1", "TAR1"),
-    ("tar2", "TAR2"),
+    ("tir", "Time in range (TIR)"),
+    ("tbr", "Time below range (TBR)"),
+    ("tbr1", "Time below range, level 1 (TBR1)"),
+    ("tbr2", "Time below range, level 2 (TBR2)"),
+    ("tar", "Time above range (TAR)"),
+    ("tar1", "Time above range, level 1 (TAR1)"),
+    ("tar2", "Time above range, level 2 (TAR2)"),
     ("mean", "Mean"),
     ("variance", "Variance"),
 )
@@ -32,8 +33,8 @@ class RangeStatsPanel(QGroupBox):
         self.labels: dict[str, QLabel] = {}
         for i, (key, caption) in enumerate(_CELLS):
             row, col = divmod(i, 5)
-            box = QVBoxLayout()
             cap = QLabel(caption)
+            cap.setWordWrap(True)  # the full names are long: wrap instead of widening the window
             # Sized up for readability (captions +1 pt, values +5 pt bold).
             # A QFont tweak, not setStyleSheet: any stylesheet on a widget
             # routes its rendering through QStyleSheetStyle, which does not
@@ -49,9 +50,10 @@ class RangeStatsPanel(QGroupBox):
             value_font.setBold(True)
             val.setFont(value_font)
             self.labels[key] = val
-            box.addWidget(cap)
-            box.addWidget(val)
-            grid.addLayout(box, row, col)
+            # Captions and values on shared grid rows, so a caption that wraps to more lines
+            # pushes the whole row of values down together instead of misaligning one column.
+            grid.addWidget(cap, 2 * row, col, Qt.AlignmentFlag.AlignBottom)
+            grid.addWidget(val, 2 * row + 1, col)
 
     def refresh(self, series: list[float], span_minutes: float | None, thresholds: dict) -> None:
         """Recompute from *series* (the in-view glucose values) over *span_minutes*.
