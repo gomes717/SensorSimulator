@@ -13,7 +13,7 @@ import sys
 from functools import cache
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QRectF, Qt, QTimer
 from PyQt6.QtGui import QGuiApplication, QIcon, QPainter, QPaintEvent, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import QWidget
@@ -28,9 +28,15 @@ _ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 
 
 @cache
+def _renderer_for(dark: bool) -> QSvgRenderer:
+    """The vector icon for a dark (*dark* True: light ink) or light (dark ink) background."""
+    return QSvgRenderer(str(ICON_DIR / f"glucoecho_{'dark' if dark else 'light'}.svg"))
+
+
+@cache
 def icon_for(dark: bool) -> QIcon:
     """The app icon for a dark (*dark* True: light ink) or light (dark ink) title bar."""
-    renderer = QSvgRenderer(str(ICON_DIR / f"glucoecho_{'dark' if dark else 'light'}.svg"))
+    renderer = _renderer_for(dark)
     icon = QIcon()
     for size in _ICON_SIZES:
         pixmap = QPixmap(size, size)
@@ -81,10 +87,12 @@ class LogoWidget(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:  # Qt naming
         """Draw the icon whose ink contrasts with the current window colour."""
         dark = self.palette().window().color().lightness() < 128
-        pixmap = icon_for(dark).pixmap(QSize(self._size, self._size), self.devicePixelRatioF())
+        # Straight from the SVG at whatever size the screen really draws it: the icon's pixmaps
+        # stop at 256 px and would be scaled (soft, jagged) on a larger or scaled display.
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setOpacity(self._opacity)
-        painter.drawPixmap(0, 0, pixmap)
+        _renderer_for(dark).render(painter, QRectF(0, 0, self._size, self._size))
         painter.end()
 
     def changeEvent(self, event: QEvent | None) -> None:  # Qt naming
