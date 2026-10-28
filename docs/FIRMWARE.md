@@ -392,12 +392,13 @@ client). The refused link counts as a short link, so the usual re-advertise back
 | 1 | hold 3 s | switch the board mode (Multi <-> Dexcom) |
 | 2 | short press | instant food: 30 g of carbs over 10 min |
 | 3 | short press | instant exercise: 30 min at 70 % intensity |
+| 4 | short press | instant PISA: 10 min, 60 % peak attenuation (at the middle of the bout) |
 
-Buttons 2 and 3 queue the same `CFG_MSG_FOOD_INSTANT` / `CFG_MSG_EXERCISE_INSTANT` message a BLE
+Buttons 2, 3 and 4 queue the same payload as the `CFG_MSG_FOOD_INSTANT` / `CFG_MSG_EXERCISE_INSTANT` / `CFG_MSG_PISA_INSTANT` message a BLE
 write carries (as the `..._ALL` variants), so the event lands on **every** sensor slot (a button cannot say which sensor it means, and the sensor-select cursor is whatever the app addressed last), works
 with no client connected and in either board mode, and is dropped (logged) if every instant slot
 is taken. A press is ignored while Button 1's hold is in progress. The amounts are the
-`BUTTON_FOOD_*` / `BUTTON_EXERCISE_*` constants in `main.c`.
+`BUTTON_FOOD_*` / `BUTTON_EXERCISE_*` / `BUTTON_PISA_*` constants in `main.c`.
 
 ## 5. Boot sequence summary
 

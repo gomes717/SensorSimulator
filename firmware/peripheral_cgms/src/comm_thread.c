@@ -530,6 +530,18 @@ static void process_cfg_msg(const struct cfg_msg *msg)
 		return;
 	}
 
+	if (msg->type == CFG_MSG_PISA_INSTANT_ALL) {
+		struct pisa_instant_wire wire;
+
+		if (msg->len >= sizeof(wire)) {
+			memcpy(&wire, msg->data, sizeof(wire));
+			for (int s = 0; s < SIM_SENSOR_COUNT; s++) {
+				model_thread_add_instant_pisa(s, wire.duration_min, wire.depth_frac);
+			}
+		}
+		return;
+	}
+
 	if (msg->type == CFG_MSG_PISA_INSTANT) {
 		struct pisa_instant_wire wire;
 

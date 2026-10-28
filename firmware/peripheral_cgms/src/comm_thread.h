@@ -68,6 +68,7 @@ enum cfg_msg_type {
 	 * say which sensor it means, and the sensor-select cursor is whatever the app addressed last. */
 	CFG_MSG_FOOD_INSTANT_ALL,
 	CFG_MSG_EXERCISE_INSTANT_ALL,
+	CFG_MSG_PISA_INSTANT_ALL,
 };
 
 /* Enqueue a config write for comm_thread to apply. Thread-safe, non-blocking

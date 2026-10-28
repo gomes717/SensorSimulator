@@ -57,7 +57,8 @@
  * layout is a one-line change. The 1st LED is the connection indicator; the 2nd blinks in Multi
  * mode (3 sensors, standard BLE), the 3rd in Dexcom mode (1 sensor, G6). Holding Button 1 for
  * BUTTON_HOLD_MS toggles the mode. A short press of Button 2 injects a meal, of Button 3 a bout of
- * exercise, into every sensor (the same instant events a BLE write makes, for all slots). */
+ * exercise, of Button 4 a PISA attenuation, into every sensor (the same instant events a BLE write
+ * makes, for all slots). */
 #define APP_LED         DK_LED1
 #define LED_MULTI       DK_LED2
 #define LED_DEXCOM      DK_LED3
@@ -65,6 +66,9 @@
 #define BUTTON_HOLD_MS  3000
 #define FOOD_BUTTON_MSK     DK_BTN2_MSK
 #define EXERCISE_BUTTON_MSK DK_BTN3_MSK
+#define PISA_BUTTON_MSK     DK_BTN4_MSK
+#define BUTTON_PISA_DURATION_MIN       10
+#define BUTTON_PISA_DEPTH_FRAC         0.6f /* peak attenuation, at the middle of the bout */
 #define BUTTON_FOOD_CARBS_G        30.0f
 #define BUTTON_FOOD_DURATION_MIN   10
 #define BUTTON_EXERCISE_DURATION_MIN   30
@@ -422,11 +426,24 @@ static void button_inject(uint32_t button_state, uint32_t has_changed)
 			printk("main: exercise request dropped (config queue full)\n");
 		}
 	}
+	if (has_changed & PISA_BUTTON_MSK) {
+		struct pisa_instant_wire wire = {
+			.duration_min = BUTTON_PISA_DURATION_MIN,
+			.depth_frac = BUTTON_PISA_DEPTH_FRAC,
+		};
+
+		printk("main: PISA button -> %u min, %.0f %% attenuation\n", wire.duration_min,
+		       (double)wire.depth_frac * 100.0);
+		if (comm_thread_enqueue_config(CFG_MSG_PISA_INSTANT_ALL, &wire, sizeof(wire)) != 0) {
+			printk("main: PISA request dropped (config queue full)\n");
+		}
+	}
 }
 
 static void button_changed(uint32_t button_state, uint32_t has_changed)
 {
-	button_inject(button_state, has_changed & (FOOD_BUTTON_MSK | EXERCISE_BUTTON_MSK));
+	button_inject(button_state,
+		      has_changed & (FOOD_BUTTON_MSK | EXERCISE_BUTTON_MSK | PISA_BUTTON_MSK));
 	if (!(has_changed & MODE_BUTTON_MSK)) {
 		return;
 	}
