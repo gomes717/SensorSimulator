@@ -71,7 +71,6 @@ class _Env:
 def test_a_user_with_no_window_is_told_to_choose_one():
     env = _Env()
     assert "No CSV window" in env.page.info.text()
-    assert env.page.graph.values == [0.0] * 1440
 
 
 def test_the_choose_button_opens_the_picker():
@@ -91,13 +90,11 @@ def test_a_picked_window_is_copied_into_the_user(tmp_path):
     assert env.changes == 1
 
 
-def test_the_page_describes_the_window_and_draws_it(tmp_path):
+def test_the_page_describes_the_window(tmp_path):
     env = _Env()
     env.choose(_dexcom(tmp_path))
     text = env.page.info.text()
     assert "Dexcom_007.csv" in text and "288 samples" in text and "2020-01-01" in text
-    assert env.page.graph.values[0] == 100.0
-    assert env.page.graph.values[5] == 101.0
 
 
 def test_the_page_does_not_depend_on_the_original_file_afterwards(tmp_path):
@@ -106,7 +103,7 @@ def test_the_page_does_not_depend_on_the_original_file_afterwards(tmp_path):
     env.choose(path)
     path.unlink()
     env.page.refresh()  # the window is in the user, the file is not needed
-    assert env.user.csv is not None and env.page.graph.values[0] == 100.0
+    assert env.user.csv is not None and "288 samples" in env.page.info.text()
 
 
 def test_a_file_that_cannot_be_used_is_reported_and_changes_nothing(tmp_path):

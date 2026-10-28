@@ -1,6 +1,5 @@
 """Window behaviour: windows open centred on the main window, the wheel / a two-finger touchpad
-scroll reaches the page instead of being swallowed, and the schedule graph is laid out flush with
-the table under it (gui/widgets.py, gui/schedule_graph.py)."""
+scroll reaches the page instead of being swallowed (gui/widgets.py)."""
 
 import os
 import sys
@@ -18,9 +17,8 @@ pytest.importorskip("PyQt6.QtWidgets")
 from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest as _QTest
-from PyQt6.QtWidgets import QApplication, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
-from gui.schedule_graph import ScheduleGraph
 from gui.widgets import CenterOnMain, NoWheelComboBox, NoWheelTimeEdit
 
 QTest: Any = _QTest  # the PyQt6 stubs reject valid QTest calls
@@ -49,8 +47,8 @@ def _wheel() -> QWheelEvent:
 
 @pytest.mark.parametrize(
     "make",
-    [lambda: ScheduleGraph("t", "y", "#3f8fd0"), NoWheelComboBox, NoWheelTimeEdit],
-    ids=["graph", "combo", "time edit"],
+    [NoWheelComboBox, NoWheelTimeEdit],
+    ids=["combo", "time edit"],
 )
 def test_the_wheel_is_not_swallowed_by_the_widgets_on_a_user_page(make):
     widget = make()
@@ -66,30 +64,6 @@ def test_a_combo_box_keeps_its_choice_when_the_page_is_scrolled_over_it():
     combo.setCurrentIndex(1)
     combo.wheelEvent(_wheel())
     assert combo.currentIndex() == 1
-
-
-def test_a_scroll_area_scrolls_when_the_wheel_is_over_a_graph_inside_it():
-    area = QScrollArea()
-    body = QWidget()
-    layout = QVBoxLayout(body)
-    graph = ScheduleGraph("t", "y", "#3f8fd0")
-    layout.addWidget(graph)
-    filler = QWidget()
-    filler.setMinimumHeight(2000)
-    layout.addWidget(filler)
-    area.setWidget(body)
-    area.resize(400, 300)
-    area.show()
-    QTest.qWait(50)
-    bar = area.verticalScrollBar()
-    assert bar is not None and bar.maximum() > 0
-    # what Qt does with a wheel event: offer it to the widget under the pointer, and when that
-    # one ignores it hand it to the parent, up to the scroll area's viewport
-    event = _wheel()
-    event.accept()
-    graph.wheelEvent(event)
-    assert not event.isAccepted()
-    area.close()
 
 
 # -- windows open centred on the main window --------------------------------------------------
@@ -163,22 +137,3 @@ def test_a_window_bigger_than_the_screen_area_is_kept_on_screen(main_window):
     area = screen.availableGeometry()
     assert other.x() >= area.left() and other.y() >= area.top()
     other.close()
-
-
-# -- the schedule graph hugs its edges ------------------------------------------------------
-
-
-def test_the_schedule_graph_has_no_blank_band_around_the_plot():
-    graph = ScheduleGraph("Exercise intensity over the day", "Intensity (%)", "#e0813f")
-    graph.resize(1000, 420)
-    graph.show()
-    QTest.qWait(50)
-    graph.draw()
-    width, height = graph.width(), graph.height()
-    ylabel = graph.ax.yaxis.label.get_window_extent()
-    xlabel = graph.ax.xaxis.label.get_window_extent()
-    plot = graph.ax.get_window_extent()
-    assert ylabel.x0 <= 0.03 * width  # the y label starts at the left edge, level with the table
-    assert plot.x1 >= 0.97 * width  # the plot reaches the right edge
-    assert xlabel.y0 <= 0.08 * height  # the x label sits at the bottom: no band under it
-    graph.close()

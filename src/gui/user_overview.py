@@ -106,7 +106,14 @@ class UserOverview(QWidget):
         self._draw_glucose(user)
         self._draw_schedule(self.food_ax, self.food_values, "Carbs g/min", _FOOD_COLOR)
         self._draw_schedule(self.exercise_ax, self.exercise_values, "Exercise %", _EXERCISE_COLOR)
-        self.exercise_ax.set_xlabel("Time of day (h)", color=self._foreground)
+        # A model user's time axis sits under the exercise plot; a CSV user has only the glucose
+        # plot, which then carries it (hours into the recorded window).
+        label_ax = self.glucose_ax if is_csv else self.exercise_ax
+        label_ax.set_xlabel(
+            "Hours into the recorded window" if is_csv else "Time of day (h)",
+            color=self._foreground,
+        )
+        self.glucose_ax.tick_params(labelbottom=is_csv)
         self.glucose_ax.set_xlim(0, 24)
         self.glucose_ax.set_xticks(range(0, 25, 3))
         self.note.setText(self._note_text(user))

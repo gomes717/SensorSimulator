@@ -2,7 +2,8 @@
 
 "Choose CSV file…" opens the CSV Analysis window as a picker (the file *and* the 24 h region are
 chosen there, against the trace and its metrics); the window picked is **copied** into the user, so
-the original file is not needed again. The page shows what the user holds and draws it.
+the original file is not needed again. The page says what the user holds; the profile screen's
+overview draws it.
 """
 
 from __future__ import annotations
@@ -13,9 +14,8 @@ from datetime import datetime, timedelta
 from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from gui.csv_analysis_window import CsvAnalysisWindow
-from gui.schedule_graph import ScheduleGraph
 from gui.widgets import wrapped_label
-from models import user_csv, user_edit, user_schedule
+from models import user_csv, user_edit
 from models.types import User
 
 _NONE_YET = "No CSV window chosen yet — choose a Dexcom file and the 24 h region to replay."
@@ -61,18 +61,16 @@ class CsvPage(QWidget):
         self.message = wrapped_label("")
         self.message.setStyleSheet("color: #b00020;")
         layout.addWidget(self.message)
-        self.graph = ScheduleGraph("Recorded glucose", "Glucose (mg/dL)", "#3f8fd0", filled=False)
-        layout.addWidget(self.graph, 1)
+        layout.addStretch(1)
         self.refresh()
 
     # -- user -> widgets ------------------------------------------------------------
 
     def refresh(self) -> None:
-        """Describe and draw the window the user holds."""
+        """Describe the window the user holds."""
         track = self._user.csv
         if track is None:
             self.info.setText(_BOARD_NO_DATA if self._user.mode == "csv" else _NONE_YET)
-            self.graph.set_values([0.0] * 1440)
             return
         lines = [f"Window from {track.source_name or 'a recording'} — {len(track.samples)} samples"]
         if track.start_iso:
@@ -86,7 +84,6 @@ class CsvPage(QWidget):
         meals = len(track.foodlog)
         lines.append(f"{meals} meal{'s' if meals != 1 else ''} in its food log (report only)")
         self.info.setText("\n".join(lines))
-        self.graph.set_values(user_schedule.csv_series(track))
 
     # -- widgets -> user ------------------------------------------------------------
 
