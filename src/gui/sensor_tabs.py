@@ -296,6 +296,9 @@ class _AlertTabBar(QTabBar):
         painter.end()
 
 
+_LOGO_PX = 224  # the start screen's logo, centred above the prompt
+
+
 class _EmptyState(QWidget):
     """The start screen: nothing connected yet, one obvious thing to do."""
 
@@ -313,10 +316,10 @@ class _EmptyState(QWidget):
         self.button.clicked.connect(self.connect_requested)
         layout = QVBoxLayout(self)
         layout.addStretch(1)
-        layout.addWidget(LogoWidget(), 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(16)
+        layout.addWidget(LogoWidget(_LOGO_PX), 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(20)
         layout.addWidget(title)
-        layout.addSpacing(12)
+        layout.addSpacing(48)  # the button sits well below the title, away from the logo
         layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignCenter)
         layout.addStretch(1)
 
