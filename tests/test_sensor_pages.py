@@ -12,7 +12,8 @@ import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from gui.run_clock import RunClock
 from gui.sensor_pages import SensorPages
@@ -104,19 +105,24 @@ def test_a_page_that_is_not_shown_defers_its_redraw_until_it_is():
     pages.close()
 
 
+def _points_action(page):
+    return next(a for a in page.graph_menu().actions() if a.text() == "Show points")
+
+
 def test_show_points_is_one_app_wide_choice_that_every_page_follows(win):
     win.sensors.on_new_message(_glucose("Sensor A", 100.0, 5))
     win.sensors.on_new_message(_glucose("Sensor B", 120.0, 5))
     a, b = win.tabs.pages.get("Sensor A"), win.tabs.pages.get("Sensor B")
-    assert not a.points_check.isChecked() and not b.points_check.isChecked()
+    assert not a.shows_points and not b.shows_points
 
-    a.points_check.setChecked(True)  # the user ticks the box on page A
+    _points_action(a).trigger()  # the user ticks "Show points" in page A's right-click menu
 
-    assert b.points_check.isChecked()
+    assert b.shows_points
     assert all(line.get_visible() for line in b.graph._g.point_lines.values())
     assert win.state.show_points is True
     later = win.sensors.page_of_user("Sensor C")  # a page created afterwards starts shown too
-    assert later.points_check.isChecked()
+    assert later.shows_points
+    assert _points_action(later).isChecked()  # and the menu shows it ticked
 
 
 def test_a_csv_page_labels_its_own_time_axis(win):
@@ -133,3 +139,40 @@ def test_a_csv_page_has_no_expected_model_in_its_legend(win):
     assert "Expected (model)" not in [t.get_text() for t in page.graph._g.legend.get_texts()]
     page.set_csv(False)
     assert "Expected (model)" in [t.get_text() for t in page.graph._g.legend.get_texts()]
+
+
+def test_the_graph_menu_offers_show_points_and_export_as_csv(win):
+    win.sensors.on_new_message(_glucose("Sensor A", 100.0, 5))
+    page = win.tabs.pages.get("Sensor A")
+    texts = [action.text() for action in page.graph_menu().actions()]
+    assert texts == ["Show points", "Export as CSV…"]
+    assert _points_action(page).isCheckable()
+
+
+def test_both_graphs_open_the_menu_on_right_click(win):
+    win.sensors.on_new_message(_glucose("Sensor A", 100.0, 5))
+    page = win.tabs.pages.get("Sensor A")
+    for canvas in (page.graph.canvas, page.graph.fe_canvas):
+        assert canvas.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+
+def test_exporting_writes_every_plotted_series(win, tmp_path):
+    win.sensors.on_new_message(_glucose("Sensor A", 100.0, 5))
+    page = win.tabs.pages.get("Sensor A")
+    page.add_received(10.0, 111.0)
+    page.add_expected(10.0, 109.0)
+    page.add_food_ex(10.0, 3.0, 40.0)
+    target = tmp_path / "out.csv"
+    assert page.export_csv(str(target)) is True
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "time_s,glucose_mg_dl,expected_mg_dl,carbs_g_per_min,exercise_pct"
+    assert "10.0,111.0,109.0,3.0,40.0" in lines
+
+
+def test_an_export_that_cannot_be_written_says_so_and_returns_false(win, tmp_path, monkeypatch):
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: shown.append(args))
+    win.sensors.on_new_message(_glucose("Sensor A", 100.0, 5))
+    page = win.tabs.pages.get("Sensor A")
+    assert page.export_csv(str(tmp_path / "missing-folder" / "out.csv")) is False
+    assert len(shown) == 1

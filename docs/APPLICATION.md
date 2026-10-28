@@ -243,8 +243,9 @@ by `ChildWindows` and kept, so re-opening raises the same instance.
 |---|---|
 | `configuration_window.py` — `ConfigurationWindow` | The Speed choice (exactly two: 1 second per second = real time, or 1 minute per second = x60 — a multiplier set elsewhere, e.g. by a scenario, shows as a read-only entry), Model-Only and CGMS-Only toggles, the **Appearance** group (UI theme and the rolling graph time window — formerly the separate View window) and the editable glucose range thresholds. People are not edited here any more: see the Users window |
 | `users_window.py` — `UsersWindow` | The **Users** button's window: the list, **+ Read from…** (a sensor's slot turned into a user — unknown name → unsaved draft, same name and content → open it, same name different content → Overwrite / Create `Name#2`, which also renames the board's user), **+ New**, Open, Delete. `user_reader.py` does the read; `models/user_board.py` decides the outcome |
-| `user_profile_window.py` — `UserProfileWindow` | One window per user (`user_profiles.py`): picture, name and a menu (Profile, CSV, Food, Exercise, Model) on the left, the page on the right, **Preview** / **Save** / **Send to…** at the bottom. Edits a *copy* and writes it to the list only on Save (closing asks Save / Discard / Cancel); the mode (model or CSV) enables the pages it uses. Pages: `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py` (Food and Exercise, one class), `user_csv_page.py` |
-| `user_preview_window.py` | The 24 h preview of the user on screen — the noise-free stepper over its meals, exercise and model, or the recorded CSV window |
+| `user_profile_window.py` — `UserProfileWindow` | One window per user (`user_profiles.py`): picture, name and a menu (Profile, CSV, Food, Exercise, Model) on the left, the page on the right, **Save** / **Send to…** at the bottom. Edits a *copy* and writes it to the list only on Save (closing asks Save / Discard / Cancel); the mode (model or CSV) enables the pages it uses. Pages: `user_profile_page.py`, `user_model_page.py`, `user_schedule_pages.py` (Food and Exercise, one class), `user_csv_page.py` |
+| `user_overview.py` — `UserOverview` | The overview above every profile page but Profile: the 24 h glucose preview (the noise-free stepper over the meals, exercise and model, or the recorded CSV window) with the five range regions, over the meal and exercise schedules, on one time axis. Redrawn after every edit, so adding a meal or bout updates it at once |
+| `range_bands.py` | The five range bands (TBR2, TBR1, TIR, TAR1, TAR2) shared by the live graph and the overview |
 | `user_sender.py` — `UserSender` | **Send to…**: one push through the chosen sensor's session, refused up front for a user the board cannot take, a dead link or a sensor that does not list `user_name` |
 | `csv_analysis_window.py` — `CsvAnalysisWindow` | Load a Dexcom export, slide a 24 h window, read range metrics for the whole recording and the selection; also the picker behind the profile screen's CSV page ("Use this 24 h window") |
 | `bluetooth_window.py` — `BluetoothWindow` | Device list, scan, multi-device connect / disconnect; owns the `sessions()` dict; emits `session_connected` (opens that sensor's tab) and offers `disconnect_device()` (the tab's close button) |
@@ -307,7 +308,7 @@ blinking. The tab shows no number; the tooltip gives the value and direction
 range, yellow borderline, red low/high — deliberately light), and it changes
 colour **exactly where it crosses a limit**: a segment between two samples is cut
 at the threshold crossing by linear interpolation, so the colour does not wait for
-the next sample. A **Show points** checkbox under the statistics draws each
+the next sample. A **Show points** entry in the graph's right-click menu draws each
 received sample as a dot (off by default; one app-wide choice, remembered in
 `data/settings.json`, that every page follows). The glucose graph takes every
 spare pixel (its margins are in inches, so the legend keeps its room however tall
@@ -315,6 +316,11 @@ it is stretched), the statistics and the command buttons sit in a compact strip
 below, and when the food/exercise graph is hidden (a CSV sensor) the glucose
 graph carries its own "Time (s)" axis label and drops the "Expected (model)"
 legend entry (no model runs behind a replayed recording).
+
+**Right-click menu.** Right-clicking either graph opens **Show points** (a tick) and
+**Export as CSV…**, which saves every plotted series on one simulated-time column
+(`time_s, glucose_mg_dl, expected_mg_dl, carbs_g_per_min, exercise_pct`; an empty cell
+where a series has no sample at that time) — `models/graph_export.py`.
 
 ### 3.5 Run controls and the Commands panel
 
