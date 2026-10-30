@@ -98,15 +98,22 @@ community) the transmitter/sensor exposes a **vendor-specific** GATT service:
 | Realtime cadence | one message every 300 s (sensor-driven) | every `comm_interval` seconds (5 s here), library-driven |
 | Encryption of glucose | realtime + backfill values are **not** encrypted after auth | link-layer encrypted (BLE SMP) |
 
+**Update (2026-10): the board now speaks the G6 protocol too.** The table above compares the real
+G6/G7 with the board's default **Multi** mode (SIG CGMS). In the board's **Dexcom** mode it
+implements the G6 transmitter side — the `F8083532-…` service, the AES challenge keyed by the
+6-character transmitter ID, opcode `4E` glucose replies with the CRC-16/XMODEM, one reading per
+300 s — and xDrip can read it (`PROTOCOL_SPEC.md`, "Dexcom G6 transmitter"). It is **not** G7
+(no J-PAKE, no backfill) and it ignores pairing: the AES challenge is the only gate. The paragraph
+below describes the Multi mode.
+
 **Conclusion:** our payload is a faithful **Bluetooth SIG CGM Measurement**;
 Dexcom's is a different, proprietary encoding. A generic SIG-CGMS client would
 read our board fine and would *not* read a Dexcom sensor without implementing
 the Dexcom protocol. The project's own app (`services/ble_session.py`) is a
 SIG-CGMS client — it only decodes `0x2AA7`.
 
-If byte-compatibility with a real Dexcom transmitter is ever a requirement,
-that is a separate firmware effort (new vendor service + J-PAKE + opcode
-messages) and should be tracked as its own item in `docs/TODO.md`.
+Byte-compatibility with a real G6 transmitter was that separate firmware effort, and it is done
+(the Dexcom mode above). A G7 (J-PAKE, backfill) is still not implemented.
 
 ### 2.1 The dataset CSVs are *not* a BLE capture
 

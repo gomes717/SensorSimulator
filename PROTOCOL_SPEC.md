@@ -27,6 +27,10 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `main.py` | Entry point, creates `QApplication` + `MainWindow` |
 | `api/ble_uuids.py` | Custom service/characteristic UUIDs (§2) |
 | `api/protocol.py` | Binary encode/decode for every config characteristic (§2) |
+| `api/dexcom_g6.py` | The Dexcom G6 wire protocol as pure functions: CRC-16, the AES challenge hash, every request / reply encoder and decoder (§2, "Dexcom G6 transmitter") |
+| `api/dexcom_g6_transmitter.py` | The board's G6 behaviour in Python (authentication, request → reply, the 5-minute grid) — the twin of `dexcom_g6.c`, used by the tests and the hardware checks |
+| `services/dexcom_g6_client.py` | A G6 client: the sequence xDrip runs against a transmitter, over any GATT connection (hardware checks, overnight test) |
+| `models/board_profile.py`, `gui/board_profile.py` | The board's two modes (Multi / Dexcom), read back from the board, switched from the Configuration window |
 | `services/ble_session.py` | `BleSession` — persistent per-device connection, own asyncio loop; decodes CGM Measurement + Food/Exercise Status notifications; `queue_write()`/`request_read()` for the config service |
 | `services/bluetooth_scanner.py` | `BluetoothScanThread` — BLE discovery |
 | `services/windows_ble_pairing.py` | Windows-specific passkey pairing helper (local-imported by `services/ble_session.py`) |
@@ -55,6 +59,8 @@ import BleSession`, `from graphic.main_window import MainWindow`):
 | `src/models/cgmsim_*.{c,h}` | Verbatim copies of this repo's `cgmsim/{inc,src}/cgmsim_*.{c,h}` (4 models + sensors + types) — zero OS deps |
 | `src/sim_config.{c,h}` | `struct sim_config`, flash load/save/defaults (§4) |
 | `src/config_service.{c,h}` | Custom GATT service: read/write/notify handlers (§2) |
+| `src/dexcom_g6.{c,h}`, `src/aes128.{c,h}` | The Dexcom G6 protocol (CRC, AES challenge, request → reply, the 5-minute grid): plain C, no Zephyr, host-tested (`tests/host/`) against `tests/data/dexcom_g6_vectors.json` |
+| `src/dexcom_service.{c,h}` | The G6 GATT service (`F8083532-…`): moves bytes between GATT and `dexcom_g6.c`, keeps the per-connection session, refuses clients outside the Dexcom mode |
 | `src/model_thread.{c,h}` | Owns model/sensor state, 1 s tick, `dt_min` per mode, food/exercise scheduling (§3) |
 | `src/comm_thread.{c,h}` | Owns BLE: advertising, CGMS measurement push, Food/Exercise Status notify, drains config write queue, persists to flash |
 | `boards/nrf54l15dk_nrf54l15_cpuapp.overlay` | `fixed-partitions` on the external `mx25r64` SPI-NOR (`sim_storage_partition`) |
@@ -468,8 +474,32 @@ requires encryption.**
 | Backfill | `…3536` | notify | present, unused |
 | ExtraData | `…3538` | notify | xDrip subscribes before authenticating |
 
+**Advertising.** Identity 0 in Dexcom mode advertises the `0xFEBC` service UUID and the complete
+local name `Dexcom` + characters 5–6 of the transmitter ID (`8SIM15` → `Dexcom15`); that is what
+xDrip's scan filters on. It is connectable only inside the connect window (below). No characteristic
+requires encryption, so no pairing dialog ever appears: the AES challenge is the whole gate.
+
 All multi-byte values little-endian; every message except the authentication ones ends in a
 **CRC-16/XMODEM** (poly `0x1021`, init 0) of the preceding bytes.
+
+**A session, as xDrip runs it** (one connection per reading; the client leaves afterwards):
+
+```mermaid
+sequenceDiagram
+    participant X as xDrip (phone)
+    participant B as Board, identity 0
+    X->>B: connect (inside the connect window)
+    X->>B: subscribe ExtraData ...3538, Authentication ...3535 and Control ...3534
+    X->>B: write Auth: 01 token[8] 02
+    B-->>X: indicate Auth: 03 hash(token)[8] challenge[8]
+    Note over X: checks hash(token) with its own copy of the ID
+    X->>B: write Auth: 04 hash(challenge)[8]
+    B-->>X: indicate Auth: 05 authenticated bonded
+    X->>B: write Control: 4E CRC
+    B-->>X: indicate Control: 4F ... (glucose, trend, ...)
+    X->>B: write Control: 09 CRC (disconnect)
+    B-->>X: link closed by the board
+```
 
 **Authentication** (on `…3535`): the client writes `01 | token[8] | 02`; the board indicates
 `03 | tokenHash[8] | challenge[8]` with `hash(x) = AES-128-ECB(key, x ‖ x)[0:8]` and
@@ -478,6 +508,19 @@ secret and xDrip verifies the board's `tokenHash`**. The client writes `04 | has
 board indicates `05 | authenticated | bonded` (`bonded` is always `1`: no pairing happens). Control
 writes before a successful challenge fail with ATT error `0x08`. `06` (keep-alive) and `07` (bond
 request) are accepted silently.
+
+Details the implementation depends on:
+
+- The request's last byte is `02` in the usual flow and `01` in xDrip's "alternate" variant; the board
+  answers both the same way (only `01 | token[8] | end` of 10 bytes is a request).
+- A **wrong** challenge reply gives `05 | 00 | bonded` (not authenticated) and the session stays
+  closed. A new `01` request always starts over (authentication is dropped, a fresh challenge is
+  issued from the hardware random source).
+- xDrip sometimes writes the `04` reply **twice**. The challenge is single-use, so the repeat has
+  nothing to compare against: on a link that already authenticated it leaves the session as it is
+  (`05 | 01 | 01` again); on one that did not, it is still refused.
+- The state is **per connection** and is cleared on every connect and disconnect: a new link always
+  starts unauthenticated.
 
 | Request on Control | Reply (indicated on Control) |
 |---|---|
@@ -491,9 +534,24 @@ request) are accepted silently.
 | `09` / `0A` | disconnect / unbond |
 | anything else | logged on the console (`dexcom: unknown op …`), ignored |
 
+**Message layouts** (byte offsets, little-endian; `status` is `0` throughout; every message ends in
+the 2-byte CRC):
+
+| Message | Offset → field |
+|---|---|
+| `4F` EGlucose (18 B) | 0 `4F` · 1 status · 2–5 `seq` u32 · 6–9 `ts` u32 · 10–11 glucose word u16 · 12 state · 13 trend i8 · 14–15 predicted u16 (`& 0x03FF`) · 16–17 CRC |
+| `31` Glucose (16 B) | 0 `31` · 1 status · 2–5 `seq` · 6–9 `ts` · 10–11 glucose word · 12 state · 13 trend · 14–15 CRC |
+| `2F` Sensor (16 B) | 0 `2F` · 1 status · 2–5 `ts` · 6–9 unfiltered u32 · 10–13 filtered u32 · 14–15 CRC |
+| `25` Time (12 B) | 0 `25` · 1 status · 2–5 transmitter time (s) · 6–9 session start (s) · 10–11 CRC |
+| Auth `01` request (10 B) | 0 `01` · 1–8 token · 9 `02` (or `01`) |
+| Auth `03` challenge (17 B) | 0 `03` · 1–8 `hash(token)` · 9–16 challenge |
+| Auth `04` reply (9 B) | 0 `04` · 1–8 `hash(challenge)` |
+| Auth `05` status (3 B) | 0 `05` · 1 authenticated · 2 bonded |
+
 `glucose` is `u16 & 0x0FFF` (bits `0xF000` = display-only, never set), clamped to 40–400 mg/dL;
 `state 0x06` = OK; `trend` is an int8 in tenths of mg/dL/min (`127` = unknown); `ts` is simulated
-seconds since the grid started.
+seconds since the grid started. A request with a bad CRC is logged (`dexcom: bad crc …`) and gets no
+reply; with nothing published yet the replies say "stopped" (`state 0x01`, glucose 0).
 
 **The 5-minute rule.** A G6 never streams: the client connects, authenticates, asks for the
 reading and leaves. The board samples the model / CSV value at every multiple of **300 simulated

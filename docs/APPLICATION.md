@@ -77,7 +77,12 @@ on whether a board is even connected.
   is verified by the Users window's "+ Read from…" round-trip (and on hardware by
   `scripts/hw_user_read.py`).
 
-Neither file imports Qt or does any I/O — they're pure data transformation,
+- **`dexcom_g6.py`**, **`dexcom_g6_transmitter.py`** — the Dexcom G6 protocol
+  (CRC-16/XMODEM, the AES challenge, request and reply encoders/decoders) and the board's G6
+  behaviour as plain Python, held to the same golden vectors as the firmware's C twin; see §3.8 and
+  `PROTOCOL_SPEC.md`, "Dexcom G6 transmitter".
+
+None of these files import Qt or do any I/O — they're pure data transformation,
 which is why `models/` (the physiological math) can safely import from
 `api/` (`protocol.py` needs `ModelId`/parameter name lists from `models/`)
 without creating a dependency on the GUI or BLE stack.
@@ -413,6 +418,34 @@ opened locally, so there a change does restart).
   (which picks the slot) and never under the bare MAC.
 - **Subscribe retries.** `start_notify` is retried (4 attempts, ~0.9 s apart)
   with the CGM Measurement first, because a congested 3rd/4th link times out.
+
+### 3.8 Board mode and the Dexcom G6 mode
+
+The board runs in one of two modes (`models/board_profile.py`): **3 sensors** over the standard
+Bluetooth CGM profile, or **1 sensor as a Dexcom G6 transmitter** that xDrip on a phone can read. The
+mode is stored on the board (and changed by holding its Button 1 for 3 s), so the app **reads it
+back** whenever a sensor connects (`gui/board_profile.py`, `BoardProfileController`) and the
+Configuration window's **Board** group shows what the board says: *Mode*, *Transmitter ID* and a
+status line. The same read-back fetches the board's **speed**, which the app adopts
+(`MainWindow._adopt_board_speed`): entering the Dexcom mode puts the board at x1.
+
+**Switching.** Choose the mode (and, for Dexcom, a 6-character transmitter ID — digits and capital
+letters, default `8SIM00`) and press **Apply to board**. The app writes the ID and the mode to the
+first live sensor, waits for the board to drop every link, rescans and reconnects the sensors that
+were connected, **by name** — "Nordic Glucose Sensor 1" is at another address after a switch
+(`BluetoothWindow.reconnect_slots`). The simulation restarts. In the Dexcom mode only one sensor
+exists (`active_slots`), so Sensors 2 and 3 disappear until you switch back; their data stays on the
+board.
+
+**What xDrip sees.** The board advertises `Dexcom` + the last two characters of the ID
+(`8SIM15` → `Dexcom15`), proves it knows the ID in the AES challenge, and hands over one glucose
+reading per 5 simulated minutes. In xDrip, choose the Dexcom G6 data source and enter the full
+6-character ID. The same reading reaches the PC app on "Nordic Glucose Sensor 1" over the standard
+profile, so the app's graph and xDrip show the same points. The app never connects to the
+`Dexcom…` device. In the standard mode the G6 service is closed: a phone that tries it is dropped.
+The wire protocol is in `PROTOCOL_SPEC.md` ("Dexcom G6 transmitter"); the Python twin of the board's
+side, used by the tests and the hardware checks, is `api/dexcom_g6.py`,
+`api/dexcom_g6_transmitter.py` and `services/dexcom_g6_client.py`.
 
 ## 4. Data flow examples
 

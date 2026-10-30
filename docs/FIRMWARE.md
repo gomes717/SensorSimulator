@@ -357,21 +357,39 @@ streams over:
 
 - **SIG CGMS** (default) — the standard service in §4.3, advertising `0x181F` +
   the "Nordic Glucose Sensor" name.
-- **Dexcom-style** (`src/dexcom_service.c`) — a *basic imitation* of a Dexcom
-  transmitter: the `0xFEBC` service, `DXCM01` advertised name, and 14-byte
-  opcode-tagged realtime glucose messages on a notify characteristic. **No
-  authentication handshake** (a real Dexcom does J-PAKE/AES), no backfill. It
-  exists so the app can exercise a second, non-SIG wire format.
+- **Dexcom** (`src/dexcom_g6.c`, `src/aes128.c`, `src/dexcom_service.c`) — a **Dexcom G6
+  transmitter** that xDrip on a phone can use. Identity 0 advertises `0xFEBC` and the name
+  `Dexcom` + characters 5–6 of the transmitter ID (`Dexcom15` for `8SIM15`; the ID is the
+  `5b2c0018` characteristic, default `8SIM00`). The client authenticates with the G6 AES challenge
+  (`hash(x) = AES-128-ECB(key, x‖x)[0:8]`, `key = "00" + ID + "00" + ID`: the ID is the shared
+  secret), then asks for the reading with opcode `4E` and gets an 18-byte reply (glucose, trend,
+  state, sequence, transmitter time) ending in a CRC-16/XMODEM. Byte-level layout, the session
+  sequence and the opcode table are in `PROTOCOL_SPEC.md` ("Dexcom G6 transmitter").
+  - **One reading per 5 simulated minutes.** The board samples the model / CSV value (sensor noise
+    included) at every multiple of 300 s, holds it, and answers requests from it; the same reading
+    is pushed once to the CGMS instance the PC app reads, so both readers see the same points.
+  - **Connect window.** Identity 0 is connectable only for `CONFIG_APP_G6_WINDOW_S` (30 s) after
+    each reading and after a boot or mode switch, so xDrip, which schedules its next connection
+    from the last one, stays locked to the grid. Identity 1 advertises "Nordic Glucose Sensor 1"
+    for the PC app throughout.
+  - **1 sensor, x1.** Dexcom mode runs slot 0 only and forces the speed to x1 (xDrip polls in
+    real time); the app reads the speed back and follows it.
+  - **Layered like the rest:** the protocol (CRC, AES, request → reply, the grid) is plain C with
+    no Zephyr, built and tested on the PC (`firmware/peripheral_cgms/tests/host/`) against the same
+    golden vectors as its Python twin `src/api/dexcom_g6.py`; `dexcom_service.c` is only the GATT
+    glue and the per-connection state.
 
-Both GATT services are registered unconditionally; `comm_thread`'s measurement
-push routes to one or the other by `comm_profile`, and `main.c` advertises only
-the active profile's UUID/name. A profile write must re-advertise, but a
-connectable adv set can't restart with the single connection slot occupied
-(`CONFIG_BT_MAX_CONN=1`) — so if a client is connected `main_apply_comm_profile()`
-**drops it** (`bt_conn_disconnect`); `disconnected()` then re-advertises under
-the new profile and the app auto-reconnects (`BluetoothWindow.reconnect()`). The speed multiplier, CSV
-data source and PISA all apply upstream (they shape `latest.glucose_mg_dl`), so
-they carry into either profile unchanged.
+Both GATT services are registered unconditionally (the attribute table is static);
+`comm_thread`'s measurement push routes by `comm_profile`, and `main.c` decides per mode which
+identity advertises what (`identity_is_g6()`, `identity_active()`, `identity_wants_adv()`; the layout
+table is in `PROTOCOL_SPEC.md`). The mode changes three ways through one path
+(`main_apply_comm_profile()`): a write to `5b2c0014`, holding Button 1 for 3 s, and boot. A change
+persists, resets the simulation, forces x1 when entering Dexcom, clears the held reading and
+**drops every link** (a connectable advertising set cannot be restarted under a live one);
+`disconnected()` then re-advertises under the new layout, and the app rescans and reconnects by
+name (`BluetoothWindow.reconnect_slots()`) because "Sensor 1" is at another address after a switch.
+The speed multiplier, CSV data source and PISA all apply upstream (they shape the model's output
+before the 5-minute grid), so they carry into either profile unchanged.
 
 **The G6 service is closed in the standard (Multi) mode.** The attribute table is static, so the
 Dexcom G6 service is present in every mode, but only the Dexcom mode serves it. In Multi mode a

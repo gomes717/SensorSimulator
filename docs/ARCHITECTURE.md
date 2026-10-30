@@ -569,3 +569,36 @@ run on `PersonProfile` / `SensorProfile`, but those are now derived from a user 
 windows and the Configuration window's Person/Sensor group are gone. The user's picture is chosen
 from the avatars in `data/profile/` (`gui/avatar_picker.py`) and shows on the sensor's tab
 (`SensorTabs` takes a `picture_for` provider; the generated initials disc is the fallback).
+
+## 13. The Dexcom G6 mode
+
+Besides the 3-sensor SIG CGMS mode, the same firmware image can present itself as a **Dexcom G6
+transmitter** so that a phone running xDrip reads the simulated glucose. It is a third consumer of
+the model's output, not a new simulator:
+
+```mermaid
+flowchart LR
+    M["model_thread<br/>(model / CSV + sensor noise)"] -->|every tick| S["slot 0 latest value"]
+    S -->|every 300 s sim time| G["G6 grid<br/>(held reading, seq++)"]
+    G -->|G6 protocol over GATT| X["xDrip (phone)"]
+    G -->|once per reading, SIG CGMS| A["PC app<br/>'Nordic Glucose Sensor 1'"]
+```
+
+- **Why a 5-minute grid.** A real G6 never streams: xDrip connects, authenticates, asks for the
+  reading and leaves, and it schedules the next connection from the last one. So the board samples
+  the model at every multiple of 300 simulated seconds, holds the value, and opens a connect window
+  of 30 s around it; the speed is forced to x1.
+- **One truth for both readers.** The held reading is what the G6 replies carry and what the PC app
+  receives, so the app's graph and the phone agree to the sample; the app's local "expected" model
+  line is compared with that reading.
+- **Where it lives.** Protocol (CRC, AES, request → reply, the grid): `firmware/.../dexcom_g6.c`, plain
+  C, host-tested against the golden vectors it shares with `src/api/dexcom_g6.py`; GATT glue and
+  per-connection state: `dexcom_service.c`; mode, identities and the connect window: `main.c`. The app
+  side is `gui/board_profile.py` (read the mode, switch it, reconnect by name).
+- **One gate.** No pairing: the transmitter ID is the shared secret of the AES challenge. In the
+  3-sensor mode the G6 service stays in the attribute table but is refused, so a phone that
+  remembers the board's address cannot hold a link the PC app needs.
+
+Byte layouts and the session sequence: `PROTOCOL_SPEC.md`, "Dexcom G6 transmitter". Firmware
+behaviour: `docs/FIRMWARE.md` §4.5. Design and the xDrip source it follows:
+`.scratch/dexcom-g6-transmitter/`.

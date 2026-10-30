@@ -76,8 +76,13 @@ app is called **GlucoEcho**; its icon (light and dark variants) lives in
   graph view (or the whole run)
 - PISA (pressure-induced sensor attenuation) injection with the affected
   interval shaded on that sensor's graph
-- BLE profile: standard SIG CGMS (a basic Dexcom-style stream exists in the firmware and
-  protocol; the app's selector for it was removed pending a refactor)
+- **Two board modes**, switched from the Configuration window's *Board* group or by holding the
+  board's Button 1 for 3 s: **3 sensors** over the standard SIG CGMS profile (the default), or
+  **1 sensor as a Dexcom G6 transmitter** that xDrip on a phone can read — the board advertises
+  `Dexcom` + the last two characters of its transmitter ID (default `8SIM00`; enter the full ID in
+  xDrip), answers the G6 AES challenge and serves one reading per 5 simulated minutes (the Dexcom
+  mode runs at x1). The same reading reaches the PC app over SIG CGMS. The wire protocol is in
+  `PROTOCOL_SPEC.md`, "Dexcom G6 transmitter"
 - Scan for and connect to several nearby BLE devices at once, with
   automatic pairing for devices needing it (Windows)
 - Link-health reporting: a dropped link greys the tab, a connected-but-silent
